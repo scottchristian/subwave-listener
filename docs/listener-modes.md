@@ -57,9 +57,22 @@ ICECAST_ADMIN_PASSWORD=<vps-relay-admin-password>
 # Caddy's container address as broadcast Icecast sees it (read it off the
 # current wrong row in Admin → Listeners, e.g. 172.16.0.1). Exact IP only.
 ICECAST_TRUSTED_PROXY_IPS=<caddy-container-ip>
+# PINNED — every broadcast recreate without this rotates the relay password
+# and strands the VPS relay (mount 404s until re-pinned). This exact failure
+# happened live during this work and is the likely "worked in the past"
+# regression shape.
+ICECAST_RELAY_PASSWORD=<must-match the password in VPS relay <password>>
 ```
 
-Then `docker compose up -d broadcast controller` (broadcast renders icecast.xml; controller picks up admin URLs). Verify in Admin → Listeners: N rows (all `127.0.0.1` in relay mode — expected), count matches phones playing.
+Then `docker compose up -d broadcast controller` (**`up`, not `restart` —
+`restart` reuses containers and never re-reads `.env`**). Verify in
+Admin → Listeners: N rows (all `127.0.0.1` in relay mode — expected), count
+matches phones playing.
+
+**APPLIED Sep 2026** (via jump host, `up -d` both services): admin/status
+URLs → tailnet relay, admin password set, relay password pinned to the VPS
+value, relay verified 200 on both sockets, backend connections endpoint live.
+Pending live proof: 2 devices playing → backend count 2.
 
 **How the controller reaches the relay: Tailscale (or similar).** The relay
 binds `127.0.0.1:8000` (this machine's proxy) **and** the VPS Tailscale address
