@@ -690,9 +690,9 @@ export default function AdminPage() {
 
         {/* Music Links */}
         <section className="card" id="section-music-settings">
-          <h2>Music Links</h2>
+          <h2>Music Links <span style={{ fontWeight: 400, fontSize: "0.9rem", color: "var(--color-muted)" }}>(optional)</span></h2>
           <p className="about-text" style={{ marginTop: "0.5rem", fontSize: "0.875rem" }}>
-            Spotify OAuth for exact track links (Apple needs none). Applies on next lookup.
+            Spotify OAuth for exact track links (Apple needs none). Without keys, buttons fall back to search pages. Applies on next lookup.
           </p>
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
