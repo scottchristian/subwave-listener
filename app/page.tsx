@@ -1164,20 +1164,6 @@ export default function Home() {
         <div id="player-left-column" style={{ display: "flex", flexDirection: "column", gap: "1rem" }}>
           <div id="section-now-playing" className="card" style={{ position: "static" }}>
             <div id="now-playing-art-frame" style={{ position: "relative" }}>
-              <div aria-hidden="true" style={{ position: "absolute", inset: 0, opacity: isPlaying ? 1 : 0, transition: "opacity 0.6s ease", pointerEvents: "none" }}>
-                {[108, 122, 136, 150].map((pct, i) => (
-                  <span
-                    key={pct}
-                    className="cx-ring"
-                    style={{
-                      width: `${pct}%`,
-                      aspectRatio: "1 / 1",
-                      ["--cx-peak" as any]: 0.30 - i * 0.05,
-                      animationDelay: `${i * 0.45}s`,
-                    }}
-                  />
-                ))}
-              </div>
               <div id="now-playing-art-container" className="album-art-container" style={{ viewTransitionName: 'now-playing-art-container', position: "relative" } as any}>
               {stationData?.nowPlaying?.subsonic_id ? (
                 <img
@@ -1191,6 +1177,20 @@ export default function Home() {
               ) : (
                 <div id="now-playing-art-fallback" style={{width:"100%", height:"100%", background:"#1a3050", borderRadius: "var(--radius)", viewTransitionName: 'now-playing-art', filter: (!isPlaying && !isLoading) ? "grayscale(1)" : "none", transition: "filter 0.4s ease"} as any} />
               )}
+              <div aria-hidden="true" style={{ position: "absolute", inset: 0, overflow: "hidden", borderRadius: "var(--radius)", opacity: isPlaying ? 1 : 0, transition: "opacity 0.6s ease", pointerEvents: "none" }}>
+                {[104, 116, 128, 140].map((pct, i) => (
+                  <span
+                    key={pct}
+                    className="cx-ring"
+                    style={{
+                      width: `${pct}%`,
+                      aspectRatio: "1 / 1",
+                      ["--cx-peak" as any]: 0.30 - i * 0.05,
+                      animationDelay: `${i * 0.45}s`,
+                    }}
+                  />
+                ))}
+              </div>
               {isPlaying && <span aria-hidden="true" className="cx-scan" />}
               <span aria-hidden="true" className="cx-tick cx-tick-tl" />
               <span aria-hidden="true" className="cx-tick cx-tick-tr" />

@@ -266,8 +266,8 @@ input {
 
 .cx-scan {
   position: absolute;
-  left: 4%;
-  right: 4%;
+  left: 0;
+  right: 0;
   height: 22%;
   top: -25%;
   background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.10), transparent);
@@ -284,10 +284,10 @@ input {
   border-style: solid;
   pointer-events: none;
 }
-.cx-tick-tl { top: 8px; left: 8px; border-width: 2px 0 0 2px; border-top-left-radius: 6px; }
-.cx-tick-tr { top: 8px; right: 8px; border-width: 2px 2px 0 0; border-top-right-radius: 6px; }
-.cx-tick-bl { bottom: 8px; left: 8px; border-width: 0 0 2px 2px; border-bottom-left-radius: 6px; }
-.cx-tick-br { bottom: 8px; right: 8px; border-width: 0 2px 2px 0; border-bottom-right-radius: 6px; }
+.cx-tick-tl { top: 2px; left: 2px; border-width: 2px 0 0 2px; border-top-left-radius: 6px; }
+.cx-tick-tr { top: 2px; right: 2px; border-width: 2px 2px 0 0; border-top-right-radius: 6px; }
+.cx-tick-bl { bottom: 2px; left: 2px; border-width: 0 0 2px 2px; border-bottom-left-radius: 6px; }
+.cx-tick-br { bottom: 2px; right: 2px; border-width: 0 2px 2px 0; border-bottom-right-radius: 6px; }
 
 @media (prefers-reduced-motion: reduce) {
   .cx-ring, .cx-scan { animation: none; }
