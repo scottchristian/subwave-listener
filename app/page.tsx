@@ -132,6 +132,22 @@ export default function Home() {
   const [showLikes, setShowLikes] = useState(false);
   // Header account menu + self nickname.
   const [userMenuOpen, setUserMenuOpen] = useState(false);
+  // Fixed viewport position for the menu, clamped on-screen at open time.
+  const [userMenuPos, setUserMenuPos] = useState<{ top: number; left: number } | null>(null);
+  const userMenuBtnRef = useRef<HTMLButtonElement | null>(null);
+  const openUserMenu = () => {
+    const r = userMenuBtnRef.current?.getBoundingClientRect();
+    if (r) {
+      const w = 260;
+      setUserMenuPos({
+        top: r.bottom + 8,
+        left: Math.min(Math.max(r.left, 8), Math.max(window.innerWidth - w - 8, 8)),
+      });
+    } else {
+      setUserMenuPos(null);
+    }
+    setUserMenuOpen(true);
+  };
   const [nickDraft, setNickDraft] = useState("");
   const [myNickname, setMyNickname] = useState<string | null>(null);
   const [nickLoaded, setNickLoaded] = useState(false);
@@ -567,10 +583,11 @@ export default function Home() {
     }, 50);
   }, [tourStep]);
 
-  // Tour step 7 lives inside the user menu — open it while there, close after.
+  // Tour step 8 lives inside the user menu — open it (positioned) while there.
   useEffect(() => {
     if (tourStep < 0) return;
-    setUserMenuOpen(tourStep === 8);
+    if (tourStep === 8) openUserMenu();
+    else setUserMenuOpen(false);
   }, [tourStep]);
 
   // Sync now playing metadata to OS media controls (Lock Screen / Control Center)
@@ -1261,8 +1278,8 @@ export default function Home() {
         <div id="header-actions" style={{ position: "relative" }}>
           <button
             id="btn-user-menu"
-            ref={el => { stepRefs.current[7] = el; }}
-            onClick={() => setUserMenuOpen(o => !o)}
+            ref={(el) => { userMenuBtnRef.current = el; stepRefs.current[7] = el; }}
+            onClick={() => (userMenuOpen ? setUserMenuOpen(false) : openUserMenu())}
             aria-expanded={userMenuOpen}
             aria-haspopup="true"
             title="Account"
@@ -1278,7 +1295,7 @@ export default function Home() {
           {userMenuOpen && (
             <>
               <div id="user-menu-backdrop" onClick={() => setUserMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 1190 }} />
-              <div id="user-menu" role="menu" className="overlay-card-enter" style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 1200, minWidth: "240px", backgroundColor: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "0.5rem", boxShadow: "0 12px 32px rgba(0,0,0,0.5)" }}>
+              <div id="user-menu" role="menu" className="overlay-card-enter" style={{ position: "fixed", top: userMenuPos ? `${userMenuPos.top}px` : "76px", left: userMenuPos ? `${userMenuPos.left}px` : "8px", zIndex: 1200, width: "260px", maxWidth: "calc(100vw - 16px)", backgroundColor: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "0.5rem", boxShadow: "0 12px 32px rgba(0,0,0,0.5)" }}>
                 <div style={{ padding: "0.5rem 0.75rem", fontSize: "0.85rem", color: "var(--color-muted)", borderBottom: "1px solid var(--color-border)", marginBottom: "0.25rem" }}>
                   Signed in as<br /><strong style={{ color: "var(--color-text)" }}>{myNickname || session?.user?.name || session?.user?.email}</strong>
                 </div>
