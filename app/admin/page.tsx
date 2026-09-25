@@ -11,6 +11,7 @@ export default function AdminPage() {
 
   const [users, setUsers] = useState<any[]>([]);
   const [stats, setStats] = useState<any[]>([]);
+  const [signedInUsers, setSignedInUsers] = useState<any[]>([]);
   const [nickDrafts, setNickDrafts] = useState<Record<string, string>>({});
   // Where each settings field's value came from (db = saved here, env =
   // server file). Blank DB fields prefill from env so set values never look missing.
@@ -70,6 +71,10 @@ export default function AdminPage() {
     
     if (status === "authenticated" && (session?.user as any)?.isAdmin) {
       fetchData();
+      fetch("/api/presence")
+        .then(r => r.json())
+        .then(d => { if (Array.isArray(d.users)) setSignedInUsers(d.users); })
+        .catch(() => {});
       fetch("/api/push/status")
         .then(r => r.json())
         .then(d => { if (typeof d.devices === "number") setPushDevices(d.devices); })
@@ -547,6 +552,20 @@ export default function AdminPage() {
               </div>
               );
             })}
+          </div>
+        </section>
+
+        {/* Now Signed In */}
+        <section className="card" id="section-signed-in">
+          <h2>Now Signed In ({signedInUsers.length})</h2>
+          <div style={{ marginTop: "1rem" }}>
+            {signedInUsers.length === 0 && <p className="about-text">Nobody signed in right now.</p>}
+            {signedInUsers.map((u: any) => (
+              <div key={u.userId} style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap", padding: "0.75rem 1rem", borderBottom: "1px solid var(--color-border)" }}>
+                <div><strong>{u.name}</strong></div>
+                <div style={{ fontSize: "0.85rem", color: "var(--color-muted)" }}>{u.email}</div>
+              </div>
+            ))}
           </div>
         </section>
 

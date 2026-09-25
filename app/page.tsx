@@ -208,6 +208,7 @@ export default function Home() {
   const [donateEnabled, setDonateEnabled] = useState(true);
   
   const [directLinks, setDirectLinks] = useState<{ spotify: string | null, apple: string | null }>({ spotify: null, apple: null });
+  const [signedInCount, setSignedInCount] = useState<number | null>(null);
 
   // Typing animation for request placeholder
   const placeholders = [
@@ -281,6 +282,19 @@ export default function Home() {
        if (typeof d.donate_enabled === "boolean") setDonateEnabled(d.donate_enabled);
     }).catch(console.error);
   }, []);
+
+  useEffect(() => {
+    if (status !== "authenticated") return;
+    const load = () => {
+      fetch("/api/presence")
+        .then(r => r.json())
+        .then(d => { if (typeof d.signedIn === "number") setSignedInCount(d.signedIn); })
+        .catch(() => {});
+    };
+    load();
+    const id = setInterval(load, 15000);
+    return () => clearInterval(id);
+  }, [status]);
   
   const [tourStep, setTourStep] = useState(-1);
   const [tooltipStyle, setTooltipStyle] = useState<{ top?: string; bottom?: string; left?: string; right?: string; width?: string; transform?: string; opacity: number }>({ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', opacity: 0 });
@@ -1209,7 +1223,7 @@ export default function Home() {
           
           <div style={{ display: "flex", gap: "1rem" }}>
             <div id="header-listeners" className="meta-row" style={{ marginBottom: 0, backgroundColor: "rgba(0,0,0,0.5)", padding: "6px 12px", borderRadius: "8px", color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}>
-              <UserIcon /> {stationData?.listeners?.current || 0} Listening Now
+              <UserIcon /> {signedInCount ?? "–"} signed in, {stationData?.listeners?.current ?? 0} listening
             </div>
             
             {(weatherCond && weatherCond !== 'unknown') && (
