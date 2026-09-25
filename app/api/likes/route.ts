@@ -38,16 +38,16 @@ export async function GET(request: Request) {
     try {
         const likes = await prisma.songLike.findMany({
             where: { trackId },
-            include: { user: { select: { id: true, name: true, image: true, hideLikeName: true } } },
+            include: { user: { select: { id: true, name: true, nickname: true, image: true, hideLikeName: true } } },
             orderBy: { createdAt: 'desc' }
         });
-        // Name-hiders appear as Anonymous; userId stays so counts and
-        // own-like detection keep working.
+        // Name-hiders appear as Anonymous; nicknames win over sign-in names.
+        // userId stays so counts and own-like detection keep working.
         const masked = likes.map(l => ({
             ...l,
             user: l.user?.hideLikeName
                 ? { id: l.user.id, name: null, image: null }
-                : { id: l.user.id, name: l.user.name, image: l.user.image },
+                : { id: l.user.id, name: l.user.nickname || l.user.name, image: l.user.image },
         }));
         return NextResponse.json({ likes: masked });
     } catch (error) {

@@ -18,5 +18,6 @@ export async function GET() {
     email: user.email,
     isApproved: user.isApproved,
     isAdmin: user.isAdmin,
+    nickname: user.nickname,
   });
 }

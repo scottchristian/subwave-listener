@@ -130,6 +130,39 @@ export default function Home() {
   // Likes open as an overlay so the <audio> element stays mounted and the
   // stream keeps playing. (Navigating to /likes unmounts the player.)
   const [showLikes, setShowLikes] = useState(false);
+  // Header account menu + self nickname.
+  const [userMenuOpen, setUserMenuOpen] = useState(false);
+  const [nickDraft, setNickDraft] = useState("");
+  const [myNickname, setMyNickname] = useState<string | null>(null);
+  const [nickLoaded, setNickLoaded] = useState(false);
+
+  useEffect(() => {
+    if (!userMenuOpen || nickLoaded) return;
+    fetch("/api/me")
+      .then(r => r.json())
+      .then(d => {
+        if (typeof d.nickname === "string" && d.nickname) {
+          setMyNickname(d.nickname);
+          setNickDraft(d.nickname);
+        }
+        setNickLoaded(true);
+      })
+      .catch(() => setNickLoaded(true));
+  }, [userMenuOpen, nickLoaded]);
+
+  const saveMyNickname = async () => {
+    try {
+      const res = await fetch("/api/profile/nickname", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ nickname: nickDraft }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) setMyNickname(data.nickname || null);
+    } catch {}
+  };
+
+
   // Pending-approval poll: approved flips you in, a deleted account flips to
   // an explicit denied screen instead of pending forever.
   const [accessDenied, setAccessDenied] = useState(false);
@@ -465,6 +498,12 @@ export default function Home() {
         });
       }
     }, 50);
+  }, [tourStep]);
+
+  // Tour step 7 lives inside the user menu — open it while there, close after.
+  useEffect(() => {
+    if (tourStep < 0) return;
+    setUserMenuOpen(tourStep === 7);
   }, [tourStep]);
 
   // Sync now playing metadata to OS media controls (Lock Screen / Control Center)
@@ -1152,12 +1191,45 @@ export default function Home() {
             )}
           </div>
         </div>
-        <div id="header-actions" style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
-          <button id="btn-liked-songs" ref={el => { stepRefs.current[7] = el; }} onClick={() => setShowLikes(true)} className="primary-btn" style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", width: "auto", minWidth: "104px", height: "36px", boxSizing: "border-box", display: "inline-flex", alignItems: "center", justifyContent: "center", textAlign: "center", whiteSpace: "nowrap", position: tourStep === 7 ? "relative" : "static", zIndex: tourStep === 7 ? 1000 : 1 }}>Liked Songs</button>
-          {(session.user as any)?.isAdmin && (
-            <a id="btn-admin" href="/admin" className="primary-btn" style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", width: "auto", minWidth: "104px", height: "36px", boxSizing: "border-box", display: "inline-flex", alignItems: "center", justifyContent: "center", textAlign: "center", whiteSpace: "nowrap" }}>Admin</a>
+        <div id="header-actions" style={{ position: "relative" }}>
+          <button
+            id="btn-user-menu"
+            onClick={() => setUserMenuOpen(o => !o)}
+            aria-expanded={userMenuOpen}
+            aria-haspopup="true"
+            title="Account"
+            aria-label="Account menu"
+            style={{ width: "40px", height: "40px", borderRadius: "50%", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+          >
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+          </button>
+          {userMenuOpen && (
+            <>
+              <div id="user-menu-backdrop" onClick={() => setUserMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 1190 }} />
+              <div id="user-menu" role="menu" style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 1200, minWidth: "240px", backgroundColor: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "0.5rem", boxShadow: "0 12px 32px rgba(0,0,0,0.5)" }}>
+                <div style={{ padding: "0.5rem 0.75rem", fontSize: "0.85rem", color: "var(--color-muted)", borderBottom: "1px solid var(--color-border)", marginBottom: "0.25rem" }}>
+                  Signed in as<br /><strong style={{ color: "var(--color-text)" }}>{myNickname || session?.user?.name || session?.user?.email}</strong>
+                </div>
+                <div style={{ display: "flex", gap: "0.5rem", padding: "0.5rem 0.25rem", alignItems: "center" }}>
+                  <input
+                    id="input-my-nickname"
+                    type="text"
+                    value={nickDraft}
+                    onChange={(e) => setNickDraft(e.target.value)}
+                    placeholder="Nickname"
+                    className="input-field"
+                    style={{ flex: 1, minWidth: 0, marginBottom: 0, padding: "0.5rem" }}
+                  />
+                  <button id="btn-save-my-nickname" onClick={saveMyNickname} className="primary-btn" style={{ width: "auto", padding: "0.5rem 0.75rem", fontSize: "0.8rem" }}>Save</button>
+                </div>
+                <button id="btn-liked-songs" ref={el => { stepRefs.current[7] = el; }} onClick={() => { setUserMenuOpen(false); setShowLikes(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer", position: tourStep === 7 ? "relative" : "static", zIndex: tourStep === 7 ? 1000 : 1 }}>Liked Songs</button>
+                {(session.user as any)?.isAdmin && (
+                  <a id="btn-admin" href="/admin" style={{ display: "block", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)" }}>Admin</a>
+                )}
+                <button id="btn-signout" onClick={() => signOut({ callbackUrl: "/" })} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>Sign out</button>
+              </div>
+            </>
           )}
-          <button id="btn-signout" className="primary-btn" onClick={() => signOut({ callbackUrl: "/" })} style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", width: "auto", minWidth: "104px", height: "36px", boxSizing: "border-box", display: "inline-flex", alignItems: "center", justifyContent: "center", textAlign: "center", whiteSpace: "nowrap" }}>Sign out</button>
         </div>
       </header>
 
