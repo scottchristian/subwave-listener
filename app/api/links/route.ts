@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
+import { getSubwaveConfig } from "@/lib/subwave";
 
 export async function GET(req: NextRequest) {
   try {
@@ -88,8 +89,9 @@ async function getSpotifyToken(): Promise<string | null> {
     return cachedSpotifyToken;
   }
   
-  const clientId = process.env.SPOTIFY_CLIENT_ID;
-  const clientSecret = process.env.SPOTIFY_CLIENT_SECRET;
+  const cfg = await getSubwaveConfig();
+  const clientId = cfg.spotifyClientId;
+  const clientSecret = cfg.spotifyClientSecret;
   
   if (!clientId || !clientSecret) return null;
 

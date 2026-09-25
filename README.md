@@ -1,6 +1,6 @@
 # Subwave Web Player
 
-Listener-facing web player for a [Subwave](https://github.com/) internet radio station: approvals-gated listening, live now-playing with delay-synced UI, song requests, likes with platform links, admin dashboard (users, stats, server, push), and PWA install support.
+Listener-facing web player for a [Subwave](https://github.com/perminder-klair/subwave) internet radio station: approvals-gated listening, live now-playing with delay-synced UI, song requests, likes with platform links, admin dashboard (users, stats, server, push), and PWA install support.
 
 ## Setup (new station)
 
@@ -12,7 +12,8 @@ Listener-facing web player for a [Subwave](https://github.com/) internet radio s
 5. `npm run build && pm2 start npm --name "$PM2_APP_NAME" -- start` (or `npm run dev`).
 
 Everything else configures itself at runtime:
-- Support button, Subwave server address/creds, Google sign-in: Admin dashboard (no restarts except Google creds, which bounce the process by design).
+- Support button (+ BMAC secret), Sub/Wave server (API, relay stream, creds, station password), Google sign-in, VAPID push keys, Spotify creds, station identity: Admin dashboard (identity rebuilds+restarts; the rest apply live).
+- Env-only by design: `NEXTAUTH_SECRET` (guards JWT), `DATABASE_URL` (moving the DB is a migration, not a setting), `PM2_APP_NAME` (restart mechanics).
 - Per-user data (likes, requests, sessions) accrues in SQLite.
 
 ## Architecture

@@ -9,7 +9,7 @@ export async function GET() {
   if (!(session?.user as any)?.isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-  const publicKey = vapidPublicKey();
+  const publicKey = await vapidPublicKey();
   if (!publicKey) {
     return NextResponse.json({ error: "Push not configured (VAPID keys)" }, { status: 500 });
   }

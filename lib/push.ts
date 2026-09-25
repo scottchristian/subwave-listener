@@ -1,30 +1,39 @@
 import webpush from "web-push";
 import prisma from "@/lib/prisma";
 
-function vapid() {
-  const pub = process.env.VAPID_PUBLIC_KEY || "";
-  const priv = process.env.VAPID_PRIVATE_KEY || "";
+// VAPID keys: DB first (Admin card), env fallback. Changing keys orphan
+// existing device subscriptions (they're encrypted to the old pair) —
+// devices re-subscribe on next admin visit, gone endpoints self-prune.
+async function vapid(): Promise<{ pub: string; priv: string; subject: string } | null> {
+  let pub = process.env.VAPID_PUBLIC_KEY || "";
+  let priv = process.env.VAPID_PRIVATE_KEY || "";
+  let subject = process.env.VAPID_SUBJECT || "mailto:admin@example.com";
+  try {
+    const rows = await prisma.setting.findMany({
+      where: { key: { in: ["vapidPublicKey", "vapidPrivateKey", "vapidSubject"] } },
+    });
+    const get = (k: string) => rows.find((r) => r.key === k)?.value || "";
+    pub = get("vapidPublicKey") || pub;
+    priv = get("vapidPrivateKey") || priv;
+    subject = get("vapidSubject") || subject;
+  } catch {}
   if (!pub || !priv) return null;
-  return { pub, priv };
+  return { pub, priv, subject };
 }
 
-export function vapidPublicKey(): string | null {
-  return vapid()?.pub ?? null;
+export async function vapidPublicKey(): Promise<string | null> {
+  return (await vapid())?.pub ?? null;
 }
 
 // Fan a push notification out to every admin device subscription.
 // Best-effort per endpoint: gone subscriptions (410/404) are pruned.
 export async function pushToAdmins(title: string, body: string, url = "/admin"): Promise<void> {
-  const v = vapid();
+  const v = await vapid();
   if (!v) {
     console.error("Push skipped: VAPID keys not configured");
     return;
   }
-  webpush.setVapidDetails(
-    process.env.VAPID_SUBJECT || "mailto:admin@example.com",
-    v.pub,
-    v.priv
-  );
+  webpush.setVapidDetails(v.subject, v.pub, v.priv);
   const subs = await prisma.pushSubscription.findMany({
     include: { user: { select: { isAdmin: true } } },
   });

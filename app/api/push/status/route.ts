@@ -16,5 +16,5 @@ export async function GET() {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
   const devices = await prisma.pushSubscription.count({ where: { userId: dbId } });
-  return NextResponse.json({ vapid: !!vapidPublicKey(), devices });
+  return NextResponse.json({ vapid: !!(await vapidPublicKey()), devices });
 }

@@ -1,13 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
 import { PrismaClient } from "@prisma/client";
 import crypto from "crypto";
+import { getSubwaveConfig } from "@/lib/subwave";
 
 const prisma = new PrismaClient();
 
 export async function POST(req: NextRequest) {
   try {
     const signature = req.headers.get("x-signature-sha256") || req.headers.get("x-signature") || req.headers.get("x-bmac-signature");
-    const secret = process.env.BMAC_WEBHOOK_SECRET;
+    const secret = (await getSubwaveConfig()).bmacWebhookSecret;
 
     if (!secret || !signature) {
       console.error("Missing signature or secret. Headers:", Object.fromEntries(req.headers.entries()));

@@ -17,6 +17,7 @@ export default function AdminPage() {
   const [donateText, setDonateText] = useState("Send a tip to keep the station alive ☕");
   const [stationPassword, setStationPassword] = useState("");
   const [subwaveApiUrl, setSubwaveApiUrl] = useState("");
+  const [subwaveStreamUrl, setSubwaveStreamUrl] = useState("");
   const [subwaveAdminUser, setSubwaveAdminUser] = useState("");
   const [subwaveAdminPass, setSubwaveAdminPass] = useState("");
   const [serverMsg, setServerMsg] = useState("");
@@ -27,6 +28,22 @@ export default function AdminPage() {
   const [pushDevices, setPushDevices] = useState(0);
   const [pushMsg, setPushMsg] = useState("");
   const [pushBusy, setPushBusy] = useState(false);
+  const [vapidPublic, setVapidPublic] = useState("");
+  const [vapidPrivate, setVapidPrivate] = useState("");
+  const [vapidSubject, setVapidSubject] = useState("");
+  const [bmacSecret, setBmacSecret] = useState("");
+  const [spotifyId, setSpotifyId] = useState("");
+  const [spotifySecret, setSpotifySecret] = useState("");
+  const [idName, setIdName] = useState("");
+  const [idTagline, setIdTagline] = useState("");
+  const [idDescription, setIdDescription] = useState("");
+  const [idAbout, setIdAbout] = useState("");
+  const [idLogo, setIdLogo] = useState("");
+  const [idBackendUrl, setIdBackendUrl] = useState("");
+  const [idDonateUrl, setIdDonateUrl] = useState("");
+  const [idNextauthUrl, setIdNextauthUrl] = useState("");
+  const [idMsg, setIdMsg] = useState("");
+  const [idBusy, setIdBusy] = useState(false);
 
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -41,6 +58,19 @@ export default function AdminPage() {
       fetch("/api/push/status")
         .then(r => r.json())
         .then(d => { if (typeof d.devices === "number") setPushDevices(d.devices); })
+        .catch(() => {});
+      fetch("/api/admin/identity/save")
+        .then(r => r.json())
+        .then(d => {
+          if (d.name) setIdName(d.name);
+          if (d.tagline) setIdTagline(d.tagline);
+          if (d.description) setIdDescription(d.description);
+          if (d.about) setIdAbout(d.about);
+          if (d.logo) setIdLogo(d.logo);
+          if (d.backendUrl) setIdBackendUrl(d.backendUrl);
+          if (d.donateUrl) setIdDonateUrl(d.donateUrl);
+          if (d.nextauthUrl) setIdNextauthUrl(d.nextauthUrl);
+        })
         .catch(() => {});
     }
   }, [status, session]);
@@ -76,6 +106,17 @@ export default function AdminPage() {
         if (gSecret) setGoogleClientSecret(gSecret.value);
         const aEmail = settings.find((s: any) => s.key === "adminEmail");
         if (aEmail) setAdminEmail(aEmail.value);
+        const dbl = (k: string, set: (v: string) => void) => {
+          const hit = settings.find((s: any) => s.key === k);
+          if (hit) set(hit.value);
+        };
+        dbl("subwaveStreamUrl", setSubwaveStreamUrl);
+        dbl("bmacWebhookSecret", setBmacSecret);
+        dbl("spotifyClientId", setSpotifyId);
+        dbl("spotifyClientSecret", setSpotifySecret);
+        dbl("vapidPublicKey", setVapidPublic);
+        dbl("vapidPrivateKey", setVapidPrivate);
+        dbl("vapidSubject", setVapidSubject);
       }
     } catch (e) {
       console.error(e);
@@ -83,16 +124,15 @@ export default function AdminPage() {
   };
 
   const saveSupportSettings = async () => {
-    await fetch("/api/admin/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "donate_url", value: donateUrl }),
-    });
-    await fetch("/api/admin/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key: "donate_text", value: donateText }),
-    });
+    const put = (key: string, value: string) =>
+      fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value }),
+      });
+    await put("donate_url", donateUrl);
+    await put("donate_text", donateText);
+    await put("bmacWebhookSecret", bmacSecret);
     alert("Support button saved!");
   };
 
@@ -105,6 +145,7 @@ export default function AdminPage() {
         body: JSON.stringify({ key, value }),
       });
     await put("subwaveApiUrl", subwaveApiUrl);
+    await put("subwaveStreamUrl", subwaveStreamUrl);
     await put("subwaveAdminUser", subwaveAdminUser);
     await put("subwaveAdminPass", subwaveAdminPass);
     await put("stationPassword", stationPassword);
@@ -215,6 +256,62 @@ export default function AdminPage() {
       setPushMsg("Enable failed — try again.");
     } finally {
       setPushBusy(false);
+    }
+  };
+
+  const saveVapidSettings = async () => {
+    const put = (key: string, value: string) =>
+      fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value }),
+      });
+    await put("vapidPublicKey", vapidPublic);
+    await put("vapidPrivateKey", vapidPrivate);
+    await put("vapidSubject", vapidSubject);
+    alert("Push keys saved! Note: rotating keys orphans existing devices — they re-subscribe on next admin visit.");
+  };
+
+  const saveMusicSettings = async () => {
+    const put = (key: string, value: string) =>
+      fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value }),
+      });
+    await put("spotifyClientId", spotifyId);
+    await put("spotifyClientSecret", spotifySecret);
+    alert("Music links saved!");
+  };
+
+  const saveIdentitySettings = async () => {
+    setIdBusy(true);
+    setIdMsg("Saving — rebuilding (takes a minute)…");
+    try {
+      const res = await fetch("/api/admin/identity/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          name: idName,
+          tagline: idTagline,
+          description: idDescription,
+          about: idAbout,
+          logo: idLogo,
+          backendUrl: idBackendUrl,
+          donateUrl: idDonateUrl,
+          nextauthUrl: idNextauthUrl,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setIdMsg("Saved. Station restarting with new branding — reload in a few seconds.");
+      } else {
+        setIdMsg(`Save failed: ${data.error || "unknown error"}`);
+      }
+    } catch {
+      setIdMsg("Save failed: no response.");
+    } finally {
+      setIdBusy(false);
     }
   };
 
@@ -385,6 +482,52 @@ export default function AdminPage() {
           </div>
         </section>
 
+        {/* Station Identity */}
+        <section className="card" id="section-identity-settings">
+          <h2>Station Identity</h2>
+          <p className="about-text" style={{ marginTop: "0.5rem", fontSize: "0.875rem" }}>
+            Baked in at build time — saving rebuilds and restarts the station (a minute or so). NEXTAUTH_SECRET, DATABASE_URL and PM2_APP_NAME stay server-env only.
+          </p>
+          <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div>
+              <label htmlFor="input-id-name" style={{ display: "block", marginBottom: "0.5rem" }}>Station Name</label>
+              <input id="input-id-name" type="text" value={idName} onChange={(e) => setIdName(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
+            </div>
+            <div>
+              <label htmlFor="input-id-tagline" style={{ display: "block", marginBottom: "0.5rem" }}>Tagline</label>
+              <input id="input-id-tagline" type="text" value={idTagline} onChange={(e) => setIdTagline(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
+            </div>
+            <div>
+              <label htmlFor="input-id-description" style={{ display: "block", marginBottom: "0.5rem" }}>Short Description</label>
+              <input id="input-id-description" type="text" value={idDescription} onChange={(e) => setIdDescription(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
+            </div>
+            <div>
+              <label htmlFor="input-id-about" style={{ display: "block", marginBottom: "0.5rem" }}>About (sign-in card)</label>
+              <textarea id="input-id-about" value={idAbout} onChange={(e) => setIdAbout(e.target.value)} className="input-field" rows={3} style={{ width: "100%", maxWidth: "400px", resize: "vertical", fontFamily: "inherit" }} />
+            </div>
+            <div>
+              <label htmlFor="input-id-logo" style={{ display: "block", marginBottom: "0.5rem" }}>Logo Path (file in public/)</label>
+              <input id="input-id-logo" type="text" value={idLogo} onChange={(e) => setIdLogo(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
+            </div>
+            <div>
+              <label htmlFor="input-id-backend" style={{ display: "block", marginBottom: "0.5rem" }}>Public Backend URL</label>
+              <input id="input-id-backend" type="text" value={idBackendUrl} onChange={(e) => setIdBackendUrl(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
+            </div>
+            <div>
+              <label htmlFor="input-id-donate" style={{ display: "block", marginBottom: "0.5rem" }}>Fallback Donate URL</label>
+              <input id="input-id-donate" type="text" value={idDonateUrl} onChange={(e) => setIdDonateUrl(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
+            </div>
+            <div>
+              <label htmlFor="input-id-nextauth" style={{ display: "block", marginBottom: "0.5rem" }}>App URL (must match Google console)</label>
+              <input id="input-id-nextauth" type="text" value={idNextauthUrl} onChange={(e) => setIdNextauthUrl(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
+            </div>
+            <button id="btn-save-identity" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveIdentitySettings} disabled={idBusy}>
+              {idBusy ? "Rebuilding…" : "Save"}
+            </button>
+            {idMsg && <div id="identity-save-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{idMsg}</div>}
+          </div>
+        </section>
+
         {/* Push Notifications */}
         <section className="card" id="section-push">
           <h2>Push Notifications</h2>
@@ -398,6 +541,44 @@ export default function AdminPage() {
             <span style={{ fontSize: "0.9rem", color: "var(--color-muted)" }}>{pushDevices} device(s) registered</span>
           </div>
           {pushMsg && <div id="push-status-msg" style={{ marginTop: "0.75rem", color: "var(--color-accent)", fontSize: "0.875rem" }}>{pushMsg}</div>}
+          <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div>
+              <label htmlFor="input-vapid-public" style={{ display: "block", marginBottom: "0.5rem" }}>VAPID Public Key</label>
+              <input id="input-vapid-public" type="text" value={vapidPublic} onChange={(e) => setVapidPublic(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="off" />
+            </div>
+            <div>
+              <label htmlFor="input-vapid-private" style={{ display: "block", marginBottom: "0.5rem" }}>VAPID Private Key</label>
+              <input id="input-vapid-private" type="password" value={vapidPrivate} onChange={(e) => setVapidPrivate(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="new-password" />
+            </div>
+            <div>
+              <label htmlFor="input-vapid-subject" style={{ display: "block", marginBottom: "0.5rem" }}>VAPID Subject (mailto)</label>
+              <input id="input-vapid-subject" type="text" value={vapidSubject} onChange={(e) => setVapidSubject(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="off" />
+            </div>
+            <button id="btn-save-vapid" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveVapidSettings}>
+              Save Keys
+            </button>
+          </div>
+        </section>
+
+        {/* Music Links */}
+        <section className="card" id="section-music-settings">
+          <h2>Music Links</h2>
+          <p className="about-text" style={{ marginTop: "0.5rem", fontSize: "0.875rem" }}>
+            Spotify OAuth for exact track links (Apple needs none). Applies on next lookup.
+          </p>
+          <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div>
+              <label htmlFor="input-spotify-id" style={{ display: "block", marginBottom: "0.5rem" }}>Spotify Client ID</label>
+              <input id="input-spotify-id" type="text" value={spotifyId} onChange={(e) => setSpotifyId(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="off" />
+            </div>
+            <div>
+              <label htmlFor="input-spotify-secret" style={{ display: "block", marginBottom: "0.5rem" }}>Spotify Client Secret</label>
+              <input id="input-spotify-secret" type="password" value={spotifySecret} onChange={(e) => setSpotifySecret(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="new-password" />
+            </div>
+            <button id="btn-save-music" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveMusicSettings}>
+              Save
+            </button>
+          </div>
         </section>
 
         {/* Donations */}
@@ -446,6 +627,18 @@ export default function AdminPage() {
                 style={{ width: "100%", maxWidth: "400px" }}
               />
             </div>
+            <div>
+              <label htmlFor="input-bmac-secret" style={{ display: "block", marginBottom: "0.5rem" }}>Buy Me A Coffee Webhook Secret</label>
+              <input
+                id="input-bmac-secret"
+                type="password"
+                value={bmacSecret}
+                onChange={(e) => setBmacSecret(e.target.value)}
+                className="input-field"
+                style={{ width: "100%", maxWidth: "400px" }}
+                autoComplete="new-password"
+              />
+            </div>
             <button id="btn-save-support" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveSupportSettings}>
               Save
             </button>
@@ -469,6 +662,18 @@ export default function AdminPage() {
                 className="input-field"
                 style={{ width: "100%", maxWidth: "400px" }}
                 placeholder="https://radio.example.com/api"
+              />
+            </div>
+            <div>
+              <label htmlFor="input-subwave-stream" style={{ display: "block", marginBottom: "0.5rem" }}>Stream Relay URL (what listeners play)</label>
+              <input
+                id="input-subwave-stream"
+                type="text"
+                value={subwaveStreamUrl}
+                onChange={(e) => setSubwaveStreamUrl(e.target.value)}
+                className="input-field"
+                style={{ width: "100%", maxWidth: "400px" }}
+                placeholder="http://127.0.0.1:8000/stream.mp3"
               />
             </div>
             <div>

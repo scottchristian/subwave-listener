@@ -8,7 +8,21 @@ export async function getSubwaveConfig() {
   try {
     settings = await prisma.setting.findMany({
       where: {
-        key: { in: ["subwaveApiUrl", "subwaveAdminUser", "subwaveAdminPass", "stationPassword"] },
+        key: {
+          in: [
+            "subwaveApiUrl",
+            "subwaveAdminUser",
+            "subwaveAdminPass",
+            "stationPassword",
+            "subwaveStreamUrl",
+            "spotifyClientId",
+            "spotifyClientSecret",
+            "bmacWebhookSecret",
+            "vapidPublicKey",
+            "vapidPrivateKey",
+            "vapidSubject",
+          ],
+        },
       },
     });
   } catch {
@@ -22,14 +36,29 @@ export async function getSubwaveConfig() {
     "";
   // Accept the bare host too (…:7700 without /api): Caddy only forwards /api/*
   // to the controller, so a missing suffix would 404 into the web UI.
-  const apiUrl = rawUrl.replace(/\/+$/, "").endsWith("/api")
-    ? rawUrl.replace(/\/+$/, "")
-    : rawUrl.replace(/\/+$/, "") + "/api";
+  const apiUrl = !rawUrl
+    ? ""
+    : rawUrl.replace(/\/+$/, "").endsWith("/api")
+      ? rawUrl.replace(/\/+$/, "")
+      : rawUrl.replace(/\/+$/, "") + "/api";
   const adminUser = get("subwaveAdminUser") || process.env.SUBWAVE_ADMIN_USER || "";
   const adminPass = get("subwaveAdminPass") || process.env.SUBWAVE_ADMIN_PASS || "";
   const stationPassword = get("stationPassword") || "";
+  const streamUrl = get("subwaveStreamUrl") || process.env.SUBWAVE_STREAM_URL || "";
+  const spotifyClientId = get("spotifyClientId") || process.env.SPOTIFY_CLIENT_ID || "";
+  const spotifyClientSecret = get("spotifyClientSecret") || process.env.SPOTIFY_CLIENT_SECRET || "";
+  const bmacWebhookSecret = get("bmacWebhookSecret") || process.env.BMAC_WEBHOOK_SECRET || "";
 
-  return { apiUrl, adminUser, adminPass, stationPassword };
+  return {
+    apiUrl,
+    adminUser,
+    adminPass,
+    stationPassword,
+    streamUrl,
+    spotifyClientId,
+    spotifyClientSecret,
+    bmacWebhookSecret,
+  };
 }
 
 export function subwaveAdminAuth(cfg: { adminUser: string; adminPass: string }): string | null {

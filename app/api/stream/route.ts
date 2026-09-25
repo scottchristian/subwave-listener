@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "../auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
 import { STATION } from "@/lib/station";
+import { getSubwaveConfig } from "@/lib/subwave";
 import http from "http";
 
 export async function GET(req: NextRequest) {
@@ -22,14 +23,14 @@ export async function GET(req: NextRequest) {
     return new Response("Forbidden: Account pending approval.", { status: 403 });
   }
 
-  const streamUrl = process.env.SUBWAVE_STREAM_URL;
+  const cfg = await getSubwaveConfig();
+  const streamUrl = cfg.streamUrl;
   if (!streamUrl) {
-    return new Response("Internal configuration error", { status: 500 });
+    return new Response("Stream relay not configured (Admin → Sub/Wave Server)", { status: 500 });
   }
 
   // Fetch the station password from settings
-  const passwordSetting = await prisma.setting.findUnique({ where: { key: "stationPassword" } });
-  const stationPassword = passwordSetting?.value || "";
+  const stationPassword = cfg.stationPassword;
 
   // Log the session start
   const streamSession = await prisma.streamSession.create({
