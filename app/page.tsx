@@ -145,6 +145,37 @@ export default function Home() {
           setMyNickname(d.nickname);
           setNickDraft(d.nickname);
         }
+        if (typeof d.hideLikeName === "boolean") setMenuHideName(d.hideLikeName);
+        setNickLoaded(true);
+      })
+      .catch(() => setNickLoaded(true));
+  }, [userMenuOpen, nickLoaded]);
+
+  const [menuHideName, setMenuHideName] = useState(false);
+
+  const toggleMenuHideName = async () => {
+    const next = !menuHideName;
+    setMenuHideName(next);
+    try {
+      await fetch("/api/likes/preference", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hideLikeName: next }),
+      });
+    } catch {
+      setMenuHideName(!next);
+    }
+  };
+
+  useEffect(() => {
+    if (!userMenuOpen || nickLoaded) return;
+    fetch("/api/me")
+      .then(r => r.json())
+      .then(d => {
+        if (typeof d.nickname === "string" && d.nickname) {
+          setMyNickname(d.nickname);
+          setNickDraft(d.nickname);
+        }
         setNickLoaded(true);
       })
       .catch(() => setNickLoaded(true));
@@ -414,7 +445,7 @@ export default function Home() {
     setTimeout(() => {
       const target = stepRefs.current[tourStep] || null;
       const placeSpot = () => {
-        if (target && tourStep >= 1 && tourStep <= 7) {
+        if (target && tourStep >= 1 && tourStep <= 8) {
           const r = target.getBoundingClientRect();
           setTourSpot({ top: r.top - 8, left: r.left - 8, width: r.width + 16, height: r.height + 16 });
         } else {
@@ -450,7 +481,7 @@ export default function Home() {
         });
         return;
       }
-      if (target && tourStep >= 1 && tourStep <= 7) {
+      if (target && tourStep >= 1 && tourStep <= 8) {
         try { target.scrollIntoView({ block: 'nearest' }); } catch {}
         placeSpot();
         const rect = target.getBoundingClientRect();
@@ -503,7 +534,7 @@ export default function Home() {
   // Tour step 7 lives inside the user menu — open it while there, close after.
   useEffect(() => {
     if (tourStep < 0) return;
-    setUserMenuOpen(tourStep === 7);
+    setUserMenuOpen(tourStep === 8);
   }, [tourStep]);
 
   // Sync now playing metadata to OS media controls (Lock Screen / Control Center)
@@ -943,7 +974,7 @@ export default function Home() {
   };
 
   const advanceTour = () => {
-    if (tourStep >= 8) {
+    if (tourStep >= 9) {
       setTourStep(-1);
       localStorage.setItem("hasSeenTour", "true");
     } else {
@@ -1194,12 +1225,13 @@ export default function Home() {
         <div id="header-actions" style={{ position: "relative" }}>
           <button
             id="btn-user-menu"
+            ref={el => { stepRefs.current[7] = el; }}
             onClick={() => setUserMenuOpen(o => !o)}
             aria-expanded={userMenuOpen}
             aria-haspopup="true"
             title="Account"
             aria-label="Account menu"
-            style={{ width: "40px", height: "40px", borderRadius: "50%", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+            style={{ width: "40px", height: "40px", borderRadius: "50%", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", position: tourStep === 7 ? "relative" : "static", zIndex: tourStep === 7 ? 1000 : 1 }}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
           </button>
@@ -1222,7 +1254,26 @@ export default function Home() {
                   />
                   <button id="btn-save-my-nickname" onClick={saveMyNickname} className="primary-btn" style={{ width: "auto", padding: "0.5rem 0.75rem", fontSize: "0.8rem" }}>Save</button>
                 </div>
-                <button id="btn-liked-songs" ref={el => { stepRefs.current[7] = el; }} onClick={() => { setUserMenuOpen(false); setShowLikes(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer", position: tourStep === 7 ? "relative" : "static", zIndex: tourStep === 7 ? 1000 : 1 }}>Liked Songs</button>
+                <button id="btn-liked-songs" ref={el => { stepRefs.current[8] = el; }} onClick={() => { setUserMenuOpen(false); setShowLikes(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer", position: tourStep === 8 ? "relative" : "static", zIndex: tourStep === 8 ? 1000 : 1 }}>Liked Songs</button>
+                <button
+                  id="btn-menu-hide-name"
+                  role="switch"
+                  aria-checked={menuHideName}
+                  onClick={toggleMenuHideName}
+                  style={{ display: "flex", width: "100%", alignItems: "center", justifyContent: "space-between", gap: "0.75rem", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.9rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}
+                >
+                  <span>Hide name on likes</span>
+                  <span style={{
+                    flexShrink: 0, width: "40px", height: "23px", borderRadius: "999px",
+                    backgroundColor: menuHideName ? "var(--color-accent)" : "rgba(255,255,255,0.18)",
+                    position: "relative", transition: "background-color 0.2s ease",
+                  }}>
+                    <span style={{
+                      position: "absolute", top: "2px", left: menuHideName ? "19px" : "2px", width: "19px", height: "19px",
+                      borderRadius: "50%", backgroundColor: "#fff", transition: "left 0.2s ease",
+                    }} />
+                  </span>
+                </button>
                 {(session.user as any)?.isAdmin && (
                   <a id="btn-admin" href="/admin" style={{ display: "block", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)" }}>Admin</a>
                 )}
@@ -1638,11 +1689,12 @@ export default function Home() {
           {tourStep === 4 && "And this tells you what's coming up next."}
           {tourStep === 5 && "This is the DJ currently running the station!"}
           {tourStep === 6 && "Request songs or shout-outs here."}
-          {tourStep === 7 && "Everything you heart lives under Liked Songs — with Spotify and Apple Music links for each one."}
-          {tourStep === 8 && "That's it — enjoy the music! You can tap the ? button at any time if you need a reminder."}
+          {tourStep === 7 && "Your account lives behind this button — liked songs, nickname, admin, sign out."}
+          {tourStep === 8 && "Everything you heart lives under Liked Songs — with Spotify and Apple Music links for each one."}
+          {tourStep === 9 && "That's it — enjoy the music! You can tap the ? button at any time if you need a reminder."}
         </div>
         <button id="btn-tour-next" className="tour-next-btn" onClick={advanceTour}>
-          {tourStep === 8 ? "Finish" : "Next →"}
+          {tourStep === 9 ? "Finish" : "Next →"}
         </button>
         <button id="btn-tour-skip" className="tour-skip" onClick={() => { setTourStep(-1); localStorage.setItem("hasSeenTour", "true"); }}>
           Skip Tour

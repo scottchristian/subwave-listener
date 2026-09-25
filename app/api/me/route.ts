@@ -19,5 +19,6 @@ export async function GET() {
     isApproved: user.isApproved,
     isAdmin: user.isAdmin,
     nickname: user.nickname,
+    hideLikeName: user.hideLikeName,
   });
 }
