@@ -1598,28 +1598,32 @@ export default function Home() {
               if (!isPlaying && !isLoading) return null;
               const listeners = stationData?.listeners?.current;
               const solo = typeof listeners === "number" && listeners <= 1;
+              // Non-admins see Skip only while solo; admins always see it.
+              const showSkip = isAdmin || solo;
+              const showNever = isAdmin && !!stationData?.nowPlaying?.subsonic_id;
+              if (!showSkip && !showNever) return null;
               const cooling = skipCooldownLeft > 0;
-              const skipEnabled = !cooling && adminBusy === null && (isAdmin || solo);
+              const skipEnabled = !cooling && adminBusy === null;
               const skipLabel = adminBusy === "skip"
                 ? "Skipping…"
                 : cooling
                   ? `Skip in ${skipCooldownLeft}s`
-                  : !isAdmin && !solo
-                    ? "Skip disabled — someone else is listening"
-                    : "Skip track";
+                  : "Skip track";
               return (
                 <div id="admin-track-controls" style={{ display: "flex", gap: "0.75rem", alignItems: "stretch", flexWrap: "wrap" }}>
+                  {showSkip && (
                   <button
                     id="btn-skip-track"
                     onClick={adminSkipTrack}
                     disabled={!skipEnabled}
-                    title={!isAdmin && !solo ? "Only the only listener can skip" : "Skip track"}
+                    title="Skip track"
                     style={{ flex: "1 1 160px", minWidth: 0, display: "flex", alignItems: "center", justifyContent: "center", gap: "0.5rem", backgroundColor: "rgba(239,68,68,0.10)", color: "#f2f2f2", border: "1px solid rgba(239,68,68,0.55)", padding: "0.85rem 1rem", borderRadius: "999px", fontSize: "0.95rem", fontWeight: 600, opacity: skipEnabled ? 1 : 0.45, cursor: skipEnabled ? "pointer" : "default", textAlign: "center" }}
                   >
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M5 5a2 2 0 0 1 3.008-1.728l9.997 5.998a2 2 0 0 1 .003 3.458l-10 6A2 2 0 0 1 5 17z" /><line x1="19" y1="5" x2="19" y2="19" strokeWidth="2.5" /></svg>
                     {skipLabel}
                   </button>
-                  {isAdmin && stationData?.nowPlaying?.subsonic_id && (
+                  )}
+                  {showNever && (
                     <div style={{ position: "relative", flex: "1 1 160px", minWidth: 0, display: "flex" }}>
                       <button
                         id="btn-never-play"
