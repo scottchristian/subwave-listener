@@ -1,7 +1,7 @@
 # Listener counting & real IPs: diagnosis and plan
 
-Branch: `listener-count`. No code changes yet — implement only after the
-operator approves this plan.
+Branch: `listener-count`. **IMPLEMENTED** — relay default, direct opt-in via
+Admin → Stream Mode card. Notes below remain the design record.
 
 ## 1. Measured facts (all verified live, Sep 2026)
 

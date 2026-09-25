@@ -210,6 +210,14 @@ export default function Home() {
   
   const [directLinks, setDirectLinks] = useState<{ spotify: string | null, apple: string | null }>({ spotify: null, apple: null });
   const [signedInCount, setSignedInCount] = useState<number | null>(null);
+  // Stream path: relay proxy (default) or direct 1:1 to the master.
+  // Refreshed with settings; mode flips take effect on next Play.
+  const streamCfgRef = useRef<{ mode: string; directUrl: string }>({ mode: "relay", directUrl: "" });
+  const streamSrc = () => {
+    const cfg = streamCfgRef.current;
+    if (cfg.mode === "direct" && cfg.directUrl) return `${cfg.directUrl}${cfg.directUrl.includes("?") ? "&" : "?"}t=${Date.now()}`;
+    return `/api/stream?t=${Date.now()}`;
+  };
 
   // Typing animation for request placeholder
   const placeholders = [
@@ -281,6 +289,15 @@ export default function Home() {
        if (d.donate_url) setDonateUrl(d.donate_url);
        if (d.donate_text) setDonateText(d.donate_text);
        if (typeof d.donate_enabled === "boolean") setDonateEnabled(d.donate_enabled);
+       const mode = d.streamMode === "direct" ? "direct" : "relay";
+       let directUrl = "";
+       if (mode === "direct" && STATION.backendUrl) {
+         const base = STATION.backendUrl.replace(/\/+$/, "").replace(/\/api$/, "");
+         directUrl = d.stationPassword
+           ? `${base}/stream.mp3?auth=${encodeURIComponent(d.stationPassword)}`
+           : `${base}/stream.mp3`;
+       }
+       streamCfgRef.current = { mode, directUrl };
     }).catch(console.error);
   }, []);
 
@@ -626,7 +643,7 @@ export default function Home() {
 
     const attemptPlay = () => {
         if (!intendedPlayRef.current) return;
-        audio.src = `/api/stream?t=${Date.now()}`;
+        audio.src = streamSrc();
         audio.play().catch(e => {
           console.error("play() rejected:", e);
           if (intendedPlayRef.current) setTimeout(attemptPlay, 2000);
@@ -692,7 +709,7 @@ export default function Home() {
         console.log("Stream dropped, reconnecting...");
         hasAwakeRef.current = false;
         setIsLoading(true);
-        audio.src = `/api/stream?t=${Date.now()}`;
+        audio.src = streamSrc();
         audio.play().catch(e => {
             console.error("Immediate play() rejected:", e);
             if (e.name === 'NotAllowedError') {
@@ -889,7 +906,7 @@ export default function Home() {
         setIsAsleepWakeup(true);
       }
 
-      audio.src = `/api/stream?t=${Date.now()}`;
+      audio.src = streamSrc();
       audio.play().catch(e => {
         console.error("play() rejected:", e);
         if (intendedPlayRef.current) {
@@ -904,7 +921,7 @@ export default function Home() {
            } else {
                setTimeout(() => {
                  if (intendedPlayRef.current && audioRef.current) {
-                   audioRef.current.src = `/api/stream?t=${Date.now()}`;
+                   audioRef.current.src = streamSrc();
                    audioRef.current.play().catch(() => {});
                  }
                }, 2000);

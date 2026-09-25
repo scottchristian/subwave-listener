@@ -59,6 +59,15 @@ Name, tagline, description, about, logo path, public URLs. Baked at build
 time: Save rebuilds (~1min) and restarts only on a fresh `BUILD_ID` — a failed
 build keeps the old version running.
 
+## Stream Mode (Admin → Stream Mode)
+
+- **1-to-many relay** (default): one upstream connection feeds every listener.
+  Backend counts relay sockets; per-listener identity lives in Signed In.
+- **1-to-1 direct**: each player connects straight to the master with
+  `?auth=`. The backend sees true counts and real IPs natively — at the cost
+  of backend upload per listener, and the station password shipping in page JS
+  (approved eyes only; rotate if shared). Applies on next Play.
+
 ## Env-only (never in UI, by design)
 
 - `NEXTAUTH_SECRET` — signs session JWTs. Rotating logs everyone out; no UI

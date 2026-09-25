@@ -30,6 +30,8 @@ export default function AdminPage() {
   const [subwaveAdminPass, setSubwaveAdminPass] = useState("");
   const [serverMsg, setServerMsg] = useState("");
   const [serverBusy, setServerBusy] = useState(false);
+  const [streamMode, setStreamMode] = useState<"relay" | "direct">("relay");
+  const [backendListeners, setBackendListeners] = useState<number | null>(null);
   const [googleClientId, setGoogleClientId] = useState("");
   const [googleClientSecret, setGoogleClientSecret] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
@@ -138,6 +140,17 @@ export default function AdminPage() {
         fill("spotifyClientId", setSpotifyId);
         fill("spotifyClientSecret", setSpotifySecret);
         setEnvSrc(src);
+        const sm = settings.find((s: any) => s.key === "streamMode");
+        if (sm) setStreamMode(sm.value === "direct" ? "direct" : "relay");
+        if (STATION.backendUrl) {
+          fetch(`${STATION.backendUrl}/api/now-playing`)
+            .then(r => r.json())
+            .then(d => {
+              const c = d?.listeners?.current;
+              if (typeof c === "number") setBackendListeners(c);
+            })
+            .catch(() => {});
+        }
         const de = settings.find((s: any) => s.key === "donate_enabled");
         if (de) setDonateOn(de.value !== "false");
       }
@@ -163,6 +176,14 @@ export default function AdminPage() {
     alert("Support button saved!");
   };
 
+  const saveStreamMode = async (mode: "relay" | "direct") => {
+    setStreamMode(mode);
+    await fetch("/api/admin/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "streamMode", value: mode }),
+    });
+  };
   const testServer = async () => {
     setServerBusy(true);
     setServerMsg("Contacting backend… (save first — the test reads saved values)");
@@ -994,6 +1015,45 @@ export default function AdminPage() {
             </button>
             </div>
             {serverMsg && <div id="server-sync-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{serverMsg}</div>}
+          </div>
+        </section>
+
+        {/* Stream Mode */}
+        <section className="card" id="section-stream-mode">
+          <h2>Stream Mode</h2>
+          <p className="about-text" style={{ marginTop: "0.5rem", fontSize: "0.875rem" }}>
+            How listeners receive audio. Backend reports {backendListeners === null ? "…" : <strong>{backendListeners} listening</strong>} right now.
+          </p>
+          <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", flexWrap: "wrap" }}>
+            <button
+              id="btn-mode-relay"
+              onClick={() => saveStreamMode("relay")}
+              aria-pressed={streamMode === "relay"}
+              className="primary-btn"
+              style={{ width: "auto", padding: "0.5rem 1.25rem", background: streamMode === "relay" ? "var(--color-text)" : "rgba(255,255,255,0.08)", color: streamMode === "relay" ? "var(--color-bg)" : "var(--color-text)" }}
+            >
+              1-to-many relay
+            </button>
+            <button
+              id="btn-mode-direct"
+              onClick={() => saveStreamMode("direct")}
+              aria-pressed={streamMode === "direct"}
+              className="primary-btn"
+              style={{ width: "auto", padding: "0.5rem 1.25rem", background: streamMode === "direct" ? "var(--color-text)" : "rgba(255,255,255,0.08)", color: streamMode === "direct" ? "var(--color-bg)" : "var(--color-text)" }}
+            >
+              1-to-1 direct
+            </button>
+          </div>
+          <div style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+            {streamMode === "relay" ? (
+              <span>One upstream connection feeds every listener. Backend counts relay sockets (all proxy addresses); per-listener identity lives here in Signed In.</span>
+            ) : (
+              <>
+                <span>Each player connects straight to the master — the backend sees true counts and real IPs natively.</span>
+                <span>Costs: backend upload scales per listener, and the station password ships in page JS (approved eyes only — rotate it if shared).</span>
+              </>
+            )}
+            <span>Applies on next Play; current listeners keep their path until they re-tune.</span>
           </div>
         </section>
       </div>
