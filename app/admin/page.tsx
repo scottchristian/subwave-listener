@@ -33,12 +33,14 @@ export default function AdminPage() {
   const [googleClientSecret, setGoogleClientSecret] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
   const [authMsg, setAuthMsg] = useState("");
+  const [authBusy, setAuthBusy] = useState(false);
   const [pushDevices, setPushDevices] = useState(0);
   const [pushMsg, setPushMsg] = useState("");
   const [pushBusy, setPushBusy] = useState(false);
   const [vapidPublic, setVapidPublic] = useState("");
   const [vapidPrivate, setVapidPrivate] = useState("");
   const [vapidSubject, setVapidSubject] = useState("");
+  const [vapidBusy, setVapidBusy] = useState(false);
   const [bmacSecret, setBmacSecret] = useState("");
   const [spotifyId, setSpotifyId] = useState("");
   const [spotifySecret, setSpotifySecret] = useState("");
@@ -146,9 +148,12 @@ export default function AdminPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ key, value }),
       });
-    await put("donate_url", donateUrl);
-    await put("donate_text", donateText);
     await put("donate_enabled", donateOn ? "true" : "false");
+    // URL + text are pointless while hidden — leave stored values alone.
+    if (donateOn) {
+      await put("donate_url", donateUrl);
+      await put("donate_text", donateText);
+    }
     await put("bmacWebhookSecret", bmacSecret);
     alert("Support button saved!");
   };
@@ -233,6 +238,24 @@ export default function AdminPage() {
     }
   };
 
+  const testAuth = async () => {
+    setAuthBusy(true);
+    setAuthMsg("Checking ID shape… (save first — the test reads the fields above)");
+    try {
+      const res = await fetch("/api/admin/auth/test", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ clientId: googleClientId, clientSecret: googleClientSecret }),
+      });
+      const data = await res.json().catch(() => ({}));
+      setAuthMsg(res.ok ? data.message : `Failed: ${data.error || "unknown error"}`);
+    } catch {
+      setAuthMsg("Failed: no response.");
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
   const saveNickname = async (userId: string) => {
     await fetch("/api/admin/users/nickname", {
       method: "POST",
@@ -307,6 +330,25 @@ export default function AdminPage() {
     await put("vapidPrivateKey", vapidPrivate);
     await put("vapidSubject", vapidSubject);
     alert("Push keys saved! Note: rotating keys orphans existing devices — they re-subscribe on next admin visit.");
+  };
+
+  const generateVapid = async () => {
+    setVapidBusy(true);
+    try {
+      const res = await fetch("/api/admin/push/vapid/generate", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setVapidPublic(data.publicKey || "");
+        setVapidPrivate(data.privateKey || "");
+        alert("Fresh pair generated — hit Save Keys to keep it.");
+      } else {
+        alert(data.error || "Generation failed.");
+      }
+    } catch {
+      alert("Generation failed: no response.");
+    } finally {
+      setVapidBusy(false);
+    }
   };
 
   const saveMusicSettings = async () => {
@@ -554,9 +596,14 @@ export default function AdminPage() {
                 autoComplete="off"
               />
             </div>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
             <button id="btn-save-auth" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveAuthSettings}>
               Save
             </button>
+            <button id="btn-test-auth" className="primary-btn" style={{ width: "150px", padding: "0.5rem", background: "rgba(255,255,255,0.1)", color: "#fff" }} onClick={testAuth} disabled={authBusy}>
+              {authBusy ? "Testing…" : "Test"}
+            </button>
+            </div>
             {authMsg && <div id="auth-save-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{authMsg}</div>}
           </div>
         </section>
@@ -590,7 +637,7 @@ export default function AdminPage() {
             </div>
             <div>
               <label htmlFor="input-id-backend" style={{ display: "block", marginBottom: "0.5rem" }}>Public Backend URL</label>
-              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Subwave API the browser calls for now-playing/covers. Must be public, not LAN.</div>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>What listeners' browsers call (covers, now-playing). The Server card below is what this machine calls — usually the same host, different route.</div>
               <input id="input-id-backend" type="text" value={idBackendUrl} onChange={(e) => setIdBackendUrl(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
             </div>
             <div>
@@ -710,6 +757,16 @@ export default function AdminPage() {
             <button id="btn-save-vapid" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveVapidSettings}>
               Save Keys
             </button>
+            <button
+              id="btn-generate-vapid"
+              className="primary-btn"
+              style={{ width: "150px", padding: "0.5rem", background: "rgba(255,255,255,0.1)", color: "#fff", opacity: vapidPublic ? 0.45 : 1 }}
+              onClick={generateVapid}
+              disabled={vapidBusy || !!vapidPublic}
+              title={vapidPublic ? "Keys already set — clear the fields to rotate" : "Generate a fresh pair"}
+            >
+              {vapidBusy ? "Generating…" : "Generate"}
+            </button>
           </div>
         </section>
 
@@ -730,12 +787,14 @@ export default function AdminPage() {
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Pairs with the client ID for Spotify API auth.</div>
               <input id="input-spotify-secret" type="password" value={spotifySecret} onChange={(e) => setSpotifySecret(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="new-password" />
             </div>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
             <button id="btn-save-music" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveMusicSettings}>
               Save
             </button>
             <button id="btn-test-spotify" className="primary-btn" style={{ width: "150px", padding: "0.5rem", background: "rgba(255,255,255,0.1)", color: "#fff" }} onClick={testSpotify} disabled={musicBusy}>
               {musicBusy ? "Testing…" : "Test"}
             </button>
+            </div>
             {musicMsg && <div id="music-test-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{musicMsg}</div>}
           </div>
         </section>
@@ -784,6 +843,8 @@ export default function AdminPage() {
                 }} />
               </button>
             </div>
+            <div style={{ display: "grid", gridTemplateRows: donateOn ? "1fr" : "0fr", transition: "grid-template-rows 0.25s ease", overflow: "hidden" }}>
+              <div style={{ overflow: "hidden", minHeight: 0, display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
               <label htmlFor="input-support-url" style={{ display: "block", marginBottom: "0.5rem" }}>Support Button URL{envTag('donate_url')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Where the tip button sends listeners.</div>
@@ -807,6 +868,8 @@ export default function AdminPage() {
                 className="input-field"
                 style={{ width: "100%", maxWidth: "400px" }}
               />
+            </div>
+              </div>
             </div>
             <div>
               <label htmlFor="input-bmac-secret" style={{ display: "block", marginBottom: "0.5rem" }}>Buy Me A Coffee Webhook Secret{envTag('bmacWebhookSecret')}</label>
@@ -836,7 +899,7 @@ export default function AdminPage() {
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
               <label htmlFor="input-subwave-url" style={{ display: "block", marginBottom: "0.5rem" }}>Server Address (API base URL — /api added if missing){envTag('subwaveApiUrl')}</label>
-              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Subwave controller. All requests, skip, block and sync calls go here.</div>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>What this machine calls (proxies, sync). The Identity card above is what listeners' browsers call — same backend, different leg.</div>
               <input
                 id="input-subwave-url"
                 type="text"
@@ -899,12 +962,14 @@ export default function AdminPage() {
                 placeholder="Station password"
               />
             </div>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
             <button id="btn-save-server" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveServerSettings}>
               Save
             </button>
             <button id="btn-test-server" className="primary-btn" style={{ width: "150px", padding: "0.5rem", background: "rgba(255,255,255,0.1)", color: "#fff" }} onClick={testServer} disabled={serverBusy}>
               {serverBusy ? "Testing…" : "Test"}
             </button>
+            </div>
             {serverMsg && <div id="server-sync-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{serverMsg}</div>}
           </div>
         </section>
