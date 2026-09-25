@@ -484,7 +484,7 @@ export default function AdminPage() {
 
   return (
     <div className="container">
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3rem", flexWrap: "wrap", gap: "1rem" }}>
+      <header id="header-admin" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3rem", flexWrap: "wrap", gap: "1rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
           <img id="logo-img-admin" src={STATION.logo} alt={STATION.name} style={{ height: "48px", width: "auto", objectFit: "contain", filter: "drop-shadow(0px 4px 12px rgba(0,0,0,0.6))" }} />
           <h1 className="logo-text" style={{ margin: 0 }}>Admin Dashboard</h1>
@@ -819,7 +819,7 @@ export default function AdminPage() {
         </section>
 
         {/* Donations */}
-        <section className="card">
+        <section className="card" id="section-donations">
           <h2>Donations</h2>
           <div style={{ marginTop: "1rem" }}>
             {donations.length === 0 && <p className="about-text">No donations recorded.</p>}
