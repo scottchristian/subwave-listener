@@ -1151,11 +1151,11 @@ export default function Home() {
           </div>
         </div>
         <div id="header-actions" style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
-          <button id="btn-liked-songs" ref={el => { stepRefs.current[7] = el; }} onClick={() => setShowLikes(true)} className="primary-btn" style={{ padding: "0.5rem 1rem", fontSize: "0.875rem", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", width: "auto", minWidth: "118px", textAlign: "center", position: tourStep === 7 ? "relative" : "static", zIndex: tourStep === 7 ? 1000 : 1 }}>Liked Songs</button>
+          <button id="btn-liked-songs" ref={el => { stepRefs.current[7] = el; }} onClick={() => setShowLikes(true)} className="primary-btn" style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", width: "auto", minWidth: "104px", height: "36px", boxSizing: "border-box", display: "inline-flex", alignItems: "center", justifyContent: "center", textAlign: "center", whiteSpace: "nowrap", position: tourStep === 7 ? "relative" : "static", zIndex: tourStep === 7 ? 1000 : 1 }}>Liked Songs</button>
           {(session.user as any)?.isAdmin && (
-            <a id="btn-admin" href="/admin" className="primary-btn" style={{ padding: "0.5rem 1rem", fontSize: "0.875rem", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", width: "auto", minWidth: "118px", textAlign: "center" }}>Admin</a>
+            <a id="btn-admin" href="/admin" className="primary-btn" style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", width: "auto", minWidth: "104px", height: "36px", boxSizing: "border-box", display: "inline-flex", alignItems: "center", justifyContent: "center", textAlign: "center", whiteSpace: "nowrap" }}>Admin</a>
           )}
-          <button id="btn-signout" className="primary-btn" onClick={() => signOut({ callbackUrl: "/" })} style={{ padding: "0.5rem 1rem", fontSize: "0.875rem", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", width: "auto", minWidth: "118px", textAlign: "center" }}>Sign out</button>
+          <button id="btn-signout" className="primary-btn" onClick={() => signOut({ callbackUrl: "/" })} style={{ padding: "0.4rem 0.8rem", fontSize: "0.8rem", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", width: "auto", minWidth: "104px", height: "36px", boxSizing: "border-box", display: "inline-flex", alignItems: "center", justifyContent: "center", textAlign: "center", whiteSpace: "nowrap" }}>Sign out</button>
         </div>
       </header>
 
