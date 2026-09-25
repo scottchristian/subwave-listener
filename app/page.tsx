@@ -141,6 +141,7 @@ export default function Home() {
   
   const [donateUrl, setDonateUrl] = useState(STATION.donateUrl);
   const [donateText, setDonateText] = useState("Send a tip to keep the station alive ☕");
+  const [donateEnabled, setDonateEnabled] = useState(true);
   
   const [directLinks, setDirectLinks] = useState<{ spotify: string | null, apple: string | null }>({ spotify: null, apple: null });
 
@@ -213,6 +214,7 @@ export default function Home() {
     fetch("/api/settings").then(r => r.json()).then(d => {
        if (d.donate_url) setDonateUrl(d.donate_url);
        if (d.donate_text) setDonateText(d.donate_text);
+       if (typeof d.donate_enabled === "boolean") setDonateEnabled(d.donate_enabled);
     }).catch(console.error);
   }, []);
   
@@ -955,7 +957,7 @@ export default function Home() {
             </svg>
             Sign in with Google
           </button>
-          {donateUrl ? (
+          {donateEnabled && donateUrl ? (
           <a id="btn-support-unauth" href={donateUrl} target="_blank" rel="noreferrer" className="donate-btn" style={{ display: "block", textAlign: "center" }}>
             {donateText}
           </a>
@@ -1475,7 +1477,7 @@ export default function Home() {
             })()}
             {adminAck && <div id="admin-track-ack" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{adminAck}</div>}
             
-            {donateUrl ? (
+            {donateEnabled && donateUrl ? (
             <a id="btn-support" href={donateUrl} target="_blank" rel="noreferrer" className="donate-btn" style={{ padding: "1.5rem", fontSize: "1.2rem", width: "100%", textAlign: "center", display: "block" }}>
               {donateText}
             </a>

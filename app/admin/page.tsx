@@ -21,6 +21,7 @@ export default function AdminPage() {
   const [donations, setDonations] = useState<any[]>([]);
   const [donateUrl, setDonateUrl] = useState(STATION.donateUrl);
   const [donateText, setDonateText] = useState("Send a tip to keep the station alive ☕");
+  const [donateOn, setDonateOn] = useState(true);
   const [stationPassword, setStationPassword] = useState("");
   const [subwaveApiUrl, setSubwaveApiUrl] = useState("");
   const [subwaveStreamUrl, setSubwaveStreamUrl] = useState("");
@@ -129,6 +130,8 @@ export default function AdminPage() {
         fill("spotifyClientId", setSpotifyId);
         fill("spotifyClientSecret", setSpotifySecret);
         setEnvSrc(src);
+        const de = settings.find((s: any) => s.key === "donate_enabled");
+        if (de) setDonateOn(de.value !== "false");
       }
     } catch (e) {
       console.error(e);
@@ -144,6 +147,7 @@ export default function AdminPage() {
       });
     await put("donate_url", donateUrl);
     await put("donate_text", donateText);
+    await put("donate_enabled", donateOn ? "true" : "false");
     await put("bmacWebhookSecret", bmacSecret);
     alert("Support button saved!");
   };
@@ -739,6 +743,26 @@ export default function AdminPage() {
         <section className="card" id="section-support-settings">
           <h2>Support Button</h2>
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem" }}>
+              <span id="support-enabled-label">Show support button</span>
+              <button
+                id="toggle-support-enabled"
+                role="switch"
+                aria-checked={donateOn}
+                aria-labelledby="support-enabled-label"
+                onClick={() => setDonateOn(o => !o)}
+                style={{
+                  flexShrink: 0, width: "48px", height: "27px", borderRadius: "999px", border: "none", cursor: "pointer",
+                  backgroundColor: donateOn ? "var(--color-accent)" : "rgba(255,255,255,0.18)",
+                  position: "relative", transition: "background-color 0.2s ease", padding: 0,
+                }}
+              >
+                <span style={{
+                  position: "absolute", top: "2px", left: donateOn ? "23px" : "2px", width: "23px", height: "23px",
+                  borderRadius: "50%", backgroundColor: "#fff", transition: "left 0.2s ease",
+                }} />
+              </button>
+            </div>
             <div>
               <label htmlFor="input-support-url" style={{ display: "block", marginBottom: "0.5rem" }}>Support Button URL{envTag('donate_url')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Where the tip button sends listeners.</div>
