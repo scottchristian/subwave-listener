@@ -73,11 +73,16 @@ in both `causewayfm` and `radio.ghostmaster.online` blocks. Counts sockets so sp
 
 ### Our repo (this branch)
 
-1. `streamMode` setting (`relay` default): `Setting` key + Station Identity? No — its own small card or inside Server card ("Direct (1:1)" toggle with the upload-cost + password-visibility warnings inline).
-2. Player: `audio.src = direct ? ${publicMaster}/stream.mp3?auth=${stationPassword-from-settings-endpoint} : /api/stream?…`. Station password needs a client-readable endpoint — extend `/api/settings` (approved-only; they could already see it in relay traffic? No — relay keeps it server-side. Direct mode inherently discloses it to approved listeners: document, accept).
+1. `streamMode` setting (`relay` default): dedicated **Stream Mode card** in Admin — mode toggle with the upload-cost + password-visibility warnings inline, plus current mode and a live per-path breakdown (relay sockets vs direct listeners).
+2. Player: `audio.src = direct ? ${publicMaster}/stream.mp3?auth=${stationPassword-from-settings-endpoint} : /api/stream?…`. Station password needs a client-readable endpoint — extend `/api/settings` (approved-only; direct mode inherently discloses it to approved listeners: stated on the card).
 3. Switching modes mid-listen: stop + replay (same as Stop/Play).
 4. Keep relay warm: on-demand relay stays configured; direct listeners bypass it.
-5. Docs: this file + `docs/settings.md` + README architecture paragraph.
+5. Docs (part of the definition of done, not an afterthought):
+   - `docs/listener-modes.md` (this file): architecture, trade-offs, verification.
+   - `docs/settings.md`: per-field explanation of the Stream Mode card.
+   - README architecture paragraph: one-relay-fans-out vs direct lines.
+   - Admin UI carries the warnings inline (upload cost, password visibility),
+     so the docs are backup, not the only copy.
 
 ### Explicitly NOT doing
 
@@ -102,8 +107,19 @@ in both `causewayfm` and `radio.ghostmaster.online` blocks. Counts sockets so sp
 3. Flip direct mode on a quiet hour; watch upload on Proxmox + Safari behavior.
 4. Rollback: toggle back to relay (instant, no deploy); host `.env` revert + recreate if needed.
 
-## 7. Open questions for the operator
+## 7. Open questions for the operator — ANSWERED by direct login (Sep 2026)
 
-- Confirm current Proxmox `ICECAST_ADMIN_URL` value (predict: unset/default → local master).
-- Confirm the wrong IP currently on Admin → Listeners (predict: `172.16.0.1` = Caddy peer → that exact value goes in `ICECAST_TRUSTED_PROXY_IPS`).
-- Relay admin password: pin static now, or accept re-sync after rotations?
+- ~~Confirm current Proxmox `ICECAST_ADMIN_URL` value~~ — not directly readable
+  over HTTP, but behavior says it all: backend reads **0 while a phone plays**,
+  and the connections endpoint works (200, reachable Icecast). The operator
+  checklist below still confirms which Icecast on their side.
+- ~~Confirm the wrong IP currently on Admin → Listeners~~ — answered
+  structurally instead: `GET /api/listeners/connections` (admin creds) returns
+  `trustedProxies: {known:false, count:0}` — **nothing is trusted** on the
+  broadcast Icecast today. So even direct-mode listeners would currently show
+  the Caddy peer address, and `ICECAST_TRUSTED_PROXY_IPS` is confirmed
+  unset/empty. Setting it is required, not optional.
+- Bonus finding: `DATABASE_URL` must be exported for ANY local Prisma CLI run
+  (`export $(grep ^DATABASE_URL .env.local | xargs)`) — the CLI reads `.env`,
+  never `.env.local`. The deploy script already does this; ad-hoc commands
+  kept tripping on it during this investigation.
