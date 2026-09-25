@@ -2,6 +2,21 @@
 
 Listener-facing web player for a [Subwave](https://github.com/perminder-klair/subwave) internet radio station: approvals-gated listening, live now-playing with delay-synced UI, song requests, likes with platform links, admin dashboard (users, stats, server, push), and PWA install support.
 
+## Why this exists
+
+Subwave broadcasts **one** stream from wherever it runs (often a home server
+with thin upload). This app runs on a cheap VPS next to your listeners and:
+
+- **Multiplies that one stream.** A co-hosted Icecast relay holds a single
+  connection back to Subwave and fans it out to unlimited listeners on the
+  VPS's bandwidth — Subwave still only ever uploads once.
+- **Gates who listens.** Google sign-in plus per-user approval: nobody hears a
+  second of audio until an admin lets them in. Revoke or remove accounts any
+  time.
+- **Stays yours.** Station name, branding, backend address and every secret
+  configure from env + the admin dashboard — fork it, rebrand it, run as many
+  of them as you like.
+
 ## Setup (new station)
 
 1. `npm install`
@@ -29,6 +44,7 @@ Everything else configures itself at runtime:
 
 - Every interactive element gets an `id` (operators direct agents at them).
 - Never commit `.env.local`, `data/`, or any `*.db` — see `.gitignore`.
+- Settings/credentials how-to lives in [docs/settings.md](docs/settings.md).
 
 ## License
 

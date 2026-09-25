@@ -441,6 +441,7 @@ export default function AdminPage() {
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
               <label htmlFor="input-google-id" style={{ display: "block", marginBottom: "0.5rem" }}>Google Client ID</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>OAuth app id — who this site is to Google. See setup guide.</div>
               <input
                 id="input-google-id"
                 type="text"
@@ -453,6 +454,7 @@ export default function AdminPage() {
             </div>
             <div>
               <label htmlFor="input-google-secret" style={{ display: "block", marginBottom: "0.5rem" }}>Google Client Secret</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>OAuth app secret. Never share; wrong values break all logins.</div>
               <input
                 id="input-google-secret"
                 type="password"
@@ -465,6 +467,7 @@ export default function AdminPage() {
             </div>
             <div>
               <label htmlFor="input-admin-email" style={{ display: "block", marginBottom: "0.5rem" }}>Admin Email</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Sign-ins matching this address auto-approve as admin. Does not demote the old one.</div>
               <input
                 id="input-admin-email"
                 type="email"
@@ -491,34 +494,42 @@ export default function AdminPage() {
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
               <label htmlFor="input-id-name" style={{ display: "block", marginBottom: "0.5rem" }}>Station Name</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Site title, PWA name, push sender, lock-screen label.</div>
               <input id="input-id-name" type="text" value={idName} onChange={(e) => setIdName(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
             </div>
             <div>
               <label htmlFor="input-id-tagline" style={{ display: "block", marginBottom: "0.5rem" }}>Tagline</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Short line under the logo.</div>
               <input id="input-id-tagline" type="text" value={idTagline} onChange={(e) => setIdTagline(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
             </div>
             <div>
               <label htmlFor="input-id-description" style={{ display: "block", marginBottom: "0.5rem" }}>Short Description</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Search/share metadata and PWA description.</div>
               <input id="input-id-description" type="text" value={idDescription} onChange={(e) => setIdDescription(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
             </div>
             <div>
               <label htmlFor="input-id-about" style={{ display: "block", marginBottom: "0.5rem" }}>About (sign-in card)</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Paragraph guests read before signing in.</div>
               <textarea id="input-id-about" value={idAbout} onChange={(e) => setIdAbout(e.target.value)} className="input-field" rows={3} style={{ width: "100%", maxWidth: "400px", resize: "vertical", fontFamily: "inherit" }} />
             </div>
             <div>
               <label htmlFor="input-id-logo" style={{ display: "block", marginBottom: "0.5rem" }}>Logo Path (file in public/)</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Image file served from public/ — replace the file to rebrand.</div>
               <input id="input-id-logo" type="text" value={idLogo} onChange={(e) => setIdLogo(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
             </div>
             <div>
               <label htmlFor="input-id-backend" style={{ display: "block", marginBottom: "0.5rem" }}>Public Backend URL</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Subwave API the browser calls for now-playing/covers. Must be public, not LAN.</div>
               <input id="input-id-backend" type="text" value={idBackendUrl} onChange={(e) => setIdBackendUrl(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
             </div>
             <div>
               <label htmlFor="input-id-donate" style={{ display: "block", marginBottom: "0.5rem" }}>Fallback Donate URL</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Support button link until the Support card saves one.</div>
               <input id="input-id-donate" type="text" value={idDonateUrl} onChange={(e) => setIdDonateUrl(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
             </div>
             <div>
               <label htmlFor="input-id-nextauth" style={{ display: "block", marginBottom: "0.5rem" }}>App URL (must match Google console)</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>This site origin — OAuth callbacks fail if it differs from Google console.</div>
               <input id="input-id-nextauth" type="text" value={idNextauthUrl} onChange={(e) => setIdNextauthUrl(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
             </div>
             <button id="btn-save-identity" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveIdentitySettings} disabled={idBusy}>
@@ -544,14 +555,17 @@ export default function AdminPage() {
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
               <label htmlFor="input-vapid-public" style={{ display: "block", marginBottom: "0.5rem" }}>VAPID Public Key</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Identifies this server to push services. Generate once, keep.</div>
               <input id="input-vapid-public" type="text" value={vapidPublic} onChange={(e) => setVapidPublic(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="off" />
             </div>
             <div>
               <label htmlFor="input-vapid-private" style={{ display: "block", marginBottom: "0.5rem" }}>VAPID Private Key</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Signs pushes. Rotating orphans devices until they re-subscribe.</div>
               <input id="input-vapid-private" type="password" value={vapidPrivate} onChange={(e) => setVapidPrivate(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="new-password" />
             </div>
             <div>
               <label htmlFor="input-vapid-subject" style={{ display: "block", marginBottom: "0.5rem" }}>VAPID Subject (mailto)</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Contact push services show on abuse complaints.</div>
               <input id="input-vapid-subject" type="text" value={vapidSubject} onChange={(e) => setVapidSubject(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="off" />
             </div>
             <button id="btn-save-vapid" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveVapidSettings}>
@@ -569,10 +583,12 @@ export default function AdminPage() {
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
               <label htmlFor="input-spotify-id" style={{ display: "block", marginBottom: "0.5rem" }}>Spotify Client ID</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Exact track links. Apple needs no keys. See setup guide.</div>
               <input id="input-spotify-id" type="text" value={spotifyId} onChange={(e) => setSpotifyId(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="off" />
             </div>
             <div>
               <label htmlFor="input-spotify-secret" style={{ display: "block", marginBottom: "0.5rem" }}>Spotify Client Secret</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Pairs with the client ID for Spotify API auth.</div>
               <input id="input-spotify-secret" type="password" value={spotifySecret} onChange={(e) => setSpotifySecret(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="new-password" />
             </div>
             <button id="btn-save-music" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveMusicSettings}>
@@ -607,6 +623,7 @@ export default function AdminPage() {
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
               <label htmlFor="input-support-url" style={{ display: "block", marginBottom: "0.5rem" }}>Support Button URL</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Where the tip button sends listeners.</div>
               <input
                 id="input-support-url"
                 type="text"
@@ -618,6 +635,7 @@ export default function AdminPage() {
             </div>
             <div>
               <label htmlFor="input-support-text" style={{ display: "block", marginBottom: "0.5rem" }}>Support Button Text</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Label on the tip button.</div>
               <input
                 id="input-support-text"
                 type="text"
@@ -629,6 +647,7 @@ export default function AdminPage() {
             </div>
             <div>
               <label htmlFor="input-bmac-secret" style={{ display: "block", marginBottom: "0.5rem" }}>Buy Me A Coffee Webhook Secret</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>HMAC secret verifying donation webhooks are really from BMAC.</div>
               <input
                 id="input-bmac-secret"
                 type="password"
@@ -654,6 +673,7 @@ export default function AdminPage() {
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
               <label htmlFor="input-subwave-url" style={{ display: "block", marginBottom: "0.5rem" }}>Server Address (API base URL — /api added if missing)</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Subwave controller. All requests, skip, block and sync calls go here.</div>
               <input
                 id="input-subwave-url"
                 type="text"
@@ -666,6 +686,7 @@ export default function AdminPage() {
             </div>
             <div>
               <label htmlFor="input-subwave-stream" style={{ display: "block", marginBottom: "0.5rem" }}>Stream Relay URL (what listeners play)</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Local Icecast relay (1-to-many). Never the backend directly.</div>
               <input
                 id="input-subwave-stream"
                 type="text"
@@ -678,6 +699,7 @@ export default function AdminPage() {
             </div>
             <div>
               <label htmlFor="input-subwave-user" style={{ display: "block", marginBottom: "0.5rem" }}>Username (Sub/Wave ADMIN_USER)</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Backend admin user — powers skip and never-play forwarding.</div>
               <input
                 id="input-subwave-user"
                 type="text"
@@ -690,6 +712,7 @@ export default function AdminPage() {
             </div>
             <div>
               <label htmlFor="input-subwave-pass" style={{ display: "block", marginBottom: "0.5rem" }}>Password (Sub/Wave ADMIN_PASS)</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Backend admin password. Same use as username.</div>
               <input
                 id="input-subwave-pass"
                 type="password"
@@ -702,6 +725,7 @@ export default function AdminPage() {
             </div>
             <div>
               <label htmlFor="input-station-password" style={{ display: "block", marginBottom: "0.5rem" }}>Station Password (for stream auth)</label>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Listener password: stream proxy auth and the relay master password (synced on save).</div>
               <input
                 id="input-station-password"
                 type="password"
