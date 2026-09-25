@@ -28,6 +28,7 @@ export default function AdminPage() {
   const [subwaveAdminUser, setSubwaveAdminUser] = useState("");
   const [subwaveAdminPass, setSubwaveAdminPass] = useState("");
   const [serverMsg, setServerMsg] = useState("");
+  const [serverBusy, setServerBusy] = useState(false);
   const [googleClientId, setGoogleClientId] = useState("");
   const [googleClientSecret, setGoogleClientSecret] = useState("");
   const [adminEmail, setAdminEmail] = useState("");
@@ -152,6 +153,26 @@ export default function AdminPage() {
     alert("Support button saved!");
   };
 
+  const testServer = async () => {
+    setServerBusy(true);
+    setServerMsg("Contacting backend… (save first — the test reads saved values)");
+    try {
+      const res = await fetch("/api/admin/server/test", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.ok) {
+        const bits = [`On air: ${data.track}`];
+        if (typeof data.listeners === "number") bits.push(`${data.listeners} listening`);
+        if (data.warning) bits.push(data.warning);
+        setServerMsg(`Working — ${bits.join(" · ")}.`);
+      } else {
+        setServerMsg(`Failed: ${data.error || "unknown error"}`);
+      }
+    } catch {
+      setServerMsg("Failed: no response.");
+    } finally {
+      setServerBusy(false);
+    }
+  };
   const saveServerSettings = async () => {
     setServerMsg("");
     const put = (key: string, value: string) =>
@@ -880,6 +901,9 @@ export default function AdminPage() {
             </div>
             <button id="btn-save-server" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveServerSettings}>
               Save
+            </button>
+            <button id="btn-test-server" className="primary-btn" style={{ width: "150px", padding: "0.5rem", background: "rgba(255,255,255,0.1)", color: "#fff" }} onClick={testServer} disabled={serverBusy}>
+              {serverBusy ? "Testing…" : "Test"}
             </button>
             {serverMsg && <div id="server-sync-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{serverMsg}</div>}
           </div>
