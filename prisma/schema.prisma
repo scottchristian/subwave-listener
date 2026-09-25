@@ -51,6 +51,7 @@ model User {
   streamSessions StreamSession[]
   songLikes      SongLike[]
   pushSubscriptions PushSubscription[]
+  presenceHeartbeat PresenceHeartbeat?
 }
 
 model VerificationToken {
@@ -124,4 +125,10 @@ model PushSubscription {
   auth      String
   createdAt DateTime @default(now())
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model PresenceHeartbeat {
+  userId   String   @id
+  lastSeen DateTime @default(now())
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }

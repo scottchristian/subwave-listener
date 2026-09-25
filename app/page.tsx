@@ -137,19 +137,20 @@ export default function Home() {
   const [nickLoaded, setNickLoaded] = useState(false);
 
   useEffect(() => {
-    if (!userMenuOpen || nickLoaded) return;
+    if (!userMenuOpen) return;
     fetch("/api/me")
       .then(r => r.json())
       .then(d => {
         if (typeof d.nickname === "string" && d.nickname) {
           setMyNickname(d.nickname);
           setNickDraft(d.nickname);
+        } else {
+          setNickDraft("");
         }
         if (typeof d.hideLikeName === "boolean") setMenuHideName(d.hideLikeName);
-        setNickLoaded(true);
       })
-      .catch(() => setNickLoaded(true));
-  }, [userMenuOpen, nickLoaded]);
+      .catch(() => {});
+  }, [userMenuOpen]);
 
   const [menuHideName, setMenuHideName] = useState(false);
 

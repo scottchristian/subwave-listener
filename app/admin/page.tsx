@@ -560,12 +560,16 @@ export default function AdminPage() {
           <h2>Now Signed In ({signedInUsers.length})</h2>
           <div style={{ marginTop: "1rem" }}>
             {signedInUsers.length === 0 && <p className="about-text">Nobody signed in right now.</p>}
-            {signedInUsers.map((u: any) => (
+            {signedInUsers.map((u: any) => {
+              const agoSec = u.lastSeen ? Math.max(Math.round((Date.now() - new Date(u.lastSeen).getTime()) / 1000), 0) : null;
+              const ago = agoSec === null ? "" : agoSec < 60 ? `active ${agoSec}s ago` : `active ${Math.floor(agoSec / 60)}m ago`;
+              return (
               <div key={u.userId} style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap", padding: "0.75rem 1rem", borderBottom: "1px solid var(--color-border)" }}>
-                <div><strong>{u.name}</strong></div>
+                <div><strong>{u.name}</strong> <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>{ago}</span></div>
                 <div style={{ fontSize: "0.85rem", color: "var(--color-muted)" }}>{u.email}</div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </section>
 
