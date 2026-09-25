@@ -12,6 +12,12 @@ export default function AdminPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [stats, setStats] = useState<any[]>([]);
   const [nickDrafts, setNickDrafts] = useState<Record<string, string>>({});
+  // Where each settings field's value came from (db = saved here, env =
+  // server file). Blank DB fields prefill from env so set values never look missing.
+  const [envSrc, setEnvSrc] = useState<Record<string, string>>({});
+  const envTag = (k: string) => envSrc[k] === "env" ? (
+    <span style={{ fontWeight: 400, fontSize: "0.8rem", color: "var(--color-muted)" }}> · server env</span>
+  ) : null;
   const [donations, setDonations] = useState<any[]>([]);
   const [donateUrl, setDonateUrl] = useState(STATION.donateUrl);
   const [donateText, setDonateText] = useState("Send a tip to keep the station alive ☕");
@@ -90,35 +96,37 @@ export default function AdminPage() {
       if (dRes.ok) setDonations(await dRes.json());
       if (setRes.ok) {
         const settings = await setRes.json();
-        const dUrl = settings.find((s: any) => s.key === "donate_url");
-        if (dUrl) setDonateUrl(dUrl.value);
-        const dText = settings.find((s: any) => s.key === "donate_text");
-        if (dText) setDonateText(dText.value);
-        const sPass = settings.find((s: any) => s.key === "stationPassword");
-        if (sPass) setStationPassword(sPass.value);
-        const apiUrl = settings.find((s: any) => s.key === "subwaveApiUrl");
-        if (apiUrl) setSubwaveApiUrl(apiUrl.value);
-        const adminUser = settings.find((s: any) => s.key === "subwaveAdminUser");
-        if (adminUser) setSubwaveAdminUser(adminUser.value);
-        const adminPass = settings.find((s: any) => s.key === "subwaveAdminPass");
-        if (adminPass) setSubwaveAdminPass(adminPass.value);
-        const gId = settings.find((s: any) => s.key === "googleClientId");
-        if (gId) setGoogleClientId(gId.value);
-        const gSecret = settings.find((s: any) => s.key === "googleClientSecret");
-        if (gSecret) setGoogleClientSecret(gSecret.value);
-        const aEmail = settings.find((s: any) => s.key === "adminEmail");
-        if (aEmail) setAdminEmail(aEmail.value);
-        const dbl = (k: string, set: (v: string) => void) => {
-          const hit = settings.find((s: any) => s.key === k);
-          if (hit) set(hit.value);
+        const eff: Record<string, { value: string; source: string }> = await fetch("/api/admin/config/effective")
+          .then(r => r.json()).catch(() => ({}));
+        const src: Record<string, string> = {};
+        const fill = (dbKey: string, set: (v: string) => void) => {
+          const dbHit = settings.find((s: any) => s.key === dbKey);
+          const e = eff[dbKey];
+          if (dbHit) {
+            set(dbHit.value);
+            src[dbKey] = "db";
+          } else if (e?.value) {
+            set(e.value);
+            src[dbKey] = "env";
+          }
         };
-        dbl("subwaveStreamUrl", setSubwaveStreamUrl);
-        dbl("bmacWebhookSecret", setBmacSecret);
-        dbl("spotifyClientId", setSpotifyId);
-        dbl("spotifyClientSecret", setSpotifySecret);
-        dbl("vapidPublicKey", setVapidPublic);
-        dbl("vapidPrivateKey", setVapidPrivate);
-        dbl("vapidSubject", setVapidSubject);
+        fill("donate_url", setDonateUrl);
+        fill("donate_text", setDonateText);
+        fill("stationPassword", setStationPassword);
+        fill("subwaveApiUrl", setSubwaveApiUrl);
+        fill("subwaveStreamUrl", setSubwaveStreamUrl);
+        fill("subwaveAdminUser", setSubwaveAdminUser);
+        fill("subwaveAdminPass", setSubwaveAdminPass);
+        fill("bmacWebhookSecret", setBmacSecret);
+        fill("googleClientId", setGoogleClientId);
+        fill("googleClientSecret", setGoogleClientSecret);
+        fill("adminEmail", setAdminEmail);
+        fill("vapidPublicKey", setVapidPublic);
+        fill("vapidPrivateKey", setVapidPrivate);
+        fill("vapidSubject", setVapidSubject);
+        fill("spotifyClientId", setSpotifyId);
+        fill("spotifyClientSecret", setSpotifySecret);
+        setEnvSrc(src);
       }
     } catch (e) {
       console.error(e);
@@ -384,81 +392,74 @@ export default function AdminPage() {
 
   return (
     <div className="container">
-      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3rem" }}>
-        <h1 className="logo-text">Admin Dashboard</h1>
+      <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3rem", flexWrap: "wrap", gap: "1rem" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+          <img id="logo-img-admin" src={STATION.logo} alt={STATION.name} style={{ height: "48px", width: "auto", objectFit: "contain", filter: "drop-shadow(0px 4px 12px rgba(0,0,0,0.6))" }} />
+          <h1 className="logo-text" style={{ margin: 0 }}>Admin Dashboard</h1>
+        </div>
         <a id="btn-back-to-station" href="/" className="primary-btn" style={{ padding: "0.5rem 1rem", fontSize: "0.875rem", width: "auto" }}>Back to Station</a>
       </header>
 
       <div style={{ display: "flex", flexDirection: "column", gap: "3rem" }}>
-        {/* Users */}
+        {/* Listeners — one roster: access, nicknames, listening, likes */}
         <section className="card" id="section-users">
-          <h2>Users</h2>
-          <div style={{ marginTop: "1rem" }}>
-            {users.length === 0 && <p className="about-text">No users yet.</p>}
-            {users.map(user => (
-              <div key={user.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem", flexWrap: "wrap", padding: "1rem", borderBottom: "1px solid var(--color-border)" }}>
-                <div>
-                  <strong>{user.name}</strong> ({user.email})
-                  <span style={{ marginLeft: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)" }}>
-                    {user.isAdmin ? "admin" : user.isApproved ? "approved" : "pending"}
-                  </span>
-                </div>
-                <div style={{ display: "flex", gap: "0.5rem" }}>
-                  {!user.isApproved && (
-                    <button id={`btn-approve-${user.id}`} className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem" }} onClick={() => approveUser(user.id)}>
-                      Approve
-                    </button>
-                  )}
-                  {user.isApproved && (
-                    <button id={`btn-revoke-${user.id}`} className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem", background: "rgba(255,255,255,0.1)", color: "#fff" }} onClick={() => revokeUser(user.id, user.name)}>
-                      Revoke
-                    </button>
-                  )}
-                  <button id={`btn-remove-${user.id}`} className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem", background: "#ef4444", color: "#fff" }} onClick={() => removeUser(user.id, user.name)}>
-                    Remove
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </section>
-
-        {/* User Stats */}
-        <section className="card" id="section-user-stats">
-          <h2>User Stats</h2>
+          <h2>Listeners</h2>
           <p className="about-text" style={{ marginTop: "0.5rem", fontSize: "0.875rem" }}>
-            Time listened per user, rolling windows. Overlapping plays merge (each press logs ~2 rows); live sessions count while open, abandoned rows count 0.
+            Everyone with an account: access, nickname, time listened, likes.
           </p>
           <div style={{ marginTop: "1rem" }}>
-            {stats.length === 0 && <p className="about-text">No listening stats recorded.</p>}
-            {stats.map((s: any) => (
-              <div key={s.userId} style={{ padding: "1rem", borderBottom: "1px solid var(--color-border)" }}>
-                <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap" }}>
+            {users.length === 0 && <p className="about-text">No users yet.</p>}
+            {users.map(user => {
+              const st = stats.find((s: any) => s.userId === user.id);
+              return (
+              <div key={user.id} style={{ padding: "1rem", borderBottom: "1px solid var(--color-border)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
                   <div>
-                    <strong>{s.user?.name}</strong> ({s.user?.email})
+                    <strong>{user.name}</strong> ({user.email})
+                    <span style={{ marginLeft: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                      {user.isAdmin ? "admin" : user.isApproved ? "approved" : "pending"}
+                    </span>
                   </div>
+                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                    {!user.isApproved && (
+                      <button id={`btn-approve-${user.id}`} className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem" }} onClick={() => approveUser(user.id)}>
+                        Approve
+                      </button>
+                    )}
+                    {user.isApproved && (
+                      <button id={`btn-revoke-${user.id}`} className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem", background: "rgba(255,255,255,0.1)", color: "#fff" }} onClick={() => revokeUser(user.id, user.name)}>
+                        Revoke
+                      </button>
+                    )}
+                    <button id={`btn-remove-${user.id}`} className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem", background: "#ef4444", color: "#fff" }} onClick={() => removeUser(user.id, user.name)}>
+                      Remove
+                    </button>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: "0.75rem", alignItems: "center", flexWrap: "wrap", marginTop: "0.75rem" }}>
                   <input
-                    id={`input-nickname-${s.userId}`}
+                    id={`input-nickname-${user.id}`}
                     type="text"
-                    value={nickDrafts[s.userId] ?? s.user?.nickname ?? ""}
-                    onChange={(e) => setNickDrafts(d => ({ ...d, [s.userId]: e.target.value }))}
+                    value={nickDrafts[user.id] ?? st?.user?.nickname ?? ""}
+                    onChange={(e) => setNickDrafts(d => ({ ...d, [user.id]: e.target.value }))}
                     placeholder="Nickname (blank clears)"
                     className="input-field"
                     style={{ width: "220px", marginBottom: 0, padding: "0.5rem" }}
                   />
-                  <button id={`btn-save-nickname-${s.userId}`} className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem", fontSize: "0.875rem" }} onClick={() => saveNickname(s.userId)}>
+                  <button id={`btn-save-nickname-${user.id}`} className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem", fontSize: "0.875rem" }} onClick={() => saveNickname(user.id)}>
                     Save name
                   </button>
                 </div>
-                <div style={{ display: "flex", gap: "1.25rem", flexWrap: "wrap", marginTop: "0.5rem", fontSize: "0.95rem" }}>
-                  <span><span style={{ color: "var(--color-muted)" }}>24h: </span>{fmtDur(s.day?.sec || 0)}</span>
-                  <span><span style={{ color: "var(--color-muted)" }}>7d: </span>{fmtDur(s.week?.sec || 0)}</span>
-                  <span><span style={{ color: "var(--color-muted)" }}>30d: </span>{fmtDur(s.month?.sec || 0)}</span>
-                  <span><span style={{ color: "var(--color-muted)" }}>All-time: </span>{fmtDur(s.all?.sec || 0)} ({s.all?.n || 0} sessions)</span>
-                  <span><span style={{ color: "var(--color-muted)" }}>Likes: </span>{s.likes || 0} songs</span>
+                <div style={{ display: "flex", gap: "1.25rem", flexWrap: "wrap", marginTop: "0.5rem", fontSize: "0.9rem", color: "var(--color-muted)" }}>
+                  <span>24h: <span style={{ color: "var(--color-text)" }}>{fmtDur(st?.day?.sec || 0)}</span></span>
+                  <span>7d: <span style={{ color: "var(--color-text)" }}>{fmtDur(st?.week?.sec || 0)}</span></span>
+                  <span>30d: <span style={{ color: "var(--color-text)" }}>{fmtDur(st?.month?.sec || 0)}</span></span>
+                  <span>All-time: <span style={{ color: "var(--color-text)" }}>{fmtDur(st?.all?.sec || 0)} ({st?.all?.n || 0} plays)</span></span>
+                  <span>Likes: <span style={{ color: "var(--color-text)" }}>{st?.likes || 0}</span></span>
                 </div>
               </div>
-            ))}
+              );
+            })}
           </div>
         </section>
 
@@ -470,7 +471,7 @@ export default function AdminPage() {
           </p>
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
-              <label htmlFor="input-google-id" style={{ display: "block", marginBottom: "0.5rem" }}>Google Client ID</label>
+              <label htmlFor="input-google-id" style={{ display: "block", marginBottom: "0.5rem" }}>Google Client ID{envTag('googleClientId')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>OAuth app id — who this site is to Google. See setup guide.</div>
               <input
                 id="input-google-id"
@@ -483,7 +484,7 @@ export default function AdminPage() {
               />
             </div>
             <div>
-              <label htmlFor="input-google-secret" style={{ display: "block", marginBottom: "0.5rem" }}>Google Client Secret</label>
+              <label htmlFor="input-google-secret" style={{ display: "block", marginBottom: "0.5rem" }}>Google Client Secret{envTag('googleClientSecret')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>OAuth app secret. Never share; wrong values break all logins.</div>
               <input
                 id="input-google-secret"
@@ -496,7 +497,7 @@ export default function AdminPage() {
               />
             </div>
             <div>
-              <label htmlFor="input-admin-email" style={{ display: "block", marginBottom: "0.5rem" }}>Admin Email</label>
+              <label htmlFor="input-admin-email" style={{ display: "block", marginBottom: "0.5rem" }}>Admin Email{envTag('adminEmail')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Sign-ins matching this address auto-approve as admin. Does not demote the old one.</div>
               <input
                 id="input-admin-email"
@@ -622,17 +623,17 @@ export default function AdminPage() {
           {pushMsg && <div id="push-status-msg" style={{ marginTop: "0.75rem", color: "var(--color-accent)", fontSize: "0.875rem" }}>{pushMsg}</div>}
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
-              <label htmlFor="input-vapid-public" style={{ display: "block", marginBottom: "0.5rem" }}>VAPID Public Key</label>
+              <label htmlFor="input-vapid-public" style={{ display: "block", marginBottom: "0.5rem" }}>VAPID Public Key{envTag('vapidPublicKey')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Identifies this server to push services. Generate once, keep.</div>
               <input id="input-vapid-public" type="text" value={vapidPublic} onChange={(e) => setVapidPublic(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="off" />
             </div>
             <div>
-              <label htmlFor="input-vapid-private" style={{ display: "block", marginBottom: "0.5rem" }}>VAPID Private Key</label>
+              <label htmlFor="input-vapid-private" style={{ display: "block", marginBottom: "0.5rem" }}>VAPID Private Key{envTag('vapidPrivateKey')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Signs pushes. Rotating orphans devices until they re-subscribe.</div>
               <input id="input-vapid-private" type="password" value={vapidPrivate} onChange={(e) => setVapidPrivate(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="new-password" />
             </div>
             <div>
-              <label htmlFor="input-vapid-subject" style={{ display: "block", marginBottom: "0.5rem" }}>VAPID Subject (mailto)</label>
+              <label htmlFor="input-vapid-subject" style={{ display: "block", marginBottom: "0.5rem" }}>VAPID Subject (mailto){envTag('vapidSubject')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Contact push services show on abuse complaints.</div>
               <input id="input-vapid-subject" type="text" value={vapidSubject} onChange={(e) => setVapidSubject(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="off" />
             </div>
@@ -650,12 +651,12 @@ export default function AdminPage() {
           </p>
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
-              <label htmlFor="input-spotify-id" style={{ display: "block", marginBottom: "0.5rem" }}>Spotify Client ID</label>
+              <label htmlFor="input-spotify-id" style={{ display: "block", marginBottom: "0.5rem" }}>Spotify Client ID{envTag('spotifyClientId')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Exact track links. Apple needs no keys. See setup guide.</div>
               <input id="input-spotify-id" type="text" value={spotifyId} onChange={(e) => setSpotifyId(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="off" />
             </div>
             <div>
-              <label htmlFor="input-spotify-secret" style={{ display: "block", marginBottom: "0.5rem" }}>Spotify Client Secret</label>
+              <label htmlFor="input-spotify-secret" style={{ display: "block", marginBottom: "0.5rem" }}>Spotify Client Secret{envTag('spotifyClientSecret')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Pairs with the client ID for Spotify API auth.</div>
               <input id="input-spotify-secret" type="password" value={spotifySecret} onChange={(e) => setSpotifySecret(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} autoComplete="new-password" />
             </div>
@@ -690,7 +691,7 @@ export default function AdminPage() {
           <h2>Support Button</h2>
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
-              <label htmlFor="input-support-url" style={{ display: "block", marginBottom: "0.5rem" }}>Support Button URL</label>
+              <label htmlFor="input-support-url" style={{ display: "block", marginBottom: "0.5rem" }}>Support Button URL{envTag('donate_url')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Where the tip button sends listeners.</div>
               <input
                 id="input-support-url"
@@ -702,7 +703,7 @@ export default function AdminPage() {
               />
             </div>
             <div>
-              <label htmlFor="input-support-text" style={{ display: "block", marginBottom: "0.5rem" }}>Support Button Text</label>
+              <label htmlFor="input-support-text" style={{ display: "block", marginBottom: "0.5rem" }}>Support Button Text{envTag('donate_text')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Label on the tip button.</div>
               <input
                 id="input-support-text"
@@ -714,7 +715,7 @@ export default function AdminPage() {
               />
             </div>
             <div>
-              <label htmlFor="input-bmac-secret" style={{ display: "block", marginBottom: "0.5rem" }}>Buy Me A Coffee Webhook Secret</label>
+              <label htmlFor="input-bmac-secret" style={{ display: "block", marginBottom: "0.5rem" }}>Buy Me A Coffee Webhook Secret{envTag('bmacWebhookSecret')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>HMAC secret verifying donation webhooks are really from BMAC.</div>
               <input
                 id="input-bmac-secret"
@@ -740,7 +741,7 @@ export default function AdminPage() {
           </p>
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             <div>
-              <label htmlFor="input-subwave-url" style={{ display: "block", marginBottom: "0.5rem" }}>Server Address (API base URL — /api added if missing)</label>
+              <label htmlFor="input-subwave-url" style={{ display: "block", marginBottom: "0.5rem" }}>Server Address (API base URL — /api added if missing){envTag('subwaveApiUrl')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Subwave controller. All requests, skip, block and sync calls go here.</div>
               <input
                 id="input-subwave-url"
@@ -753,7 +754,7 @@ export default function AdminPage() {
               />
             </div>
             <div>
-              <label htmlFor="input-subwave-stream" style={{ display: "block", marginBottom: "0.5rem" }}>Stream Relay URL (what listeners play)</label>
+              <label htmlFor="input-subwave-stream" style={{ display: "block", marginBottom: "0.5rem" }}>Stream Relay URL (what listeners play){envTag('subwaveStreamUrl')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Local Icecast relay (1-to-many). Never the backend directly.</div>
               <input
                 id="input-subwave-stream"
@@ -766,7 +767,7 @@ export default function AdminPage() {
               />
             </div>
             <div>
-              <label htmlFor="input-subwave-user" style={{ display: "block", marginBottom: "0.5rem" }}>Username (Sub/Wave ADMIN_USER)</label>
+              <label htmlFor="input-subwave-user" style={{ display: "block", marginBottom: "0.5rem" }}>Username (Sub/Wave ADMIN_USER){envTag('subwaveAdminUser')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Backend admin user — powers skip and never-play forwarding.</div>
               <input
                 id="input-subwave-user"
@@ -779,7 +780,7 @@ export default function AdminPage() {
               />
             </div>
             <div>
-              <label htmlFor="input-subwave-pass" style={{ display: "block", marginBottom: "0.5rem" }}>Password (Sub/Wave ADMIN_PASS)</label>
+              <label htmlFor="input-subwave-pass" style={{ display: "block", marginBottom: "0.5rem" }}>Password (Sub/Wave ADMIN_PASS){envTag('subwaveAdminPass')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Backend admin password. Same use as username.</div>
               <input
                 id="input-subwave-pass"
@@ -792,7 +793,7 @@ export default function AdminPage() {
               />
             </div>
             <div>
-              <label htmlFor="input-station-password" style={{ display: "block", marginBottom: "0.5rem" }}>Station Password (for stream auth)</label>
+              <label htmlFor="input-station-password" style={{ display: "block", marginBottom: "0.5rem" }}>Station Password (for stream auth){envTag('stationPassword')}</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Listener password: stream proxy auth and the relay master password (synced on save).</div>
               <input
                 id="input-station-password"
