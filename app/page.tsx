@@ -484,7 +484,11 @@ export default function Home() {
       if (target && tourStep >= 1 && tourStep <= 8) {
         try { target.scrollIntoView({ block: 'nearest' }); } catch {}
         placeSpot();
-        const rect = target.getBoundingClientRect();
+        // Menu items anchor to the whole open menu: the tooltip needs the
+        // menu's full footprint (below it), not the row's — otherwise the
+        // card lands on top of the menu it describes.
+        const menuEl = (target.closest && (target.closest('#user-menu') as HTMLElement | null)) || null;
+        const rect = (menuEl || target).getBoundingClientRect();
         let top = rect.bottom + 20;
         let left = rect.left + (rect.width / 2);
         let transform = 'translateX(-50%)';
