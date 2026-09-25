@@ -49,8 +49,8 @@ Consequences:
 
 ```bash
 # Count the relay instead of the empty local master:
-ICECAST_ADMIN_URL=http://ghostmaster.online:8000/admin/listclients
-ICECAST_STATUS_URL=http://ghostmaster.online:8000/status-json.xsl
+ICECAST_ADMIN_URL=http://100.109.147.71:8000/admin/listclients
+ICECAST_STATUS_URL=http://100.109.147.71:8000/status-json.xsl
 # Relay's admin password (VPS /etc/icecast2/icecast.xml <admin-password>).
 # Static by operator choice — auto-rotation silently breaks counting.
 ICECAST_ADMIN_PASSWORD=<vps-relay-admin-password>
@@ -60,6 +60,24 @@ ICECAST_TRUSTED_PROXY_IPS=<caddy-container-ip>
 ```
 
 Then `docker compose up -d broadcast controller` (broadcast renders icecast.xml; controller picks up admin URLs). Verify in Admin → Listeners: N rows (all `127.0.0.1` in relay mode — expected), count matches phones playing.
+
+**How the controller reaches the relay: Tailscale (or similar).** The relay
+binds `127.0.0.1:8000` (this machine's proxy) **and** the VPS Tailscale address
+(`100.109.147.71:8000`, tailnet-private) — no public exposure. So the
+controller side needs a tailnet route to the VPS:
+
+- Recommended: `tailscale up` on the Proxmox host (or container host). Then the
+  `http://100.109.147.71:8000/…` URLs above work as written.
+- Alternative without Tailscale: bind the relay publicly and scope the
+  firewall to the Proxmox source IP only
+  (`iptables -A INPUT -p tcp --dport 8000 -s <proxmox-ip> -j ACCEPT` +
+  drop the rest, persisted). This works but puts the admin surface (password
+  gated) and the public `status-json` on the open internet — do Tailscale
+  instead unless it is unavailable.
+- Either way the relay's `<admin-password>` must be copied into Proxmox
+  `ICECAST_ADMIN_PASSWORD` verbatim; a rotated/typo'd password fails the same
+  silent way (controller falls back, counts go wrong, nothing logs loudly —
+  check Admin → Listeners first whenever counts look off).
 
 ### VPS NGINX hardening (same deploy)
 
