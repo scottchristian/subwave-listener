@@ -1230,15 +1230,19 @@ export default function Home() {
             aria-expanded={userMenuOpen}
             aria-haspopup="true"
             title="Account"
-            aria-label="Account menu"
-            style={{ width: "40px", height: "40px", borderRadius: "50%", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", cursor: "pointer", display: "inline-flex", alignItems: "center", justifyContent: "center", position: tourStep === 7 ? "relative" : "static", zIndex: tourStep === 7 ? 1000 : 1 }}
+            style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem", padding: "0.4rem 0.9rem 0.4rem 0.5rem", height: "36px", boxSizing: "border-box", borderRadius: "999px", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", transition: "background-color 0.2s ease, border-color 0.2s ease", position: tourStep === 7 ? "relative" : "static", zIndex: tourStep === 7 ? 1000 : 1 }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "rgba(255,255,255,0.10)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.backgroundColor = "var(--color-surface)"; }}
           >
-            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+            <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: "24px", height: "24px", borderRadius: "50%", background: "rgba(255,255,255,0.12)" }}>
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+            </span>
+            Account
           </button>
           {userMenuOpen && (
             <>
               <div id="user-menu-backdrop" onClick={() => setUserMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 1190 }} />
-              <div id="user-menu" role="menu" style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 1200, minWidth: "240px", backgroundColor: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "0.5rem", boxShadow: "0 12px 32px rgba(0,0,0,0.5)" }}>
+              <div id="user-menu" role="menu" className="overlay-card-enter" style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, zIndex: 1200, minWidth: "240px", backgroundColor: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "0.5rem", boxShadow: "0 12px 32px rgba(0,0,0,0.5)" }}>
                 <div style={{ padding: "0.5rem 0.75rem", fontSize: "0.85rem", color: "var(--color-muted)", borderBottom: "1px solid var(--color-border)", marginBottom: "0.25rem" }}>
                   Signed in as<br /><strong style={{ color: "var(--color-text)" }}>{myNickname || session?.user?.name || session?.user?.email}</strong>
                 </div>
