@@ -25,7 +25,6 @@ export default function AdminPage() {
   const [donateOn, setDonateOn] = useState(true);
   const [stationPassword, setStationPassword] = useState("");
   const [subwaveApiUrl, setSubwaveApiUrl] = useState("");
-  const [subwaveStreamUrl, setSubwaveStreamUrl] = useState("");
   const [subwaveAdminUser, setSubwaveAdminUser] = useState("");
   const [subwaveAdminPass, setSubwaveAdminPass] = useState("");
   const [serverMsg, setServerMsg] = useState("");
@@ -127,7 +126,6 @@ export default function AdminPage() {
         fill("donate_text", setDonateText);
         fill("stationPassword", setStationPassword);
         fill("subwaveApiUrl", setSubwaveApiUrl);
-        fill("subwaveStreamUrl", setSubwaveStreamUrl);
         fill("subwaveAdminUser", setSubwaveAdminUser);
         fill("subwaveAdminPass", setSubwaveAdminPass);
         fill("bmacWebhookSecret", setBmacSecret);
@@ -213,7 +211,6 @@ export default function AdminPage() {
         body: JSON.stringify({ key, value }),
       });
     await put("subwaveApiUrl", subwaveApiUrl);
-    await put("subwaveStreamUrl", subwaveStreamUrl);
     await put("subwaveAdminUser", subwaveAdminUser);
     await put("subwaveAdminPass", subwaveAdminPass);
     await put("stationPassword", stationPassword);
@@ -952,19 +949,6 @@ export default function AdminPage() {
                 className="input-field"
                 style={{ width: "100%", maxWidth: "400px" }}
                 placeholder="https://radio.example.com/api"
-              />
-            </div>
-            <div>
-              <label htmlFor="input-subwave-stream" style={{ display: "block", marginBottom: "0.5rem" }}>Stream Relay URL (what listeners play){envTag('subwaveStreamUrl')}</label>
-              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Local Icecast relay (1-to-many). Never the backend directly.</div>
-              <input
-                id="input-subwave-stream"
-                type="text"
-                value={subwaveStreamUrl}
-                onChange={(e) => setSubwaveStreamUrl(e.target.value)}
-                className="input-field"
-                style={{ width: "100%", maxWidth: "400px" }}
-                placeholder="http://127.0.0.1:8000/stream.mp3"
               />
             </div>
             <div>
