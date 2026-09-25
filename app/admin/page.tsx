@@ -44,7 +44,6 @@ export default function AdminPage() {
   const [idTagline, setIdTagline] = useState("");
   const [idDescription, setIdDescription] = useState("");
   const [idAbout, setIdAbout] = useState("");
-  const [idLogo, setIdLogo] = useState("");
   const [idBackendUrl, setIdBackendUrl] = useState("");
   const [idDonateUrl, setIdDonateUrl] = useState("");
   const [idNextauthUrl, setIdNextauthUrl] = useState("");
@@ -52,6 +51,8 @@ export default function AdminPage() {
   const [idBusy, setIdBusy] = useState(false);
   const [brandMsg, setBrandMsg] = useState("");
   const [brandBusy, setBrandBusy] = useState<string | null>(null);
+  const [brandTab, setBrandTab] = useState<"logo" | "icon" | "background">("logo");
+  const [brandVersion, setBrandVersion] = useState(0);
 
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -74,7 +75,6 @@ export default function AdminPage() {
           if (d.tagline) setIdTagline(d.tagline);
           if (d.description) setIdDescription(d.description);
           if (d.about) setIdAbout(d.about);
-          if (d.logo) setIdLogo(d.logo);
           if (d.backendUrl) setIdBackendUrl(d.backendUrl);
           if (d.donateUrl) setIdDonateUrl(d.donateUrl);
           if (d.nextauthUrl) setIdNextauthUrl(d.nextauthUrl);
@@ -306,7 +306,6 @@ export default function AdminPage() {
           tagline: idTagline,
           description: idDescription,
           about: idAbout,
-          logo: idLogo,
           backendUrl: idBackendUrl,
           donateUrl: idDonateUrl,
           nextauthUrl: idNextauthUrl,
@@ -342,6 +341,7 @@ export default function AdminPage() {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         setBrandMsg(`Live now: ${(data.written || []).join(", ")}. Favicons cache hard — hard-refresh to see the tab icon.`);
+        setBrandVersion(Date.now());
         if (el) el.value = "";
       } else {
         setBrandMsg(`Upload failed: ${data.error || "unknown error"}`);
@@ -544,11 +544,6 @@ export default function AdminPage() {
               <textarea id="input-id-about" value={idAbout} onChange={(e) => setIdAbout(e.target.value)} className="input-field" rows={3} style={{ width: "100%", maxWidth: "400px", resize: "vertical", fontFamily: "inherit" }} />
             </div>
             <div>
-              <label htmlFor="input-id-logo" style={{ display: "block", marginBottom: "0.5rem" }}>Logo Path (file in public/)</label>
-              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Image file served from public/ — replace the file to rebrand.</div>
-              <input id="input-id-logo" type="text" value={idLogo} onChange={(e) => setIdLogo(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
-            </div>
-            <div>
               <label htmlFor="input-id-backend" style={{ display: "block", marginBottom: "0.5rem" }}>Public Backend URL</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Subwave API the browser calls for now-playing/covers. Must be public, not LAN.</div>
               <input id="input-id-backend" type="text" value={idBackendUrl} onChange={(e) => setIdBackendUrl(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
@@ -576,34 +571,64 @@ export default function AdminPage() {
           <p className="about-text" style={{ marginTop: "0.5rem", fontSize: "0.875rem" }}>
             Images go live instantly — no rebuild. Logo also regenerates every icon + tab favicon.
           </p>
+          <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
+            {([["logo", "Logo"], ["icon", "Icons"], ["background", "Backdrop"]] as const).map(([key, label]) => (
+              <button
+                key={key}
+                id={`tab-brand-${key}`}
+                onClick={() => setBrandTab(key)}
+                aria-selected={brandTab === key}
+                className="primary-btn"
+                style={{
+                  width: "auto", padding: "0.5rem 1.25rem", fontSize: "0.875rem",
+                  background: brandTab === key ? "var(--color-text)" : "rgba(255,255,255,0.08)",
+                  color: brandTab === key ? "var(--color-bg)" : "var(--color-text)",
+                }}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
-            <div>
-              <label htmlFor="input-brand-logo" style={{ display: "block", marginBottom: "0.5rem" }}>Logo (header, sign-in, covers fallback)</label>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
-                <input id="input-brand-logo" type="file" accept="image/*" className="input-field" style={{ maxWidth: "280px", marginBottom: 0 }} />
-                <button id="btn-upload-logo" className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem" }} onClick={() => uploadBrand("logo", "input-brand-logo")} disabled={brandBusy !== null}>
-                  {brandBusy === "logo" ? "Uploading…" : "Upload"}
-                </button>
-              </div>
-            </div>
-            <div>
-              <label htmlFor="input-brand-icon" style={{ display: "block", marginBottom: "0.5rem" }}>Icons only (tab + homescreen, keeps current logo)</label>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
-                <input id="input-brand-icon" type="file" accept="image/*" className="input-field" style={{ maxWidth: "280px", marginBottom: 0 }} />
-                <button id="btn-upload-icon" className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem" }} onClick={() => uploadBrand("icon", "input-brand-icon")} disabled={brandBusy !== null}>
-                  {brandBusy === "icon" ? "Uploading…" : "Upload"}
-                </button>
-              </div>
-            </div>
-            <div>
-              <label htmlFor="input-brand-bg" style={{ display: "block", marginBottom: "0.5rem" }}>Backdrop (behind everything)</label>
-              <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
-                <input id="input-brand-bg" type="file" accept="image/*" className="input-field" style={{ maxWidth: "280px", marginBottom: 0 }} />
-                <button id="btn-upload-bg" className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem" }} onClick={() => uploadBrand("background", "input-brand-bg")} disabled={brandBusy !== null}>
-                  {brandBusy === "background" ? "Uploading…" : "Upload"}
-                </button>
-              </div>
-            </div>
+            {brandTab === "logo" && (
+              <>
+                <img id="brand-preview-logo" src={`/official_logo.png?v=${brandVersion}`} alt="Current logo" style={{ height: "80px", width: "auto", maxWidth: "100%", objectFit: "contain", alignSelf: "flex-start", background: "rgba(0,0,0,0.25)", borderRadius: "8px", padding: "8px" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Header, sign-in, covers fallback — also rebuilds every icon.</div>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                  <input id="input-brand-logo" type="file" accept="image/*" className="input-field" style={{ maxWidth: "280px", marginBottom: 0 }} />
+                  <button id="btn-upload-logo" className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem" }} onClick={() => uploadBrand("logo", "input-brand-logo")} disabled={brandBusy !== null}>
+                    {brandBusy === "logo" ? "Uploading…" : "Upload"}
+                  </button>
+                </div>
+              </>
+            )}
+            {brandTab === "icon" && (
+              <>
+                <div style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
+                  <img id="brand-preview-icon" src={`/icons/icon-192.png?v=${brandVersion}`} alt="Current icon" style={{ width: "72px", height: "72px", borderRadius: "16px" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  <img id="brand-preview-icon-maskable" src={`/icons/icon-192-maskable.png?v=${brandVersion}`} alt="Current maskable icon" style={{ width: "72px", height: "72px", borderRadius: "50%" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                </div>
+                <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Tab + homescreen set. Keeps the current logo.</div>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                  <input id="input-brand-icon" type="file" accept="image/*" className="input-field" style={{ maxWidth: "280px", marginBottom: 0 }} />
+                  <button id="btn-upload-icon" className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem" }} onClick={() => uploadBrand("icon", "input-brand-icon")} disabled={brandBusy !== null}>
+                    {brandBusy === "icon" ? "Uploading…" : "Upload"}
+                  </button>
+                </div>
+              </>
+            )}
+            {brandTab === "background" && (
+              <>
+                <img id="brand-preview-bg" src={`/bg.jpg?v=${brandVersion}`} alt="Current backdrop" style={{ width: "100%", maxWidth: "400px", height: "140px", objectFit: "cover", borderRadius: "8px" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Scenic backdrop behind everything.</div>
+                <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
+                  <input id="input-brand-bg" type="file" accept="image/*" className="input-field" style={{ maxWidth: "280px", marginBottom: 0 }} />
+                  <button id="btn-upload-bg" className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem" }} onClick={() => uploadBrand("background", "input-brand-bg")} disabled={brandBusy !== null}>
+                    {brandBusy === "background" ? "Uploading…" : "Upload"}
+                  </button>
+                </div>
+              </>
+            )}
             {brandMsg && <div id="brand-upload-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{brandMsg}</div>}
           </div>
         </section>
