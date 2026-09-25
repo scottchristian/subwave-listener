@@ -40,6 +40,8 @@ export default function AdminPage() {
   const [bmacSecret, setBmacSecret] = useState("");
   const [spotifyId, setSpotifyId] = useState("");
   const [spotifySecret, setSpotifySecret] = useState("");
+  const [musicMsg, setMusicMsg] = useState("");
+  const [musicBusy, setMusicBusy] = useState(false);
   const [idName, setIdName] = useState("");
   const [idTagline, setIdTagline] = useState("");
   const [idDescription, setIdDescription] = useState("");
@@ -292,6 +294,24 @@ export default function AdminPage() {
     await put("spotifyClientId", spotifyId);
     await put("spotifyClientSecret", spotifySecret);
     alert("Music links saved!");
+  };
+
+  const testSpotify = async () => {
+    setMusicBusy(true);
+    setMusicMsg("Contacting Spotify… (save first — the test reads saved values)");
+    try {
+      const res = await fetch("/api/admin/music/test", { method: "POST" });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setMusicMsg(`Working — found "${data.sample}".`);
+      } else {
+        setMusicMsg(`Failed: ${data.error || "unknown error"}`);
+      }
+    } catch {
+      setMusicMsg("Failed: no response.");
+    } finally {
+      setMusicBusy(false);
+    }
   };
 
   const saveIdentitySettings = async () => {
@@ -688,6 +708,10 @@ export default function AdminPage() {
             <button id="btn-save-music" className="primary-btn" style={{ width: "150px", padding: "0.5rem" }} onClick={saveMusicSettings}>
               Save
             </button>
+            <button id="btn-test-spotify" className="primary-btn" style={{ width: "150px", padding: "0.5rem", background: "rgba(255,255,255,0.1)", color: "#fff" }} onClick={testSpotify} disabled={musicBusy}>
+              {musicBusy ? "Testing…" : "Test"}
+            </button>
+            {musicMsg && <div id="music-test-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{musicMsg}</div>}
           </div>
         </section>
 
