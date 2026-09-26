@@ -41,6 +41,9 @@ data/
 # local deploy runbook (holds hostnames, IPs, secrets — never publish)
 DEPLOY.md
 
+# local deploy script (holds hostnames, paths — never publish)
+/deploy.sh
+
 # vercel
 .vercel
 
