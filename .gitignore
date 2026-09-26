@@ -38,6 +38,9 @@ data/
 *.db
 *.db-journal
 
+# local deploy runbook (holds hostnames, IPs, secrets — never publish)
+DEPLOY.md
+
 # vercel
 .vercel
 

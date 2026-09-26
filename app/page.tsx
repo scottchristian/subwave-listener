@@ -122,6 +122,12 @@ export default function Home() {
   // Admin on-air controls (mirrors Subwave admin Never-play + Skip).
   const [adminAck, setAdminAck] = useState("");
   const [adminBusy, setAdminBusy] = useState<"skip" | "block" | null>(null);
+  // Admin manual voice DJ (mirrors Subwave POST /dj/say).
+  const [sayText, setSayText] = useState("");
+  const [sayMode, setSayMode] = useState<"raw" | "styled">("raw");
+  const [sayKind, setSayKind] = useState<"dj-speak" | "link">("dj-speak");
+  const [sayBusy, setSayBusy] = useState(false);
+  const [sayAck, setSayAck] = useState("");
   const [blockMenuOpen, setBlockMenuOpen] = useState(false);
   // Post-skip cooldown: the delayed art commit won't show the skip for
   // bufferSeconds, so hold the button (buffer + 15s) to stop double-skips.
@@ -1035,6 +1041,31 @@ export default function Home() {
     }
   };
 
+  const submitSay = async () => {
+    const text = sayText.trim();
+    if (!text || sayBusy) return;
+    setSayAck("");
+    setSayBusy(true);
+    try {
+      const res = await fetch("/api/admin/say", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text, mode: sayMode, kind: sayKind }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        setSayAck(data.spoken ? `On air: "${data.spoken}"` : "Sent to air.");
+        setSayText("");
+      } else {
+        setSayAck(data.error || "Send failed.");
+      }
+    } catch {
+      setSayAck("Failed to reach station backend.");
+    } finally {
+      setSayBusy(false);
+    }
+  };
+
   if (status === "loading") {
     return <div className="container centered-column" style={{ justifyContent: "center" }}>Loading...</div>;
   }
@@ -1704,6 +1735,43 @@ export default function Home() {
             </button>
             {reqAck && <div id="request-ack-text" style={{ marginTop: "1rem", color: "var(--color-accent)", fontSize: "0.875rem" }}>{reqAck}</div>}
           </div>
+
+          {(session?.user as any)?.isAdmin && (
+            <div id="section-dj-say" className="card" style={{ position: "static" }}>
+              <h3 id="dj-say-header" style={{ marginBottom: "1rem" }}>Manual Voice DJ</h3>
+              <textarea
+                id="input-say-text"
+                className="input-field"
+                placeholder={sayMode === "raw" ? "Exact words the DJ will speak, verbatim…" : "Instruction or topic. DJ writes it in persona…"}
+                value={sayText}
+                onChange={e => setSayText(e.target.value)}
+                maxLength={500}
+                rows={3}
+                style={{ resize: "vertical", fontFamily: "inherit" }}
+              />
+              <div id="say-controls" style={{ display: "flex", gap: "1.5rem", marginTop: "0.75rem", flexWrap: "wrap" }}>
+                <div id="say-mode-group" role="radiogroup" aria-label="Mode" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>mode</span>
+                  <button id="radio-say-raw" onClick={() => setSayMode("raw")} aria-pressed={sayMode === "raw"} className="primary-btn" style={{ width: "auto", padding: "0.4rem 0.9rem", background: sayMode === "raw" ? "var(--color-accent)" : "rgba(255,255,255,0.1)", color: "#fff" }}>Raw</button>
+                  <button id="radio-say-styled" onClick={() => setSayMode("styled")} aria-pressed={sayMode === "styled"} className="primary-btn" style={{ width: "auto", padding: "0.4rem 0.9rem", background: sayMode === "styled" ? "var(--color-accent)" : "rgba(255,255,255,0.1)", color: "#fff" }}>Styled</button>
+                </div>
+                <div id="say-duck-group" role="radiogroup" aria-label="Duck" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>duck</span>
+                  <button id="radio-say-solo" onClick={() => setSayKind("dj-speak")} aria-pressed={sayKind === "dj-speak"} className="primary-btn" style={{ width: "auto", padding: "0.4rem 0.9rem", background: sayKind === "dj-speak" ? "var(--color-accent)" : "rgba(255,255,255,0.1)", color: "#fff" }}>Solo</button>
+                  <button id="radio-say-over" onClick={() => setSayKind("link")} aria-pressed={sayKind === "link"} className="primary-btn" style={{ width: "auto", padding: "0.4rem 0.9rem", background: sayKind === "link" ? "var(--color-accent)" : "rgba(255,255,255,0.1)", color: "#fff" }}>Over</button>
+                </div>
+              </div>
+              <button
+                id="btn-send-say"
+                className="submit-btn"
+                onClick={submitSay}
+                disabled={!sayText.trim() || sayBusy}
+              >
+                {sayBusy ? "Sending..." : "Send to air →"}
+              </button>
+              {sayAck && <div id="say-status-msg" style={{ marginTop: "1rem", color: "var(--color-accent)", fontSize: "0.875rem" }}>{sayAck}</div>}
+            </div>
+          )}
         </div>
       </div>
 
