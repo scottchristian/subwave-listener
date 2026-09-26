@@ -12,6 +12,16 @@ export default function AdminPage() {
   const [users, setUsers] = useState<any[]>([]);
   const [stats, setStats] = useState<any[]>([]);
   const [signedInUsers, setSignedInUsers] = useState<any[]>([]);
+  const [streamingUsers, setStreamingUsers] = useState<any[]>([]);
+  const loadPresence = () => {
+    fetch("/api/presence")
+      .then(r => r.json())
+      .then(d => {
+        if (Array.isArray(d.users)) setSignedInUsers(d.users);
+        if (Array.isArray(d.streaming)) setStreamingUsers(d.streaming);
+      })
+      .catch(() => {});
+  };
   const [nickDrafts, setNickDrafts] = useState<Record<string, string>>({});
   // Where each settings field's value came from (db = saved here, env =
   // server file). Blank DB fields prefill from env so set values never look missing.
@@ -69,13 +79,12 @@ export default function AdminPage() {
     if (status === "authenticated" && !(session?.user as any)?.isAdmin) {
       router.push("/");
     }
-    
+
+    let presenceId: ReturnType<typeof setInterval> | null = null;
     if (status === "authenticated" && (session?.user as any)?.isAdmin) {
       fetchData();
-      fetch("/api/presence")
-        .then(r => r.json())
-        .then(d => { if (Array.isArray(d.users)) setSignedInUsers(d.users); })
-        .catch(() => {});
+      loadPresence();
+      presenceId = setInterval(loadPresence, 30000);
       fetch("/api/push/status")
         .then(r => r.json())
         .then(d => { if (typeof d.devices === "number") setPushDevices(d.devices); })
@@ -93,6 +102,7 @@ export default function AdminPage() {
         })
         .catch(() => {});
     }
+    return () => { if (presenceId) clearInterval(presenceId); };
   }, [status, session]);
 
   const fetchData = async () => {
@@ -574,6 +584,24 @@ export default function AdminPage() {
                   <span>All-time: <span style={{ color: "var(--color-text)" }}>{fmtDur(st?.all?.sec || 0)} ({st?.all?.n || 0} plays)</span></span>
                   <span>Likes: <span style={{ color: "var(--color-text)" }}>{st?.likes || 0}</span></span>
                 </div>
+              </div>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* Now Streaming */}
+        <section className="card" id="section-streaming">
+          <h2>Now Streaming ({streamingUsers.length})</h2>
+          <div style={{ marginTop: "1rem" }}>
+            {streamingUsers.length === 0 && <p className="about-text">Nobody streaming right now.</p>}
+            {streamingUsers.map((u: any) => {
+              const mins = u.since ? Math.max(Math.round((Date.now() - new Date(u.since).getTime()) / 60000), 0) : null;
+              const forStr = mins === null ? "" : mins < 1 ? "for <1m" : `for ${mins}m`;
+              return (
+              <div key={u.userId} style={{ display: "flex", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap", padding: "0.75rem 1rem", borderBottom: "1px solid var(--color-border)" }}>
+                <div><strong>{u.name}</strong> <span style={{ fontSize: "0.8rem", color: "var(--color-accent)" }}>● streaming {forStr}</span></div>
+                <div style={{ fontSize: "0.85rem", color: "var(--color-muted)" }}>{u.email}</div>
               </div>
               );
             })}
