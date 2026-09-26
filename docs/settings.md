@@ -51,7 +51,11 @@ cause ~every time.
 - **Username/password**: the backend `ADMIN_USER`/`ADMIN_PASS` — powers skip
   and never-play forwarding.
 - **Station password**: listener auth. Saving repoints the relay master
-  password too (verified live, or the stream dies).
+  password too (verified live, or the stream dies). This one value must match
+  in three places — here, the VPS relay config, and the controller
+  `privacy.password`. If audio dies while metadata keeps flowing (player stuck
+  "Starting station", console `404 /api/stream`), a password drifted: full
+  diagnosis + fix lives in `DEPLOY.md` → Troubleshooting (local-only file).
 
 ## Station Identity (Admin → Station Identity)
 
