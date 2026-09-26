@@ -11,7 +11,7 @@ const FRESH_MS = 5 * 60 * 1000;
 // Streaming: an open StreamSession (no endTime) started recently. Restarts and
 // dead sockets orphan rows, so only fresh opens count — a playing socket is
 // always young. Dedupe by user (Safari opens ~2 rows per Play press).
-const FRESH_MS = 5 * 60 * 1000;
+const STREAMING_MS = 10 * 60 * 1000;
 
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -41,7 +41,6 @@ export async function GET() {
       email: h.user?.email || null,
       lastSeen: h.lastSeen,
     }));
-    const STREAMING_MS = 10 * 60 * 1000;
     const open = await prisma.streamSession.findMany({
       where: { endTime: null, startTime: { gte: new Date(now.getTime() - STREAMING_MS) } },
       include: { user: { select: { id: true, name: true, nickname: true, email: true } } },
