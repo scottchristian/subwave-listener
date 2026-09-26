@@ -191,10 +191,17 @@ export default function AdminPage() {
       if (res.ok && data.ok) {
         const bits = [`On air: ${data.track}`];
         if (typeof data.listeners === "number") bits.push(`${data.listeners} listening`);
+        if (Array.isArray(data.checks)) {
+          for (const c of data.checks) bits.push(`${c.ok ? "✓" : "✗"} ${c.name}: ${c.detail}`);
+        }
         if (data.warning) bits.push(data.warning);
         setServerMsg(`Working — ${bits.join(" · ")}.`);
       } else {
-        setServerMsg(`Failed: ${data.error || "unknown error"}`);
+        const bits = [data.error || "unknown error"];
+        if (Array.isArray(data.checks)) {
+          for (const c of data.checks) bits.push(`${c.ok ? "✓" : "✗"} ${c.name}: ${c.detail}`);
+        }
+        setServerMsg(`Failed: ${bits.join(" · ")}`);
       }
     } catch {
       setServerMsg("Failed: no response.");
