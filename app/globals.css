@@ -423,6 +423,51 @@ input {
   transform: translate(2px, -2px);
 }
 
+/* Segmented option groups (Manual Voice DJ mode/duck). Joined pill matching
+   the page's button idiom: quiet container, loud selection. Options sit below
+   the primary send action in hierarchy, so smaller type and padding. */
+.seg-group {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--color-border);
+  border-radius: 50px;
+  overflow: hidden;
+}
+
+.seg-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-muted);
+  padding: 0.6rem 1.1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.seg-btn + .seg-btn {
+  border-left: 1px solid var(--color-border);
+}
+
+.seg-btn:hover {
+  color: var(--color-text);
+}
+
+.seg-btn[aria-pressed="true"] {
+  background-color: var(--color-text);
+  color: var(--color-bg);
+}
+
+.seg-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.seg-caption {
+  font-size: 0.8rem;
+  color: var(--color-muted);
+}
+
 .help-btn {
   position: fixed;
   bottom: 2rem;

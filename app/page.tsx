@@ -1749,16 +1749,20 @@ export default function Home() {
                 rows={3}
                 style={{ resize: "vertical", fontFamily: "inherit" }}
               />
-              <div id="say-controls" style={{ display: "flex", gap: "1.5rem", marginTop: "0.75rem", flexWrap: "wrap" }}>
+              <div id="say-controls" style={{ display: "flex", gap: "1.5rem", marginTop: "0.75rem", marginBottom: "1rem", flexWrap: "wrap" }}>
                 <div id="say-mode-group" role="radiogroup" aria-label="Mode" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                  <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>mode</span>
-                  <button id="radio-say-raw" onClick={() => setSayMode("raw")} aria-pressed={sayMode === "raw"} className="primary-btn" style={{ width: "auto", padding: "0.4rem 0.9rem", background: sayMode === "raw" ? "var(--color-accent)" : "rgba(255,255,255,0.1)", color: "#fff" }}>Raw</button>
-                  <button id="radio-say-styled" onClick={() => setSayMode("styled")} aria-pressed={sayMode === "styled"} className="primary-btn" style={{ width: "auto", padding: "0.4rem 0.9rem", background: sayMode === "styled" ? "var(--color-accent)" : "rgba(255,255,255,0.1)", color: "#fff" }}>Styled</button>
+                  <span className="seg-caption">mode</span>
+                  <div className="seg-group">
+                    <button id="radio-say-raw" className="seg-btn" onClick={() => setSayMode("raw")} aria-pressed={sayMode === "raw"}>Raw</button>
+                    <button id="radio-say-styled" className="seg-btn" onClick={() => setSayMode("styled")} aria-pressed={sayMode === "styled"}>Styled</button>
+                  </div>
                 </div>
                 <div id="say-duck-group" role="radiogroup" aria-label="Duck" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                  <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>duck</span>
-                  <button id="radio-say-solo" onClick={() => setSayKind("dj-speak")} aria-pressed={sayKind === "dj-speak"} className="primary-btn" style={{ width: "auto", padding: "0.4rem 0.9rem", background: sayKind === "dj-speak" ? "var(--color-accent)" : "rgba(255,255,255,0.1)", color: "#fff" }}>Solo</button>
-                  <button id="radio-say-over" onClick={() => setSayKind("link")} aria-pressed={sayKind === "link"} className="primary-btn" style={{ width: "auto", padding: "0.4rem 0.9rem", background: sayKind === "link" ? "var(--color-accent)" : "rgba(255,255,255,0.1)", color: "#fff" }}>Over</button>
+                  <span className="seg-caption">duck</span>
+                  <div className="seg-group">
+                    <button id="radio-say-solo" className="seg-btn" onClick={() => setSayKind("dj-speak")} aria-pressed={sayKind === "dj-speak"}>Solo</button>
+                    <button id="radio-say-over" className="seg-btn" onClick={() => setSayKind("link")} aria-pressed={sayKind === "link"}>Over</button>
+                  </div>
                 </div>
               </div>
               <button
