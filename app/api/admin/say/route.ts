@@ -31,17 +31,28 @@ export async function POST(req: Request) {
   }
   const mode = body.mode === "styled" ? "styled" : "raw";
   const kind = body.kind === "link" ? "link" : "dj-speak";
-  try {
-    const res = await fetch(`${cfg.apiUrl}/dj/say`, {
-      method: "POST",
-      headers: { Authorization: auth, "Content-Type": "application/json" },
-      body: JSON.stringify({ text, mode, kind }),
-      signal: AbortSignal.timeout(30000),
-    });
-    const data = await res.json().catch(() => ({}));
-    return NextResponse.json(data, { status: res.status });
-  } catch (e) {
-    console.error("Admin say failed:", e);
-    return NextResponse.json({ error: "Failed to reach station backend" }, { status: 502 });
+  let lastErr = "Failed to reach station backend";
+  // Styled mode burns an LLM call before speaking; the provider flakes
+  // ("Invalid JSON response") and the backend has no retry. Our calls carry
+  // no sfx, so a 500 means nothing aired yet — one retry is safe.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    if (attempt > 0) await new Promise((r) => setTimeout(r, 1500));
+    try {
+      const res = await fetch(`${cfg.apiUrl}/dj/say`, {
+        method: "POST",
+        headers: { Authorization: auth, "Content-Type": "application/json" },
+        body: JSON.stringify({ text, mode, kind }),
+        signal: AbortSignal.timeout(45000),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) return NextResponse.json(data, { status: res.status });
+      lastErr = (data as any)?.error || `Backend answered ${res.status}`;
+      // Only retry server-side flakes; client errors (400/401/403) never heal.
+      if (res.status < 500) return NextResponse.json(data, { status: res.status });
+    } catch (e) {
+      console.error(`Admin say attempt ${attempt + 1} failed:`, e);
+      lastErr = "Failed to reach station backend";
+    }
   }
+  return NextResponse.json({ error: lastErr }, { status: 502 });
 }

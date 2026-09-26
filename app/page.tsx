@@ -1057,7 +1057,12 @@ export default function Home() {
         setSayAck(data.spoken ? `On air: "${data.spoken}"` : "Sent to air.");
         setSayText("");
       } else {
-        setSayAck(data.error || "Send failed.");
+        const raw = data.error || "Send failed.";
+        // Backend LLM flake ("Invalid JSON response") airs nothing — keep it
+        // plain so retry is obvious. Text stays for one more tap.
+        setSayAck(/invalid json/i.test(raw)
+          ? "Station brain glitch — nothing aired. Hit Send to air again."
+          : raw);
       }
     } catch {
       setSayAck("Failed to reach station backend.");
