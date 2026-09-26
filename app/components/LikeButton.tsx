@@ -1,21 +1,41 @@
 "use client";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 export default function LikeButton({ trackId, currentUserId, title, artist, album }: { trackId: string, currentUserId: string | null, title?: string, artist?: string, album?: string }) {
     const [likes, setLikes] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const submittingRef = useRef(false);
 
+    // Live likes: others liking the same track appear without refresh.
+    // Polls on a quiet interval (cheap single-row query) + refetch when the
+    // tab becomes visible again. Skips ticks mid-submit so the optimistic
+    // update never gets clobbered.
     useEffect(() => {
         if (!trackId) return;
+        let cancelled = false;
+        const load = async () => {
+            if (cancelled || submittingRef.current) return;
+            try {
+                const res = await fetch(`/api/likes?trackId=${encodeURIComponent(trackId)}`);
+                const data = await res.json();
+                if (!cancelled && data.likes) setLikes(data.likes);
+            } catch {
+                // Next tick retries — likes stay stale, never blank.
+            }
+        };
         setIsLoading(true);
-        fetch(`/api/likes?trackId=${encodeURIComponent(trackId)}`)
-            .then(res => res.json())
-            .then(data => {
-                if (data.likes) setLikes(data.likes);
-                setIsLoading(false);
-            })
-            .catch(() => setIsLoading(false));
+        load().finally(() => { if (!cancelled) setIsLoading(false); });
+        const id = setInterval(() => {
+            if (document.visibilityState === "visible") void load();
+        }, 15000);
+        const onVis = () => { if (document.visibilityState === "visible") void load(); };
+        document.addEventListener("visibilitychange", onVis);
+        return () => {
+            cancelled = true;
+            clearInterval(id);
+            document.removeEventListener("visibilitychange", onVis);
+        };
     }, [trackId]);
 
     const isLiked = currentUserId ? likes.some(l => l.userId === currentUserId) : false;
@@ -23,6 +43,7 @@ export default function LikeButton({ trackId, currentUserId, title, artist, albu
     const toggleLike = async () => {
         if (!currentUserId || isSubmitting) return;
         setIsSubmitting(true);
+        submittingRef.current = true;
         const action = isLiked ? "unlike" : "like";
         
         // Optimistic update
@@ -46,6 +67,7 @@ export default function LikeButton({ trackId, currentUserId, title, artist, albu
             // Error handling ignored for brevity in optimistic UI
         } finally {
             setIsSubmitting(false);
+            submittingRef.current = false;
         }
     };
 
