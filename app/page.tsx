@@ -136,6 +136,7 @@ export default function Home() {
   };
   useEffect(() => () => {
     if (adminAckTimer.current) clearTimeout(adminAckTimer.current);
+    if (sayAckTimer.current) clearTimeout(sayAckTimer.current);
   }, []);
   // Admin manual voice DJ (mirrors Subwave POST /dj/say).
   const [sayText, setSayText] = useState("");
@@ -143,6 +144,17 @@ export default function Home() {
   const [sayKind, setSayKind] = useState<"dj-speak" | "link">("dj-speak");
   const [sayBusy, setSayBusy] = useState(false);
   const [sayAck, setSayAck] = useState("");
+  const [sayAckShow, setSayAckShow] = useState(false);
+  const sayAckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const flashSayAck = (msg: string) => {
+    if (sayAckTimer.current) clearTimeout(sayAckTimer.current);
+    setSayAck(msg);
+    setSayAckShow(true);
+    sayAckTimer.current = setTimeout(() => {
+      setSayAckShow(false);
+      sayAckTimer.current = setTimeout(() => setSayAck(""), 300);
+    }, 3000);
+  };
   const [blockMenuOpen, setBlockMenuOpen] = useState(false);
   // Post-skip cooldown: the delayed art commit won't show the skip for
   // bufferSeconds, so hold the button (buffer + 15s) to stop double-skips.
@@ -1062,6 +1074,7 @@ export default function Home() {
     const text = sayText.trim();
     if (!text || sayBusy) return;
     setSayAck("");
+    setSayAckShow(false);
     setSayBusy(true);
     try {
       const res = await fetch("/api/admin/say", {
@@ -1071,18 +1084,18 @@ export default function Home() {
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        setSayAck(data.spoken ? `On air: "${data.spoken}"` : "Sent to air.");
+        flashSayAck(data.spoken ? `On air: "${data.spoken}"` : "Sent to air.");
         setSayText("");
       } else {
         const raw = data.error || "Send failed.";
         // Backend LLM flake ("Invalid JSON response") airs nothing — keep it
         // plain so retry is obvious. Text stays for one more tap.
-        setSayAck(/invalid json/i.test(raw)
+        flashSayAck(/invalid json/i.test(raw)
           ? "Station brain glitch — nothing aired. Hit Send to air again."
           : raw);
       }
     } catch {
-      setSayAck("Failed to reach station backend.");
+      flashSayAck("Failed to reach station backend.");
     } finally {
       setSayBusy(false);
     }
@@ -1795,7 +1808,7 @@ export default function Home() {
               >
                 {sayBusy ? "Sending..." : "Send to air →"}
               </button>
-              {sayAck && <div id="say-status-msg" style={{ marginTop: "1rem", color: "var(--color-accent)", fontSize: "0.875rem" }}>{sayAck}</div>}
+              {sayAck && <div id="say-status-msg" className={sayAckShow ? "flash-ack show" : "flash-ack"} style={{ marginTop: "1rem" }}>{sayAck}</div>}
             </div>
           )}
         </div>

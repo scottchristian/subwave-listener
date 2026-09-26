@@ -316,8 +316,9 @@ input {
   .overlay-bg-enter, .overlay-card-enter { animation: none; }
 }
 
-/* Admin track ack: centered, fades in on show, fades out before clearing.
-   min-height holds layout so the card below doesn't jump. */
+/* Flash messages (admin ack, say status): centered, fade in on show, fade
+   out before clearing. min-height holds layout so cards below don't jump. */
+.flash-ack,
 .admin-ack {
   text-align: center;
   color: var(--color-accent);
@@ -327,12 +328,13 @@ input {
   transition: opacity 0.25s ease;
 }
 
+.flash-ack.show,
 .admin-ack.show {
   opacity: 1;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .admin-ack { transition: none; }
+  .flash-ack, .admin-ack { transition: none; }
 }
 
 .spinner {
