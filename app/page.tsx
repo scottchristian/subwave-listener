@@ -122,6 +122,21 @@ export default function Home() {
   // Admin on-air controls (mirrors Subwave admin Never-play + Skip).
   const [adminAck, setAdminAck] = useState("");
   const [adminBusy, setAdminBusy] = useState<"skip" | "block" | null>(null);
+  const [adminAckShow, setAdminAckShow] = useState(false);
+  const adminAckTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Centered flash: fades in, holds 3s, fades out, then clears.
+  const flashAdminAck = (msg: string) => {
+    if (adminAckTimer.current) clearTimeout(adminAckTimer.current);
+    setAdminAck(msg);
+    setAdminAckShow(true);
+    adminAckTimer.current = setTimeout(() => {
+      setAdminAckShow(false);
+      adminAckTimer.current = setTimeout(() => setAdminAck(""), 300);
+    }, 3000);
+  };
+  useEffect(() => () => {
+    if (adminAckTimer.current) clearTimeout(adminAckTimer.current);
+  }, []);
   // Admin manual voice DJ (mirrors Subwave POST /dj/say).
   const [sayText, setSayText] = useState("");
   const [sayMode, setSayMode] = useState<"raw" | "styled">("raw");
@@ -819,17 +834,18 @@ export default function Home() {
     }
     setAdminBusy("skip");
     setAdminAck("");
+    setAdminAckShow(false);
     try {
       const res = await fetch("/api/skip", { method: "POST" });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        setAdminAck("Skipped.");
+        flashAdminAck("Skipped.");
         startSkipCooldown();
       } else {
-        setAdminAck(data.error || "Skip failed.");
+        flashAdminAck(data.error || "Skip failed.");
       }
     } catch {
-      setAdminAck("Skip failed.");
+      flashAdminAck("Skip failed.");
     } finally {
       setAdminBusy(null);
     }
@@ -841,6 +857,7 @@ export default function Home() {
     setBlockMenuOpen(false);
     setAdminBusy("block");
     setAdminAck("");
+    setAdminAckShow(false);
     try {
       const res = await fetch("/api/admin/block-track", {
         method: "POST",
@@ -850,12 +867,12 @@ export default function Home() {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         const what = type === "track" ? `"${np.title}"` : type === "album" ? `album "${np.album}"` : np.artist;
-        setAdminAck(`${what} will never air${data.purged ? ` · ${data.purged} dropped from queue` : ""}. Current play finishes unless skipped.`);
+        flashAdminAck(`${what} will never air${data.purged ? ` · ${data.purged} dropped from queue` : ""}. Current play finishes unless skipped.`);
       } else {
-        setAdminAck(data.error || "Block failed.");
+        flashAdminAck(data.error || "Block failed.");
       }
     } catch {
-      setAdminAck("Block failed.");
+      flashAdminAck("Block failed.");
     } finally {
       setAdminBusy(null);
     }
@@ -1695,7 +1712,7 @@ export default function Home() {
                 </div>
               );
             })()}
-            {adminAck && <div id="admin-track-ack" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{adminAck}</div>}
+            {adminAck && <div id="admin-track-ack" className={adminAckShow ? "admin-ack show" : "admin-ack"}>{adminAck}</div>}
             
             {donateEnabled && donateUrl ? (
             <a id="btn-support" href={donateUrl} target="_blank" rel="noreferrer" className="donate-btn" style={{ padding: "1.5rem", fontSize: "1.2rem", width: "100%", textAlign: "center", display: "block" }}>

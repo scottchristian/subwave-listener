@@ -308,13 +308,31 @@ input {
 .overlay-bg-enter {
   animation: overlayBgIn 0.22s ease;
 }
-
 .overlay-card-enter {
   animation: overlayCardIn 0.28s cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @media (prefers-reduced-motion: reduce) {
   .overlay-bg-enter, .overlay-card-enter { animation: none; }
+}
+
+/* Admin track ack: centered, fades in on show, fades out before clearing.
+   min-height holds layout so the card below doesn't jump. */
+.admin-ack {
+  text-align: center;
+  color: var(--color-accent);
+  font-size: 0.875rem;
+  min-height: 1.25rem;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.admin-ack.show {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-ack { transition: none; }
 }
 
 .spinner {
