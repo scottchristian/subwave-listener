@@ -304,6 +304,12 @@ export default function Home() {
     // Who gets the Skip button — operator setting, see lib/skipvisibility.ts.
     // Defaults to solo, which is what the station has always done.
     const [skipVisibility, setSkipVisibility] = useState<SkipVisibility>("solo");
+  // The three header chips. Operator toggles in Admin -> Station -> Header.
+  // Default on: a station that has never touched them looks exactly as it
+  // did before the toggles existed.
+  const [headerListeners, setHeaderListeners] = useState(true);
+  const [headerWeather, setHeaderWeather] = useState(true);
+  const [headerVibe, setHeaderVibe] = useState(true);
   const [signedInCount, setSignedInCount] = useState<number | null>(null);
   // Maintenance: admins see the player regardless; everyone else gets the notice.
   // Maintenance: admins see the player regardless; everyone else gets the notice.
@@ -404,6 +410,9 @@ export default function Home() {
        if (typeof d.verboseLogging === "boolean") setVerbose(d.verboseLogging);
        if (typeof d.explicitSuffix === "boolean") setExplicitSuffix(d.explicitSuffix);
          if (d.skipVisibility) setSkipVisibility(parseSkipVisibility(d.skipVisibility));
+         if (typeof d.headerListeners === "boolean") setHeaderListeners(d.headerListeners);
+         if (typeof d.headerWeather === "boolean") setHeaderWeather(d.headerWeather);
+         if (typeof d.headerVibe === "boolean") setHeaderVibe(d.headerVibe);
        plog.info("settings loaded", { streamMode: d.streamMode, donate: d.donate_enabled, maint: d.maintenanceMode, verbose: d.verboseLogging });
        const mode = d.streamMode === "direct" ? "direct" : "relay";
        let directUrl = "";
@@ -1665,18 +1674,23 @@ export default function Home() {
           <Image id="header-logo-img" src={STATION.logo} alt={STATION.name} width={300} height={60} className="logo-img" style={{ filter: "drop-shadow(0px 4px 12px rgba(0,0,0,0.6))" }} priority />
           
           <div style={{ display: "flex", gap: "1rem" }}>
+            {/* Operator toggles, Admin → Station → Header. Each is removed from
+                the DOM rather than hidden, so nothing is fetched or announced for a
+                chip that is off. */}
+            {headerListeners && (
             <div id="header-listeners" className="meta-row" style={{ marginBottom: 0, backgroundColor: "rgba(0,0,0,0.5)", padding: "6px 12px", borderRadius: "8px", color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}>
               <UserIcon /> {signedInCount ?? "–"} signed in, {stationData?.listeners?.current ?? 0} listening
             </div>
+            )}
             
-            {(weatherCond && weatherCond !== 'unknown') && (
+            {(headerWeather && weatherCond && weatherCond !== 'unknown') && (
               <div id="header-weather" className="meta-row" style={{ marginBottom: 0, backgroundColor: "rgba(0,0,0,0.5)", padding: "6px 12px", borderRadius: "8px", color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.8)", display: "flex", gap: "0.5rem", alignItems: "center" }}>
                 <WeatherIcon condition={weatherCond} />
                 <span>{Number.isFinite(weatherTemp) ? `${weatherTemp}° ` : ''}<span style={{ textTransform: "capitalize" }}>{weatherCond}</span></span>
               </div>
             )}
             
-            {showVibe && (
+            {(headerVibe && showVibe) && (
               <div id="header-vibe" className="meta-row" style={{ marginBottom: 0, backgroundColor: "rgba(0,0,0,0.5)", padding: "6px 12px", borderRadius: "8px", color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.8)", textTransform: "capitalize" }}>
                 {showVibe}
               </div>

@@ -8,7 +8,16 @@ import { parseSkipVisibility } from "@/lib/skipvisibility";
 export async function GET() {
   try {
     const rows = await prisma.setting.findMany({
-      where: { key: { in: ["donate_url", "donate_text", "donate_enabled", "streamMode", "stationPassword", "maintenanceMode", "maintenanceMessage", "verboseLogging", "explicitSuffix", "skipVisibility"] } },
+      where: {
+        key: {
+          in: [
+            "donate_url", "donate_text", "donate_enabled", "streamMode",
+            "stationPassword", "maintenanceMode", "maintenanceMessage",
+            "verboseLogging", "explicitSuffix", "skipVisibility",
+            "headerListeners", "headerWeather", "headerVibe",
+          ],
+        },
+      },
     });
     const get = (k: string) => rows.find((r) => r.key === k)?.value;
     // Station password only rides along for approved sessions — direct mode
@@ -33,9 +42,22 @@ export async function GET() {
         // Who gets the Skip button. Not sensitive — but this route is behind
         // the session gate, so only signed-in listeners can read it anyway.
         skipVisibility: parseSkipVisibility(get("skipVisibility")),
+        // The three header chips. Not sensitive. Default ON, because a station
+        // that has never been near these toggles must look exactly as it did
+        // before they existed; an operator turns them off deliberately.
+      headerListeners: (get("headerListeners") ?? "true") !== "false",
+      headerWeather: (get("headerWeather") ?? "true") !== "false",
+      headerVibe: (get("headerVibe") ?? "true") !== "false",
       ...(stationPassword ? { stationPassword } : {}),
     });
   } catch (error) {
-    return NextResponse.json({ donate_url: STATION.donateUrl, donate_enabled: true, streamMode: "relay" });
+    return NextResponse.json({
+      donate_url: STATION.donateUrl,
+      donate_enabled: true,
+      streamMode: "relay",
+      headerListeners: true,
+      headerWeather: true,
+      headerVibe: true,
+    });
   }
 }

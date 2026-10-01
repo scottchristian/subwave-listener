@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { STATION } from "@/lib/station";
 import DatabasePanel from "./DatabasePanel";
 import CollapsibleSection from "./CollapsibleSection";
+import HeaderToggle from "./HeaderToggle";
 import {
   SKIP_VISIBILITY_OPTIONS,
   parseSkipVisibility,
@@ -50,6 +51,12 @@ export default function AdminPage() {
   const [maintBusy, setMaintBusy] = useState(false);
   const [maintPreview, setMaintPreview] = useState(false);
   const [verboseOn, setVerboseOn] = useState(true);
+  // The three header chips. All default on, so opening the panel shows the
+  // station as it is rather than as a fresh install would be.
+  const [headerListeners, setHeaderListeners] = useState(true);
+  const [headerWeather, setHeaderWeather] = useState(true);
+  const [headerVibe, setHeaderVibe] = useState(true);
+  const [headerMsg, setHeaderMsg] = useState("");
   const [verboseMsg, setVerboseMsg] = useState("");
   const [verboseBusy, setVerboseBusy] = useState(false);
   const [stationPassword, setStationPassword] = useState("");
@@ -263,6 +270,12 @@ export default function AdminPage() {
         if (mt) setMaintText(mt.value);
         const vl = settings.find((s: any) => s.key === "verboseLogging");
         if (vl) setVerboseOn(vl.value !== "false");
+        const hl = settings.find((s: any) => s.key === "headerListeners");
+        if (hl) setHeaderListeners(hl.value !== "false");
+        const hw = settings.find((s: any) => s.key === "headerWeather");
+        if (hw) setHeaderWeather(hw.value !== "false");
+        const hv = settings.find((s: any) => s.key === "headerVibe");
+        if (hv) setHeaderVibe(hv.value !== "false");
       }
     } catch (e) {
       console.error(e);
@@ -321,6 +334,45 @@ export default function AdminPage() {
       setVerboseBusy(false);
     }
   };
+  /**
+   * Flip one header chip.
+   *
+   * Applied optimistically so the switch does not lag a round trip, and rolled
+   * back if the save fails — a switch that claims to be off when it is not is
+   * worse than one that waits.
+   */
+  const saveHeaderFlag = async (key: string, next: boolean) => {
+    const read = () =>
+      key === "headerListeners" ? headerListeners
+        : key === "headerWeather" ? headerWeather
+          : headerVibe;
+    const setter =
+      key === "headerListeners" ? setHeaderListeners
+        : key === "headerWeather" ? setHeaderWeather
+          : setHeaderVibe;
+    const label =
+      key === "headerListeners" ? "Listener count"
+        : key === "headerWeather" ? "Local weather"
+          : "Vibe / mood";
+
+    const was = read();
+    setter(next);
+    setHeaderMsg("");
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key, value: next ? "true" : "false" }),
+      });
+      if (!res.ok) throw new Error("save failed");
+      setHeaderMsg(`${label} ${next ? "shown" : "hidden"} in the player header.`);
+    } catch {
+      setter(was);
+      setHeaderMsg(`Could not save, so ${label.toLowerCase()} is unchanged.`);
+    }
+  };
+
+
   const saveStreamMode = async (mode: "relay" | "direct") => {    setStreamMode(mode);
     await fetch("/api/admin/settings", {
       method: "POST",
@@ -939,6 +991,43 @@ export default function AdminPage() {
             </button>
             </div>
             {authMsg && <div id="auth-save-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{authMsg}</div>}
+          </div>
+        </CollapsibleSection>
+
+        {/* Header — the three chips beside the logo on the player */}
+        <CollapsibleSection
+          id="section-header"
+          title={<>Header</>}
+          summary={<>The three small chips beside the logo. All on by default.</>}
+          hidden={activeTab !== "station"}
+        >
+          <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1.25rem" }}>
+            <HeaderToggle
+              id="header-listeners-toggle"
+              label="Listener count"
+              help="The chip showing how many people are signed in and how many are listening right now. Hides both numbers; the rest of the header is unaffected."
+              on={headerListeners}
+              onToggle={() => saveHeaderFlag("headerListeners", !headerListeners)}
+            />
+            <HeaderToggle
+              id="header-weather-toggle"
+              label="Local weather"
+              help="The chip showing the current weather at the station. Only ever appears when the station reports weather, so this can be left on without showing anything most of the time."
+              on={headerWeather}
+              onToggle={() => saveHeaderFlag("headerWeather", !headerWeather)}
+            />
+            <HeaderToggle
+              id="header-vibe-toggle"
+              label="Vibe / mood"
+              help="The chip showing the current vibe or festival mood. Only appears when the station reports one, so it is usually empty either way."
+              on={headerVibe}
+              onToggle={() => saveHeaderFlag("headerVibe", !headerVibe)}
+            />
+            {headerMsg && (
+              <div id="header-toggle-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>
+                {headerMsg}
+              </div>
+            )}
           </div>
         </CollapsibleSection>
 
