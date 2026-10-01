@@ -1669,33 +1669,35 @@ export default function Home() {
   return (
     <main id="main-player" className="container" style={{ paddingTop: "2rem", overflowX: "clip" }}>
 
-      <header id="header-player" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3rem", flexWrap: "wrap", gap: "1rem" }}>
-        <div id="header-logo-container" style={{ display: "flex", gap: "2rem", alignItems: "center", flexWrap: "wrap" }}>
+      <header id="header-player" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "1rem", marginBottom: "3rem" }}>
+        <div id="header-logo-container">
           <Image id="header-logo-img" src={STATION.logo} alt={STATION.name} width={300} height={60} className="logo-img" style={{ filter: "drop-shadow(0px 4px 12px rgba(0,0,0,0.6))" }} priority />
+        </div>
           
-          <div style={{ display: "flex", gap: "1rem" }}>
-            {/* Operator toggles, Admin → Station → Header. Each is removed from
-                the DOM rather than hidden, so nothing is fetched or announced for a
-                chip that is off. */}
-            {headerListeners && (
-            <div id="header-listeners" className="meta-row" style={{ marginBottom: 0, backgroundColor: "rgba(0,0,0,0.5)", padding: "6px 12px", borderRadius: "8px", color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}>
+        {/* The three header chips. Wrapped rather than allowed to overflow, so a
+            narrow screen costs a second line rather than clipped items. */}
+        <div id="header-chips" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "1rem" }}>
+          {/* Operator toggles, Admin → Station → Header. Each is removed from
+              the DOM rather than hidden, so nothing is fetched or announced for a
+              chip that is off. */}
+          {headerListeners && (
+            <div id="header-listeners" className="header-chip">
               <UserIcon /> {signedInCount ?? "–"} signed in, {stationData?.listeners?.current ?? 0} listening
             </div>
-            )}
-            
-            {(headerWeather && weatherCond && weatherCond !== 'unknown') && (
-              <div id="header-weather" className="meta-row" style={{ marginBottom: 0, backgroundColor: "rgba(0,0,0,0.5)", padding: "6px 12px", borderRadius: "8px", color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.8)", display: "flex", gap: "0.5rem", alignItems: "center" }}>
-                <WeatherIcon condition={weatherCond} />
-                <span>{Number.isFinite(weatherTemp) ? `${weatherTemp}° ` : ''}<span style={{ textTransform: "capitalize" }}>{weatherCond}</span></span>
-              </div>
-            )}
-            
-            {(headerVibe && showVibe) && (
-              <div id="header-vibe" className="meta-row" style={{ marginBottom: 0, backgroundColor: "rgba(0,0,0,0.5)", padding: "6px 12px", borderRadius: "8px", color: "#fff", textShadow: "0 1px 3px rgba(0,0,0,0.8)", textTransform: "capitalize" }}>
-                {showVibe}
-              </div>
-            )}
-          </div>
+          )}
+          
+          {(headerWeather && weatherCond && weatherCond !== 'unknown') && (
+            <div id="header-weather" className="header-chip">
+              <WeatherIcon condition={weatherCond} />
+              <span>{Number.isFinite(weatherTemp) ? `${weatherTemp}° ` : ''}<span style={{ textTransform: "capitalize" }}>{weatherCond}</span></span>
+            </div>
+          )}
+          
+          {(headerVibe && showVibe) && (
+            <div id="header-vibe" className="header-chip" style={{ textTransform: "capitalize" }}>
+              {showVibe}
+            </div>
+          )}
         </div>
         <div id="header-actions" style={{ position: "relative" }}>
           <button
@@ -1705,13 +1707,10 @@ export default function Home() {
             aria-expanded={userMenuOpen}
             aria-haspopup="true"
             title="Account"
-            style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem", padding: "0.4rem 0.9rem 0.4rem 0.5rem", height: "36px", boxSizing: "border-box", borderRadius: "999px", background: "var(--color-surface)", border: "1px solid var(--color-border)", color: "var(--color-text)", fontSize: "0.8rem", fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap", transition: "background-color 0.2s ease, border-color 0.2s ease", position: tourStep === 7 ? "relative" : "static", zIndex: tourStep === 7 ? 1000 : 1 }}
-            onMouseEnter={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.backgroundColor = "#1a2f47"; b.style.borderColor = "rgba(255,255,255,0.28)"; }}
-            onMouseLeave={(e) => { const b = e.currentTarget as HTMLButtonElement; b.style.backgroundColor = "var(--color-surface)"; b.style.borderColor = "var(--color-border)"; }}
+            className="header-chip header-chip-btn"
+            style={{ position: tourStep === 7 ? "relative" : "static", zIndex: tourStep === 7 ? 1000 : 1 }}
           >
-            <span style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: "24px", height: "24px", borderRadius: "50%", background: "rgba(255,255,255,0.12)" }}>
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
-            </span>
+            <UserIcon />
             Account
           </button>
           {userMenuOpen && (

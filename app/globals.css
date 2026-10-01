@@ -254,6 +254,54 @@ input {
   margin-bottom: 1rem;
 }
 
+/* One shape for everything in the player header: the listener count, the
+   weather, the vibe and the Account button.
+   These are four peers that sit in a row and are read as a set, but each was
+   carrying its own copy of the styling — three identical inline blocks and a
+   fourth button that had drifted into a bordered pill, which is what put a
+   mismatched item on the end of the row. Defining the shape once means the next
+   item added to the header matches by default instead of by remembering. */
+.header-chip {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 6px 12px;
+  border: none;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-family: inherit;
+  font-size: var(--font-size-sm);
+  /* A div inherits the document line-height; a button resets to `normal`, which
+     is ~5px shorter at this size. Without pinning it here the same chip is two
+     different heights depending on whether it is a div or a button. */
+  line-height: 1.6;
+  text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+  /* Weather conditions are multi-word ("partly cloudy") and the counts are
+     numeric, so a chip must not break across lines internally even when the
+     row itself is wrapping. */
+  white-space: nowrap;
+}
+
+/* The Account button is a chip you can press, so it carries the two things a
+   read-only chip does not: a pointer, and a hover that reads as pressable.
+   Split out rather than folded into .header-chip so the count, the weather and
+   the vibe never gain a hover they cannot honour. */
+.header-chip-btn {
+  cursor: pointer;
+  transition: background-color 0.2s ease;
+}
+.header-chip-btn:hover {
+  background: rgba(0, 0, 0, 0.72);
+}
+/* Mouse hover does not follow the keyboard, and this button opens a menu, so
+   the focus ring is the only indication of where you are when tabbing to it. */
+.header-chip-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 
 
 @keyframes spin {
