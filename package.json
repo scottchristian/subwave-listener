@@ -1,0 +1,39 @@
+{
+  "name": "subwave-web-player",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run check:pii && npm run check:refs && npm run check:links && npm run check:setup",
+    "check:pii": "node scripts/check-pii.mjs",
+    "check:refs": "node scripts/check-station-refs.mjs",
+    "check:links": "node scripts/check-links.mjs",
+    "check:setup": "node scripts/check-setup.mjs"
+  },
+  "dependencies": {
+    "@auth/prisma-adapter": "^2.11.3",
+    "@prisma/client": "^5.22.0",
+    "next": "16.3.5",
+    "pg": "^8.13.1",
+    "png-to-ico": "^2.1.8",
+    "sharp": "^0.35.4",
+    "next-auth": "^4.24.15",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "web-push": "^3.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^20",
+    "@types/pg": "^8.11.10",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "prisma": "^5.22.0",
+    "typescript": "^5"
+  },
+  "engines": {
+    "node": ">=20.9.0"
+  }
+}

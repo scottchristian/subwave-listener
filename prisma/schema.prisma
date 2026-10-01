@@ -1,0 +1,239 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+// The provider here is whatever the station is CURRENTLY running on, because
+// the generated Prisma client is built from this file — a client generated
+// from the sqlite block cannot talk to Postgres even when DATABASE_URL says
+// otherwise, and every single query then fails at runtime. The cutover route
+// rewrites this block alongside DATABASE_URL and DB_PROVIDER; gen-schema.mjs
+// performs the same swap for one-off copies.
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String?
+  access_token      String?
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String?
+  session_state     String?
+  user              User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id             String          @id @default(cuid())
+  // Blind index (HMAC) of the address, NOT the address — see lib/pii.ts.
+  // Every lookup by session email compares tokens and keeps working.
+  email          String?         @unique
+  emailEnc       String?
+  emailVerified  DateTime?
+  // Encrypted at rest (AES-256-GCM); decrypted on read.
+  name           String?
+  image          String?
+  isApproved     Boolean         @default(false)
+  isAdmin        Boolean         @default(false)
+  // Granular booth permissions. Admin implies both; these let a non-admin
+  // run the manual voice DJ or approve access without full admin rights.
+  canUseDj       Boolean         @default(false)
+  canApprove     Boolean         @default(false)
+  // May execute Sub/Wave DJ skills from the Account menu. Off by default, and
+  // the menu entry is not rendered at all without it — the feature is
+  // invisible rather than merely refused. A run costs a real LLM+TTS call that
+  // airs immediately, so this is opt-in per person.
+  canUseSkills   Boolean         @default(false)
+  hideLikeName   Boolean         @default(false)
+  nickname       String?
+  createdAt      DateTime        @default(now())
+  accounts       Account[]
+  donations      Donation[]
+  sessions       Session[]
+  songRequests   SongRequest[]
+  streamSessions StreamSession[]
+  songLikes      SongLike[]
+  pushSubscriptions PushSubscription[]
+  presenceHeartbeat PresenceHeartbeat?
+  skillRuns      SkillRun[]
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+}
+
+model StreamSession {
+  id          String    @id @default(cuid())
+  userId      String
+  startTime   DateTime  @default(now())
+  endTime     DateTime?
+  durationSec Int?
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The open-session gate (presence, and the database cutover check) asks for
+  // endTime IS NULL AND startTime >= now-10m, ordered by startTime. This table
+  // only ever grows, so without this the gate scans every session ever opened.
+  @@index([endTime, startTime])
+  // Admin stats sorts the whole history by startTime; leading endTime above
+  // cannot serve an unfiltered sort, so the bare column is needed too.
+  @@index([startTime])
+  // Cascade deletes and the admin user roster's eager load.
+  @@index([userId])
+}
+
+model Donation {
+  id             String   @id @default(cuid())
+  userId         String?
+  // Encrypted at rest; supporterEmailIdx keeps the webhook's user lookup
+  // working by equality without storing the address.
+  supporterName  String?
+  supporterEmail String
+  supporterEmailIdx String?
+  amount         Float
+  currency       String   @default("AUD")
+  message        String?
+  receivedAt     DateTime @default(now())
+    // The provider's own id for this donation, when the payload carries one.
+    // A captured webhook can be replayed, and every replay is money the station
+    // never received — so a repeat has to be a no-op rather than a second row.
+    // Nullable and unique: rows predating this, and payloads with no id, are
+    // unaffected, and Postgres allows many NULLs under a unique index.
+    externalId     String?  @unique
+  user           User?    @relation(fields: [userId], references: [id])
+
+  // The ticker reads the newest donations on a recurring host poll and the
+  // admin list filters a date range; both sort by receivedAt.
+  @@index([receivedAt])
+  // Admin roster eager load, and the user-removal update that nulls userId.
+  @@index([userId])
+  // Created by the pii_encryption migration but never declared in the schema.
+  // Declaring it here is what keeps Postgres in step: `db push` derives the
+  // target from this datamodel, so an undeclared index exists in SQLite and is
+  // silently absent from Postgres.
+  @@index([supporterEmailIdx])
+}
+
+model Setting {
+  key   String @id
+  value String
+}
+
+model SongRequest {
+  id        String   @id @default(cuid())
+  userId    String
+  song      String
+  nameUsed  String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The anti-spam cooldown is "this user's most recent request", so the
+  // filter and the sort have to be served together.
+  @@index([userId, createdAt])
+}
+
+model SongLike {
+  id        String   @id @default(cuid())
+  userId    String
+  trackId   String
+  title     String?
+  artist    String?
+  album     String?
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, trackId])
+  // The like count for the playing track, polled every 15s per tab. The
+  // unique index above cannot serve this: userId is its leading column, so a
+  // trackId-only filter never touches it.
+  @@index([trackId, createdAt])
+}
+
+model SongLinkCache {
+  trackId        String   @id // Maps to subsonic_id
+  spotifyUrl     String?
+  appleMusicUrl  String?
+  explicit       Boolean? // Spotify explicit flag; null = not yet resolved
+  resolvedAt     DateTime @default(now())
+}
+
+model PushSubscription {
+  id        String   @id @default(cuid())
+  userId    String
+  endpoint  String   @unique
+  p256dh    String
+  auth      String
+  createdAt DateTime @default(now())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The device count is a userId-only filter, and cascades delete by userId.
+  @@index([userId])
+}
+
+model PresenceHeartbeat {
+  userId   String   @id
+  lastSeen DateTime @default(now())
+  user     User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // Every presence poll asks for heartbeats newer than 5 minutes, newest
+  // first — on the hottest endpoint in the app.
+  @@index([lastSeen])
+}
+
+
+// One requested skill execution.
+//
+// A skill run is slow by nature — Sub/Wave blocks until the agent has written a
+// line and TTS has rendered and queued it — so the browser never holds that
+// request open. The front end POSTs, gets a row id back immediately, and polls
+// this table; a background worker inside the server process does the waiting.
+//
+// `status` is a String rather than a Prisma enum because this schema has to
+// generate for SQLite as well as Postgres, and Prisma enums are Postgres-only.
+//
+//   queued   — accepted, the worker has not started it
+//   running  — the worker is inside the Sub/Wave call
+//   aired     — queued to the station and on air now
+//   deferred — rendered, held to the next track boundary
+//   quiet    — the DJ ran and chose to stand down (a 200 upstream, not an error)
+//   failed   — the call genuinely did not happen
+//   unknown  — we stopped waiting without an answer. NOT the same as failed:
+//              Sub/Wave has no cancellation and no status endpoint, so a restart
+//              or a timeout here means the segment may still have aired.
+model SkillRun {
+  id         String    @id @default(cuid())
+  userId     String
+  skillName  String
+  skillLabel String
+  status     String    @default("queued")
+  spoken     String?
+  reason     String?
+  error      String?
+  queuedAt   DateTime  @default(now())
+  startedAt  DateTime?
+  finishedAt DateTime?
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // The worker claims the oldest queued row; the poll path reads one row by id.
+  @@index([status, queuedAt])
+  @@index([userId, queuedAt])
+}

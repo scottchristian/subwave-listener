@@ -1,0 +1,1103 @@
+@import url('https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;700&display=swap');
+
+:root {
+  --color-bg:        #06101e;
+  --color-surface:   #0d1f35;
+  --color-border:    #1a3050;
+  --color-accent:    #4e9fd4;
+  --color-accent-warm: #c8a76a;
+  --color-text:      #dce8f5;
+  --color-muted:     #6a8ba8;
+  /* For text that sits directly on the station photo, where --color-muted
+     drops to 3.9:1 or worse against a bright sky. Lifted so a label keeps at
+     least AA over its own dark backing. */
+  --color-text-dim:  #9fb9d4;
+
+  --font-body: 'Outfit', sans-serif;
+  --font-size-sm: 0.875rem;
+  --font-size-base: 1.125rem;
+  --font-size-lg: 1.5rem;
+  --font-size-xl: 2.5rem;
+  --font-size-hero: clamp(2rem, 6vw, 4rem);
+
+  --radius: 12px;
+  --shadow: 0 4px 32px rgba(0,0,0,0.5);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+  font-family: var(--font-body);
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+@keyframes slowPan {
+  0% { transform: scale(1.05) translate(0, 0); }
+  50% { transform: scale(1.1) translate(-2%, -1%); }
+  100% { transform: scale(1.05) translate(0, 0); }
+}
+
+body::before {
+  content: "";
+  position: fixed;
+  inset: -10%;
+  width: 120%;
+  height: 120%;
+  background-image: url("/bg.jpg");
+  background-size: cover;
+  background-position: center;
+  z-index: -1;
+  animation: slowPan 60s ease-in-out infinite alternate;
+}
+
+a {
+  color: inherit;
+  text-decoration: none;
+}
+
+button {
+  font-family: inherit;
+  cursor: pointer;
+  border: none;
+  background: none;
+}
+
+input {
+  font-family: inherit;
+}
+
+.container {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 2rem;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.centered-column {
+  max-width: 480px;
+  margin: auto;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.logo-text {
+  font-size: var(--font-size-xl);
+  color: var(--color-accent);
+  font-weight: 700;
+}
+
+.logo-img {
+  max-width: 100%;
+  height: 80px;
+  object-fit: contain;
+  display: block;
+}
+
+.tagline {
+  color: var(--color-muted);
+  font-size: var(--font-size-lg);
+  font-weight: 300;
+}
+
+.about-text {
+  font-size: var(--font-size-base);
+  color: var(--color-text);
+}
+
+.tour-tooltip {
+  position: absolute;
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  padding: 1.5rem;
+  border-radius: var(--radius-md);
+  width: 300px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  z-index: 1005; /* higher than tour-highlight (1001) */
+  transition: all 0.5s cubic-bezier(0.25, 1, 0.5, 1);
+}
+
+.card {
+  background-color: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 2rem;
+  box-shadow: var(--shadow);
+}
+
+.primary-btn {
+  background-color: var(--color-text);
+  color: var(--color-bg);
+  padding: 1rem 2rem;
+  border-radius: 50px;
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+  width: 100%;
+}
+
+.primary-btn:hover {
+  transform: translateY(-2px);
+  opacity: 0.9;
+}
+
+.donate-btn {
+  background-color: var(--color-accent-warm);
+  color: var(--color-bg);
+  padding: 1rem 2rem;
+  border-radius: 50px;
+  font-size: var(--font-size-base);
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  transition: transform 0.2s ease, opacity 0.2s ease;
+  width: 100%;
+}
+
+.donate-btn:hover {
+  transform: translateY(-2px);
+  opacity: 0.9;
+}
+
+/* Player Two-Column Layout */
+.player-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 3rem;
+  align-items: start;
+}
+
+@media (min-width: 768px) {
+  .player-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.album-art-container {
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  background-color: var(--color-surface);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: var(--shadow);
+  margin-bottom: 1.5rem;
+}
+
+.album-art {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  border-radius: var(--radius);
+}
+
+.track-title {
+  font-size: var(--font-size-xl);
+  font-weight: 700;
+  line-height: 1.2;
+  margin-bottom: 0.5rem;
+}
+
+.track-artist {
+  font-size: var(--font-size-lg);
+  color: var(--color-accent);
+  margin-bottom: 2rem;
+}
+
+.meta-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--color-muted);
+  font-size: var(--font-size-sm);
+  margin-bottom: 1rem;
+}
+
+
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes fadeSwap {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.fade-swap {
+  animation: fadeSwap 0.25s ease;
+}
+
+/* Cover effects: concentric sonar rings, scan sweep, viewfinder ticks. */
+@keyframes cxRing {
+  0% { transform: translate(-50%, -50%) scale(0.86); opacity: 0; }
+  25% { opacity: var(--cx-peak, 0.28); }
+  100% { transform: translate(-50%, -50%) scale(1.12); opacity: 0; }
+}
+
+.cx-ring {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  border-radius: 50%;
+  border: 1px solid var(--color-accent);
+  box-shadow: 0 0 18px rgba(78, 159, 212, 0.25);
+  animation: cxRing 3.2s ease-out infinite;
+  pointer-events: none;
+}
+
+@keyframes cxScan {
+  0% { top: -25%; opacity: 0; }
+  12% { opacity: 1; }
+  88% { opacity: 1; }
+  100% { top: 110%; opacity: 0; }
+}
+
+.cx-scan {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 22%;
+  top: -25%;
+  background: linear-gradient(to bottom, transparent, rgba(255, 255, 255, 0.10), transparent);
+  animation: cxScan 4.5s ease-in-out infinite;
+  pointer-events: none;
+  border-radius: var(--radius);
+}
+
+.cx-tick {
+  position: absolute;
+  width: 18px;
+  height: 18px;
+  border-color: rgba(255, 255, 255, 0.55);
+  border-style: solid;
+  pointer-events: none;
+}
+.cx-tick-tl { top: 2px; left: 2px; border-width: 2px 0 0 2px; border-top-left-radius: 6px; }
+.cx-tick-tr { top: 2px; right: 2px; border-width: 2px 2px 0 0; border-top-right-radius: 6px; }
+.cx-tick-bl { bottom: 2px; left: 2px; border-width: 0 0 2px 2px; border-bottom-left-radius: 6px; }
+.cx-tick-br { bottom: 2px; right: 2px; border-width: 0 2px 2px 0; border-bottom-right-radius: 6px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cx-ring, .cx-scan { animation: none; }
+  .fade-swap { animation: none; }
+}
+
+/* Likes overlay entrance */
+@keyframes overlayBgIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes overlayCardIn {
+  from { opacity: 0; transform: translateY(16px) scale(0.98); }
+  to { opacity: 1; transform: none; }
+}
+
+.overlay-bg-enter {
+  animation: overlayBgIn 0.22s ease;
+}
+.overlay-card-enter {
+  animation: overlayCardIn 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .overlay-bg-enter, .overlay-card-enter { animation: none; }
+}
+
+/* Collapsible admin panels (Station, Services). The heading is the whole
+   affordance when collapsed, so it needs a full-width, comfortably tappable
+   target rather than a text-sized link. */
+.admin-collapse-head {
+  margin: 0;
+}
+
+.admin-collapse-toggle {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: inherit;
+  font: inherit;
+}
+
+.admin-collapse-text {
+  min-width: 0;
+}
+
+/* Inherits size and weight from the h2 — see the note in the component. */
+.admin-collapse-title {
+  display: block;
+}
+
+.admin-collapse-summary {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.5;
+  color: var(--color-muted);
+}
+
+.admin-collapse-chevron {
+  flex-shrink: 0;
+  font-size: 1.4rem;
+  line-height: 1.2;
+  color: var(--color-muted);
+  transition: transform 0.2s ease;
+}
+
+.admin-collapse-toggle:hover .admin-collapse-title {
+  color: var(--color-accent);
+}
+
+.admin-collapse-toggle:hover .admin-collapse-chevron {
+  color: var(--color-text);
+}
+
+.admin-collapse-toggle[aria-expanded="true"] .admin-collapse-chevron {
+  transform: rotate(90deg);
+}
+
+.admin-collapse-toggle:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+.admin-collapse-inner {
+  padding-top: 1rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-collapse-chevron,
+  .admin-collapse-toggle + div {
+    transition: none !important;
+  }
+}
+
+/* Admin tab rail */
+.admin-layout {
+  display: flex;
+  gap: 2rem;
+  align-items: flex-start;
+}
+
+.admin-rail {
+  position: sticky;
+  top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 180px;
+  /* The station photo is painted full-bleed behind the whole app by
+     body::before with no scrim, so anything in this rail used to be coloured
+     text floating directly on a sunset. At 0.86 the panel stays dark even over
+     a white sky, which is what lets the labels below be readable at all. The
+     blur is cosmetic only; the alpha alone already carries the contrast. */
+  background: rgba(6, 16, 30, 0.86);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 0.5rem;
+}
+
+.admin-tab {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  /* A faint chip as well as the panel, so each row still reads as a control
+     on its own rather than relying on the panel edge. */
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid transparent;
+  border-radius: 50px;
+  color: var(--color-text-dim);
+  padding: 0.65rem 1.1rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.admin-tab:hover {
+  color: var(--color-text);
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--color-border);
+}
+
+.admin-tab:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
+.admin-tab.active {
+  background-color: var(--color-text);
+  color: var(--color-bg);
+}
+
+.admin-tab-badge {
+  font-size: 0.7rem;
+  font-weight: 700;
+  background-color: var(--color-accent);
+  /* Was #fff on #4e9fd4 = 2.90:1, which failed even on a plain dark page.
+     Dark text on the same accent is 6.57:1 and keeps the colour. */
+  color: var(--color-bg);
+  border-radius: 999px;
+  padding: 0.15rem 0.55rem;
+  white-space: nowrap;
+}
+
+.admin-tab.active .admin-tab-badge {
+  background-color: var(--color-bg);
+  color: var(--color-text);
+}
+
+/* Panel swap: tab switches used to be an instant cut, because every section is
+   toggled with display:none. The outgoing panel is faded with an animation
+   (not a transition, so it plays on mount) while the JS holds the tab for
+   PANEL_OUT_MS, then the new panel fades up from slightly below. Animating the
+   column wrapper rather than each section means one animation instead of
+   seventeen, and child state — the Database panel's live SSE stream — survives
+   the switch instead of being torn down and reconnected. */
+@keyframes adminPanelOut {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(-6px); }
+}
+@keyframes adminPanelIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+/* Easing note: the obvious choice, cubic-bezier(0.22, 1, 0.36, 1), front-loads
+   so hard that the panel is 76% faded by a quarter of the way through and 96%
+   by halfway — around four frames, which reads as no transition at all. These
+   two track elapsed time closely enough to actually be seen, and pair as
+   accelerate-away / decelerate-in. */
+.admin-panel.phase-out {
+  animation: adminPanelOut 120ms cubic-bezier(0.4, 0, 1, 1) forwards;
+  /* Fading but still clickable for those 120ms. Nothing should be pressable
+     in a panel the user is already leaving. */
+  pointer-events: none;
+}
+.admin-panel.phase-in {
+  animation: adminPanelIn 200ms cubic-bezier(0.4, 0, 0.2, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .admin-panel.phase-out,
+  .admin-panel.phase-in {
+    animation: none;
+  }
+}
+
+@media (max-width: 768px) {
+  .admin-layout {
+    flex-direction: column;
+  }
+  .admin-rail {
+    position: static;
+    flex-direction: row;
+    overflow-x: auto;
+    width: 100%;
+    min-width: 0;
+  }
+  .admin-tab {
+    white-space: nowrap;
+  }
+}
+.flash-ack,
+.admin-ack {
+  text-align: center;
+  color: var(--color-accent);
+  font-size: 0.875rem;
+  min-height: 1.25rem;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.flash-ack.show,
+.admin-ack.show {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flash-ack, .admin-ack { transition: none; }
+}
+
+/* ---------------------------------------------------------------- Database
+   The panel's one job is a decision under consequence, so the visual weight
+   goes to three things: which engine is live, whether every permission passed,
+   and the exact SQL that fixes what didn't. */
+
+.db-engine {
+  display: flex;
+  align-items: baseline;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.db-engine-name {
+  font-size: 1.5rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+/* Live engine gets the accent; the dormant one recedes. Position in the
+   sentence, not colour alone, carries which one is running. */
+.db-engine.live .db-engine-name { color: var(--color-accent); }
+.db-engine.dormant .db-engine-name { color: var(--color-muted); }
+.db-engine-tag {
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+}
+.db-engine.live .db-engine-tag {
+  background: rgba(78,159,212,0.18);
+  color: var(--color-accent);
+}
+.db-engine.dormant .db-engine-tag {
+  background: rgba(255,255,255,0.06);
+  color: var(--color-muted);
+}
+
+.db-url {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  color: var(--color-muted);
+  word-break: break-all;
+}
+
+/* Row counts: a compact ledger, not a grid of tiles. These are read as a
+   total, so they read as a line. */
+.db-ledger {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1.5rem;
+  padding: 0.85rem 0;
+  border-top: 1px solid var(--color-border);
+  border-bottom: 1px solid var(--color-border);
+  font-size: 0.875rem;
+}
+.db-ledger-item { display: flex; gap: 0.45rem; align-items: baseline; }
+.db-ledger-item dt { color: var(--color-muted); }
+.db-ledger-item dd {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+/* Permission checks: a checklist, because that is literally what it is. Each
+   failing row carries its own remedy inline so nothing has to be cross-read. */
+.db-checks { display: flex; flex-direction: column; gap: 0.5rem; }
+.db-check {
+  display: grid;
+  grid-template-columns: 1.25rem 1fr;
+  gap: 0.5rem 0.7rem;
+  padding: 0.7rem 0.85rem;
+  border: 1px solid var(--color-border);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: rgba(255,255,255,0.02);
+}
+.db-check.pass { border-left-color: var(--color-accent); }
+.db-check.fail { border-left-color: #e06a5c; background: rgba(224,106,92,0.06); }
+
+.db-check-mark {
+  font-weight: 700;
+  line-height: 1.5;
+  color: var(--color-accent);
+}
+.db-check.fail .db-check-mark { color: #e06a5c; }
+
+.db-check-name { font-weight: 600; font-size: 0.95rem; }
+.db-check-detail {
+  color: var(--color-muted);
+  font-size: 0.875rem;
+  grid-column: 2;
+}
+
+/* SQL: the deliverable when something failed, so it gets the one strong
+   treatment on this panel. Wraps, selectable, and never scrolls out of reach. */
+.db-sql {
+  grid-column: 2;
+  margin-top: 0.15rem;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--color-text);
+  background: rgba(0,0,0,0.35);
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 0.7rem 0.8rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: all;
+}
+
+.db-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-top: 1.25rem;
+}
+
+/* The step that restarts the app and cuts listeners off. Deliberately not the
+   same weight as the reversible steps above it. */
+.db-danger {
+  border: 1px solid rgba(224,106,92,0.5);
+  background: rgba(224,106,92,0.12);
+  color: #f0a89e;
+  border-radius: var(--radius);
+  padding: 1rem 1.1rem;
+  margin-top: 1.5rem;
+}
+.db-danger h3 {
+  margin: 0 0 0.35rem;
+  font-size: 1rem;
+  color: #f0a89e;
+}
+
+/* Blocked state: names the people, and says what unblocks it. */
+.db-blocked {
+  border: 1px solid rgba(200,167,106,0.45);
+  background: rgba(200,167,106,0.1);
+  border-radius: var(--radius);
+  padding: 0.85rem 1rem;
+  margin-top: 0.75rem;
+}
+.db-blocked ul { margin: 0.5rem 0 0; padding-left: 1.1rem; }
+.db-blocked li { font-size: 0.9rem; }
+
+/* The move flow's steps. A migration is one operation with an order, so the
+   order is shown: it tells the operator how far along they are, and — more
+   usefully — which step stopped when something went wrong. */
+.db-steps {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.db-step {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+  color: var(--color-muted);
+}
+.db-step-mark {
+  flex-shrink: 0;
+  width: 1.1rem;
+  text-align: center;
+  font-weight: 700;
+  line-height: 1.4;
+}
+.db-step.pass { color: var(--color-text); }
+.db-step.pass .db-step-mark { color: var(--color-accent); }
+.db-step.fail { color: #e06a5c; }
+.db-step.fail .db-step-mark { color: #e06a5c; }
+.db-step.busy { color: var(--color-text); }
+.db-step.busy .db-step-mark { color: var(--color-accent-warm); }
+
+/* Copy progress. The point of this block is that a long operation is visibly
+   alive: a spinner for "working", plus a running list of finished tables, so
+   the operator can watch it advance instead of wondering whether it hung. */
+.db-progress {
+  margin-top: 1rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: rgba(0,0,0,0.25);
+}
+
+.db-progress-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.9rem;
+}
+
+.db-progress-list {
+  margin: 0.7rem 0 0;
+  padding-left: 1.15rem;
+  max-height: 13rem;
+  overflow-y: auto;
+  font-size: 0.85rem;
+  color: var(--color-muted);
+}
+.db-progress-list li { margin-bottom: 0.15rem; }
+
+.db-progress-note {
+  margin-top: 0.75rem;
+  font-size: 0.875rem;
+  color: var(--color-accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .db-progress .spinner { animation: none; }
+}
+
+.db-input {
+  width: 100%;
+  padding: 0.7rem 0.8rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  background: rgba(0,0,0,0.3);
+  color: var(--color-text);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85rem;
+}
+.db-input:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 1px;
+}
+.db-input[aria-invalid="true"] {
+  border-color: #e06a5c;
+}
+
+/* Connection fields: two columns on a wide panel, one on a phone. Port is
+   short and SSL mode is a fixed vocabulary, so they share the second row
+   rather than each claiming a full column. */
+.db-fieldgrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.85rem 1rem;
+}
+
+@media (max-width: 560px) {
+  .db-fieldgrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+select.db-input {
+  appearance: none;
+  cursor: pointer;
+  /* Chevron drawn inline so the select matches the inputs without an asset. */
+  background-image: linear-gradient(45deg, transparent 50%, var(--color-muted) 50%),
+                    linear-gradient(135deg, var(--color-muted) 50%, transparent 50%);
+  background-position: calc(100% - 1.05rem) 55%, calc(100% - 0.75rem) 55%;
+  background-size: 0.3rem 0.3rem, 0.3rem 0.3rem;
+  background-repeat: no-repeat;
+  padding-right: 2.1rem;
+}
+select.db-input option {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+/* Keep-alive controls. A toggle and a number, so: one row for the switch,
+   one for the interval, both left-aligned on a shared label column so the
+   two controls line up instead of drifting. */
+.db-keepalive {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+  margin-top: 1rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: rgba(255,255,255,0.02);
+}
+
+.db-keepalive-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.db-keepalive-label {
+  min-width: 9.5rem;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.db-narrow {
+  width: 7rem;
+  flex: 0 0 auto;
+}
+
+.db-narrow:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+.db-narrow::-webkit-outer-spin-button,
+.db-narrow::-webkit-inner-spin-button {
+  opacity: 0.5;
+}
+
+.db-tables {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.875rem;
+  margin-top: 0.75rem;
+}
+.db-tables th,
+.db-tables td {
+  text-align: left;
+  padding: 0.4rem 0.6rem;
+  border-bottom: 1px solid var(--color-border);
+}
+.db-tables th { color: var(--color-muted); font-weight: 600; }
+.db-tables td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.db-tables td.verdict { font-weight: 600; color: var(--color-accent); }
+.db-tables tr.mismatch td.verdict { color: #e06a5c; }
+
+.spinner {
+  border: 3px solid rgba(255,255,255,0.3);
+  border-top-color: #fff;
+  border-radius: 50%;
+  width: 1.5rem;
+  height: 1.5rem;
+  animation: spin 1s linear infinite;
+  display: inline-block;
+}
+
+.avatars {
+  display: flex;
+  gap: 1rem;
+  margin-bottom: 2rem;
+}
+
+.avatar {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  border: 2px solid var(--color-accent);
+  object-fit: cover;
+}
+
+.controls-card {
+  display: flex;
+  flex-direction: column;
+  gap: 2rem;
+}
+
+.play-btn {
+  background-color: var(--color-accent);
+  color: #fff;
+  width: 100%;
+  padding: 1.5rem;
+  border-radius: 50px;
+  font-size: var(--font-size-lg);
+  font-weight: 700;
+  transition: background-color 0.25s ease, transform 0.2s ease;
+}
+
+.play-btn:hover {
+  transform: scale(1.02);
+  background-color: #5cb3eb;
+}
+
+.play-btn.playing {
+  background-color: #ef4444;
+}
+
+.play-btn.playing:hover {
+  background-color: #f36666;
+}
+
+.input-field {
+  width: 100%;
+  background-color: rgba(255, 255, 255, 0.05);
+  border: 1px solid var(--color-border);
+  color: var(--color-text);
+  padding: 1rem;
+  border-radius: var(--radius);
+  font-size: var(--font-size-base);
+  margin-bottom: 1rem;
+  outline: none;
+}
+
+.input-field:focus {
+  border-color: var(--color-accent);
+}
+
+.submit-btn {
+  background-color: #ef4444;
+  color: #fff;
+  padding: 0.875rem 1.5rem;
+  border-radius: var(--radius);
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  width: 100%;
+  border: none;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.625rem;
+  transition: opacity 0.2s;
+}
+
+.submit-btn:hover {
+  opacity: 0.9;
+}
+
+.submit-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.submit-btn svg {
+  transition: transform 0.2s;
+}
+
+.submit-btn:not(:disabled):hover svg {
+  transform: translate(2px, -2px);
+}
+
+/* Segmented option groups (Manual Voice DJ mode/duck). Joined pill matching
+   the page's button idiom: quiet container, loud selection. Options sit below
+   the primary send action in hierarchy, so smaller type and padding. */
+.seg-group {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--color-border);
+  border-radius: 50px;
+  overflow: hidden;
+}
+
+.seg-btn {
+  background: transparent;
+  border: none;
+  color: var(--color-muted);
+  padding: 0.6rem 1.1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.seg-btn + .seg-btn {
+  border-left: 1px solid var(--color-border);
+}
+
+.seg-btn:hover {
+  color: var(--color-text);
+}
+
+.seg-btn[aria-pressed="true"] {
+  background-color: var(--color-text);
+  color: var(--color-bg);
+}
+
+.seg-btn:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: -2px;
+}
+
+.seg-caption {
+  font-size: 0.8rem;
+  color: var(--color-muted);
+}
+
+.help-btn {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background-color: var(--color-surface);
+  border: 2px solid var(--color-border);
+  color: var(--color-text);
+  font-size: 1.5rem;
+  font-weight: bold;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-shadow: var(--shadow);
+  z-index: 100;
+}
+
+.tour-overlay-bg {
+  position: fixed;
+  inset: 0;
+  background-color: rgba(0, 0, 0, 0.85);
+  z-index: 990;
+}
+
+.tour-card {
+  position: fixed;
+  z-index: 1010;
+  background-color: var(--color-surface);
+  border: 2px solid var(--color-accent);
+  border-radius: 16px;
+  padding: 3rem 2rem;
+  width: 340px;
+  text-align: center;
+  transition: top 0.6s cubic-bezier(0.34, 1.56, 0.64, 1), 
+              left 0.6s cubic-bezier(0.34, 1.56, 0.64, 1), 
+              opacity 0.4s ease, transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+.tour-text {
+  font-size: 1.4rem;
+  font-weight: 600;
+  margin-bottom: 2rem;
+}
+
+.tour-next-btn {
+  background-color: var(--color-accent);
+  color: #fff;
+  padding: 1rem 2rem;
+  border-radius: 50px;
+  font-size: 1.2rem;
+  font-weight: bold;
+  width: 100%;
+  margin-bottom: 1rem;
+}
+
+.tour-skip {
+  color: var(--color-muted);
+  font-size: 0.9rem;
+  text-decoration: underline;
+}
+
+::view-transition-old(root),
+::view-transition-new(root) {
+  animation: none;
+}
+
+::view-transition-old(*),
+::view-transition-new(*) {
+  animation-duration: 0.8s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.music-link:hover {
+  color: var(--color-accent) !important;
+}
