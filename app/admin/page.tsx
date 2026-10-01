@@ -994,7 +994,7 @@ export default function AdminPage() {
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
             {brandTab === "logo" && (
               <>
-                <img id="brand-preview-logo" src={`/official_logo.png?v=${brandVersion}`} alt="Current logo" style={{ height: "80px", width: "auto", maxWidth: "100%", objectFit: "contain", alignSelf: "flex-start", background: "rgba(0,0,0,0.25)", borderRadius: "8px", padding: "8px" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                <img id="brand-preview-logo" src={`/brand/logo.png?v=${brandVersion}`} alt="Current logo" style={{ height: "80px", width: "auto", maxWidth: "100%", objectFit: "contain", alignSelf: "flex-start", background: "rgba(0,0,0,0.25)", borderRadius: "8px", padding: "8px" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                 <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Header, sign-in, covers fallback — also rebuilds every icon.</div>
                 <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
                   <input id="input-brand-logo" type="file" accept="image/*" className="input-field" style={{ maxWidth: "280px", marginBottom: 0 }} />
@@ -1007,8 +1007,8 @@ export default function AdminPage() {
             {brandTab === "icon" && (
               <>
                 <div style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
-                  <img id="brand-preview-icon" src={`/icons/icon-192.png?v=${brandVersion}`} alt="Current icon" style={{ width: "72px", height: "72px", borderRadius: "16px" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                  <img id="brand-preview-icon-maskable" src={`/icons/icon-192-maskable.png?v=${brandVersion}`} alt="Current maskable icon" style={{ width: "72px", height: "72px", borderRadius: "50%" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  <img id="brand-preview-icon" src={`/brand/icons/icon-192.png?v=${brandVersion}`} alt="Current icon" style={{ width: "72px", height: "72px", borderRadius: "16px" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                  <img id="brand-preview-icon-maskable" src={`/brand/icons/icon-192-maskable.png?v=${brandVersion}`} alt="Current maskable icon" style={{ width: "72px", height: "72px", borderRadius: "50%" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                 </div>
                 <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Tab + homescreen set. Keeps the current logo.</div>
                 <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
@@ -1021,7 +1021,7 @@ export default function AdminPage() {
             )}
             {brandTab === "background" && (
               <>
-                <img id="brand-preview-bg" src={`/bg.jpg?v=${brandVersion}`} alt="Current backdrop" style={{ width: "100%", maxWidth: "400px", height: "140px", objectFit: "cover", borderRadius: "8px" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
+                <img id="brand-preview-bg" src={`/brand/bg.jpg?v=${brandVersion}`} alt="Current backdrop" style={{ width: "100%", maxWidth: "400px", height: "140px", objectFit: "cover", borderRadius: "8px" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                 <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Scenic backdrop behind everything.</div>
                 <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
                   <input id="input-brand-bg" type="file" accept="image/*" className="input-field" style={{ maxWidth: "280px", marginBottom: 0 }} />
