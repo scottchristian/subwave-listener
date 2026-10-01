@@ -469,11 +469,14 @@ export default function DatabasePanel() {
   // something the server would refuse.
   const roomBusy = status.listenerCount === null || status.listenerCount > 0;
   const moveBusy = move !== null && moveStep !== "failed" && moveStep !== "done";
-  // Each button is also blocked for the direction the station is already on:
-  // there is nothing to move to from here, and offering it invites a confusing
-  // "already running on X" error after the fact.
-  const toPgBlocked = onPostgres || roomBusy || moveBusy || !connectionValid;
-  const toSqliteBlocked = !onPostgres || roomBusy || moveBusy || !targetFile.trim();
+  // Only the button for the direction the station is NOT on is rendered, so
+  // neither of these needs to test the current engine: if you can see the
+  // button, that direction is available in principle. The remaining reasons to
+  // hold off are the same for both — people listening, a move already running,
+  // and whatever that direction specifically still needs (a connection, or a
+  // destination path).
+  const toPgBlocked = roomBusy || moveBusy || !connectionValid;
+  const toSqliteBlocked = roomBusy || moveBusy || !targetFile.trim();
 
   return (
     <>
@@ -618,9 +621,19 @@ export default function DatabasePanel() {
       )}
 
       {/* ---- Move the station -------------------------------------------
-          Two buttons, one per direction, and only the one that makes sense is
-          enabled. Clicking either runs the whole sequence; there is no way to
-          copy without verifying, or to switch without copying. */}
+          ONE button, for the direction that is actually available. There used to
+          be two — one per direction, with the impossible one disabled — and on a
+          station already running Postgres the prominent white pill read "Move to
+          Postgres", which is the one thing you cannot do. It was genuinely
+          disabled, but a disabled button that looks identical to an enabled one is
+          not disabled as far as anyone reading the screen is concerned, and the
+          available direction was the dimmed one.
+
+          So the button for the current engine is not rendered at all. There is
+          nothing to click, which is the honest representation: you cannot move to
+          where you already are. Clicking the remaining one runs the whole
+          sequence; there is no way to copy without verifying, or to switch without
+          copying. */}
       <div className="db-danger" style={{ marginTop: "2rem" }}>
         <h3>Move the station</h3>
         <p style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>
@@ -650,39 +663,39 @@ export default function DatabasePanel() {
         )}
 
         <div className="db-actions" style={{ marginTop: "1rem" }}>
-          <button
-            id="btn-db-move-to-postgres"
-            className="primary-btn"
-            onClick={() => beginMove("postgresql")}
-            disabled={toPgBlocked}
-            title={
-              onPostgres
-                ? "Already running on Postgres"
-                : roomBusy
+          {onPostgres ? (
+            <button
+              id="btn-db-move-to-sqlite"
+              className="primary-btn"
+              onClick={() => beginMove("sqlite")}
+              disabled={toSqliteBlocked}
+              title={
+                roomBusy
+                  ? "Nobody may be listening during a move"
+                  : !targetFile.trim()
+                    ? "Say where to save the SQLite copy first"
+                    : undefined
+              }
+            >
+              Move to SQLite
+            </button>
+          ) : (
+            <button
+              id="btn-db-move-to-postgres"
+              className="primary-btn"
+              onClick={() => beginMove("postgresql")}
+              disabled={toPgBlocked}
+              title={
+                roomBusy
                   ? "Nobody may be listening during a move"
                   : !connectionValid
                     ? "Add the Postgres connection first"
                     : undefined
-            }
-          >
-            Move to Postgres
-          </button>
-          <button
-            id="btn-db-move-to-sqlite"
-            className="primary-btn"
-            onClick={() => beginMove("sqlite")}
-            disabled={toSqliteBlocked}
-            style={{ background: "rgba(255,255,255,0.1)", color: "#fff" }}
-            title={
-              !onPostgres
-                ? "Already running on SQLite"
-                : roomBusy
-                  ? "Nobody may be listening during a move"
-                  : undefined
-            }
-          >
-            Move to SQLite
-          </button>
+              }
+            >
+              Move to Postgres
+            </button>
+          )}
         </div>
 
         {!onPostgres && (

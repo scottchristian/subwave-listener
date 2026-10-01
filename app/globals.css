@@ -155,6 +155,30 @@ input {
   opacity: 0.9;
 }
 
+/*
+ * A disabled button has to LOOK disabled.
+ *
+ * .primary-btn is a full-width bright pill and had no disabled state at all, so
+ * every one of the admin Save buttons looked live while its request was in
+ * flight, and clicking did nothing visible. The most misleading case was the
+ * database panel, where "Move to Postgres" was the brightest thing on a station
+ * already running Postgres — genuinely disabled, and indistinguishable from the
+ * available action beside it.
+ *
+ * The hover lift is cancelled too: a button that rises under the cursor is
+ * inviting a click, and this one cannot be clicked.
+ */
+.primary-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  transform: none;
+}
+
+.primary-btn:disabled:hover {
+  transform: none;
+  opacity: 0.4;
+}
+
 .donate-btn {
   background-color: var(--color-accent-warm);
   color: var(--color-bg);
