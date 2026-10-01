@@ -284,21 +284,29 @@ input {
   white-space: nowrap;
 }
 
-/* The Account button is a chip you can press, so it carries the two things a
-   read-only chip does not: a pointer, and a hover that reads as pressable.
-   Split out rather than folded into .header-chip so the count, the weather and
-   the vibe never gain a hover they cannot honour. */
+/* The Account button is a chip you can press, so it is coloured like the other
+   pressable control on the page — the Play button — rather than like the three
+   read-only chips beside it. Matching the chips' dark translucent fill made this
+   one indistinguishable from them, which is the problem: it looks like another
+   readout when it is the way into your account.
+   Only the colour differs. The shape stays .header-chip, so it still lines up
+   with the row it sits in. Split out rather than folded into .header-chip so the
+   listener count, the weather and the vibe never gain a fill they cannot honour. */
 .header-chip-btn {
   cursor: pointer;
+  background-color: var(--color-accent);
   transition: background-color 0.2s ease;
 }
+/* The same lift the Play button uses, so hover means the same thing on both. */
 .header-chip-btn:hover {
-  background: rgba(0, 0, 0, 0.72);
+  background-color: #5cb3eb;
 }
 /* Mouse hover does not follow the keyboard, and this button opens a menu, so
-   the focus ring is the only indication of where you are when tabbing to it. */
+   the focus ring is the only indication of where you are when tabbing to it.
+   White rather than the accent: the accent is now this button's own background,
+   so an accent ring would be invisible against it. */
 .header-chip-btn:focus-visible {
-  outline: 2px solid var(--color-accent);
+  outline: 2px solid #fff;
   outline-offset: 2px;
 }
 
