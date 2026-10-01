@@ -698,7 +698,15 @@ export default function AdminPage() {
     <div className="container">
       <header id="header-admin" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "3rem", flexWrap: "wrap", gap: "1rem" }}>
         <div style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-          <img id="logo-img-admin" src={STATION.logo} alt={STATION.name} style={{ height: "48px", width: "auto", objectFit: "contain", filter: "drop-shadow(0px 4px 12px rgba(0,0,0,0.6))" }} />
+          <img
+                  id="logo-img-admin"
+                  src={STATION.logo}
+                  // A station upgrading from the old layout can still have the
+                  // pre-split path in .env.local, and it 404s. Fall back to the
+                  // stable brand URL rather than showing a broken image — the env
+                  // value is build-time, so this is the only thing that can help.
+                  onError={(e) => { (e.target as HTMLImageElement).src = "/brand/logo.png"; }}
+                  alt={STATION.name} style={{ height: "48px", width: "auto", objectFit: "contain", filter: "drop-shadow(0px 4px 12px rgba(0,0,0,0.6))" }} />
           <h1 className="logo-text" style={{ margin: 0 }}>Admin Dashboard</h1>
         </div>
         <a id="btn-back-to-station" href="/" className="primary-btn" style={{ padding: "0.5rem 1rem", fontSize: "0.875rem", width: "auto" }}>Back to Station</a>
