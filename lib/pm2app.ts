@@ -63,7 +63,14 @@ export function scheduleBounce(delayMs = 800): void {
   if (pendingBounce) clearTimeout(pendingBounce);
   pendingBounce = setTimeout(() => {
     pendingBounce = null;
-    execFile(PM2_BIN, ["restart", PM2_APP], (err) => {
+    // turbopackIgnore: the argument is a binary path and a process name, so
+    // there is nothing for a bundler to trace — but Turbopack cannot see that
+    // through a variable, and conservatively decides the whole filesystem is
+    // reachable, which puts the entire project (public/ included) into the traced
+    // output on every build. The output was measurably fine — 18M of server code
+    // and no duplicated source or assets — so this is only to stop the warning,
+    // which is long enough to be mistaken for a real problem mid-deploy.
+    execFile(/* turbopackIgnore: true */ PM2_BIN, ["restart", PM2_APP], (err) => {
       if (err) console.error("Self-restart failed:", err.message);
     });
   }, delayMs);
