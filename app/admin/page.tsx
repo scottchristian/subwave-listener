@@ -96,7 +96,11 @@ export default function AdminPage() {
   const [webhookCopied, setWebhookCopied] = useState(false);
   const [idMsg, setIdMsg] = useState("");
   const [idBusy, setIdBusy] = useState(false);
-  const [brandMsg, setBrandMsg] = useState("");
+  // Kind matters, not just the text. Both outcomes used to render in
+  // var(--color-accent) — the success blue — so a failed upload was
+  // indistinguishable from a successful one at a glance. That is how a 499 that
+  // never reached the server read as "Live now: …".
+  const [brandMsg, setBrandMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [brandBusy, setBrandBusy] = useState<string | null>(null);
   const [brandTab, setBrandTab] = useState<"logo" | "icon" | "background">("logo");
   const [brandVersion, setBrandVersion] = useState(0);
@@ -617,12 +621,16 @@ export default function AdminPage() {
   const uploadBrand = async (kind: "logo" | "icon" | "background", inputId: string) => {
     const el = document.getElementById(inputId) as HTMLInputElement | null;
     const file = el?.files?.[0];
+    const LABEL = { logo: "logo", icon: "icons", background: "backdrop" } as const;
+    const what = LABEL[kind];
     if (!file) {
-      setBrandMsg("Pick a file first.");
+      setBrandMsg({ kind: "error", text: `Pick a ${what} file first.` });
       return;
     }
     setBrandBusy(kind);
-    setBrandMsg("");
+    // Cleared up front, so the previous outcome can never be mistaken for this
+    // one's — including when this upload then fails before it says anything.
+    setBrandMsg(null);
     try {
       const form = new FormData();
       form.append("kind", kind);
@@ -630,14 +638,24 @@ export default function AdminPage() {
       const res = await fetch("/api/admin/branding/upload", { method: "POST", body: form });
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
-        setBrandMsg(`Live now: ${(data.written || []).join(", ")}. Favicons cache hard — hard-refresh to see the tab icon.`);
+        setBrandMsg({
+          kind: "ok",
+          text: `Live now: ${(data.written || []).join(", ")}. Favicons cache hard — hard-refresh to see the tab icon.`,
+        });
         setBrandVersion(Date.now());
         if (el) el.value = "";
       } else {
-        setBrandMsg(`Upload failed: ${data.error || "unknown error"}`);
+        setBrandMsg({ kind: "error", text: `Nothing was changed. ${data.error || "The server rejected the file."}` });
       }
     } catch {
-      setBrandMsg("Upload failed: no response.");
+      // The usual cause is the page going away mid-upload, which nginx records
+      // as a 499 and the browser surfaces as a dead connection. Say so, and say
+      // that nothing happened, because "did it work?" is the only question this
+      // message can be asked.
+      setBrandMsg({
+        kind: "error",
+        text: `Nothing was changed — the ${what} upload never reached the server. Wait for the button to say "Upload" again, and don't refresh the page while it says "Uploading…".`,
+      });
     } finally {
       setBrandBusy(null);
     }
@@ -978,7 +996,7 @@ export default function AdminPage() {
         <CollapsibleSection
           id="section-branding"
           title={<>Branding</>}
-          summary={<>Images go live instantly — no rebuild. Logo also regenerates every icon + tab favicon.</>}
+          summary={<>Images go live instantly — no rebuild and no restart.</>}
           hidden={activeTab !== "station"}
         >
           <div style={{ display: "flex", gap: "0.5rem", marginTop: "1rem" }}>
@@ -1003,11 +1021,24 @@ export default function AdminPage() {
             {brandTab === "logo" && (
               <>
                 <img id="brand-preview-logo" src={`/brand/logo.png?v=${brandVersion}`} alt="Current logo" style={{ height: "80px", width: "auto", maxWidth: "100%", objectFit: "contain", alignSelf: "flex-start", background: "rgba(0,0,0,0.25)", borderRadius: "8px", padding: "8px" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Header, sign-in, covers fallback — also rebuilds every icon.</div>
+                <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Header, sign-in screen, and the cover art when a track has none.</div>
+                <div
+                  style={{
+                    fontSize: "0.8rem",
+                    color: "var(--color-accent-warm)",
+                    borderLeft: "2px solid var(--color-accent-warm)",
+                    paddingLeft: "0.6rem",
+                    marginTop: "0.4rem",
+                  }}
+                >
+                  Uploading a logo also rebuilds every icon and the tab favicon from
+                  it. If you want to keep your current icons, upload the logo first and
+                  the icons afterwards — the icons button leaves the logo alone.
+                </div>
                 <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
                   <input id="input-brand-logo" type="file" accept="image/*" className="input-field" style={{ maxWidth: "280px", marginBottom: 0 }} />
                   <button id="btn-upload-logo" className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem" }} onClick={() => uploadBrand("logo", "input-brand-logo")} disabled={brandBusy !== null}>
-                    {brandBusy === "logo" ? "Uploading…" : "Upload"}
+                    {brandBusy === "logo" ? "Uploading logo…" : "Upload logo"}
                   </button>
                 </div>
               </>
@@ -1018,11 +1049,14 @@ export default function AdminPage() {
                   <img id="brand-preview-icon" src={`/brand/icons/icon-192.png?v=${brandVersion}`} alt="Current icon" style={{ width: "72px", height: "72px", borderRadius: "16px" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                   <img id="brand-preview-icon-maskable" src={`/brand/icons/icon-192-maskable.png?v=${brandVersion}`} alt="Current maskable icon" style={{ width: "72px", height: "72px", borderRadius: "50%" }} onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
                 </div>
-                <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Tab + homescreen set. Keeps the current logo.</div>
+                <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                  Tab icon, home-screen icon and the installed app icon. Uploading here
+                  leaves your logo exactly as it is.
+                </div>
                 <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
                   <input id="input-brand-icon" type="file" accept="image/*" className="input-field" style={{ maxWidth: "280px", marginBottom: 0 }} />
                   <button id="btn-upload-icon" className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem" }} onClick={() => uploadBrand("icon", "input-brand-icon")} disabled={brandBusy !== null}>
-                    {brandBusy === "icon" ? "Uploading…" : "Upload"}
+                    {brandBusy === "icon" ? "Uploading icons…" : "Upload icons"}
                   </button>
                 </div>
               </>
@@ -1034,12 +1068,24 @@ export default function AdminPage() {
                 <div style={{ display: "flex", gap: "0.5rem", alignItems: "center", flexWrap: "wrap" }}>
                   <input id="input-brand-bg" type="file" accept="image/*" className="input-field" style={{ maxWidth: "280px", marginBottom: 0 }} />
                   <button id="btn-upload-bg" className="primary-btn" style={{ width: "auto", padding: "0.5rem 1rem" }} onClick={() => uploadBrand("background", "input-brand-bg")} disabled={brandBusy !== null}>
-                    {brandBusy === "background" ? "Uploading…" : "Upload"}
+                    {brandBusy === "background" ? "Uploading backdrop…" : "Upload backdrop"}
                   </button>
                 </div>
               </>
             )}
-            {brandMsg && <div id="brand-upload-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{brandMsg}</div>}
+            {brandMsg && (
+              <div
+                id="brand-upload-msg"
+                role="status"
+                style={{
+                  // #e06a5c is the error red the rest of the admin already uses.
+                  color: brandMsg.kind === "error" ? "#e06a5c" : "var(--color-accent)",
+                  fontSize: "0.875rem",
+                }}
+              >
+                {brandMsg.text}
+              </div>
+            )}
           </div>
         </CollapsibleSection>
 
