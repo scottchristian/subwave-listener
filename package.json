@@ -1,17 +1,18 @@
 {
   "name": "subwave-web-player",
-  "version": "0.1.0",
+  "version": "0.0.1",
   "private": true,
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "check": "npm run check:pii && npm run check:refs && npm run check:links && npm run check:setup",
+    "check": "npm run check:pii && npm run check:refs && npm run check:links && npm run check:setup && npm run check:version",
     "check:pii": "node scripts/check-pii.mjs",
     "check:refs": "node scripts/check-station-refs.mjs",
     "check:links": "node scripts/check-links.mjs",
-    "check:setup": "node scripts/check-setup.mjs"
+    "check:setup": "node scripts/check-setup.mjs",
+    "check:version": "node scripts/check-version-compare.mts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",

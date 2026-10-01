@@ -4,6 +4,7 @@ import { useSession } from "next-auth/react";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { STATION } from "@/lib/station";
+import { APP_VERSION, REPO_URL } from "@/lib/version";
 import DatabasePanel from "./DatabasePanel";
 import CollapsibleSection from "./CollapsibleSection";
 import HeaderToggle from "./HeaderToggle";
@@ -51,6 +52,13 @@ export default function AdminPage() {
   const [maintBusy, setMaintBusy] = useState(false);
   const [maintPreview, setMaintPreview] = useState(false);
   const [verboseOn, setVerboseOn] = useState(true);
+  // Software version and whether a newer release exists. Null until the
+  // check answers, and left null when it cannot — an unreachable GitHub
+  // is not an error worth showing, it just means no news.
+  const [updateInfo, setUpdateInfo] = useState<{
+    current: string; latest: string | null; updateAvailable: boolean;
+    releaseUrl: string; notes: string | null; checkedAt: string;
+  } | null>(null);
   // The three header chips. All default on, so opening the panel shows the
   // station as it is rather than as a fresh install would be.
   const [headerListeners, setHeaderListeners] = useState(true);
@@ -161,6 +169,20 @@ export default function AdminPage() {
   // after it is hidden and that income has to stay visible.
   const showDonationsSection =
     activeTab === "stats" && (donateOn || !donationsLoaded || donations.length > 0);
+
+  // Ask whether a newer release exists. Once, not on every render: the server
+  // caches the answer for an hour anyway, and this is not something an operator
+  // watches change. Failure leaves the panel saying nothing rather than showing an
+  // error, because a station that cannot reach GitHub is not in trouble.
+  useEffect(() => {
+    if (status !== "authenticated" || !(session?.user as any)?.isAdmin) return;
+    let cancelled = false;
+    fetch("/api/admin/update-check")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setUpdateInfo(d); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [status, session]);
 
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -1496,6 +1518,74 @@ export default function AdminPage() {
         {/* Database — engine, permissions, copy, switch */}
         <section className="card" id="section-database" style={activeTab === "database" ? undefined : { display: "none" }}>
           <DatabasePanel />
+        </section>
+
+        {/* Software version, and where updates come from. */}
+        <section className="card" id="section-software" style={activeTab === "system" ? undefined : { display: "none" }}>
+          <h2>Software</h2>
+          <p className="about-text" style={{ marginTop: "0.5rem", fontSize: "0.875rem" }}>
+            The version this station is running. Updates are pulled and deployed deliberately, never
+            automatically &mdash; a deploy restarts the player, so it waits for a time when nobody is listening.
+          </p>
+
+          <div style={{ marginTop: "1rem", display: "flex", alignItems: "center", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
+            <span id="software-version-label" style={{ fontSize: "0.9rem" }}>
+              Installed version <strong id="software-version">{updateInfo?.current ?? APP_VERSION}</strong>
+            </span>
+            <a
+              id="btn-releases"
+              href={updateInfo?.releaseUrl || `${REPO_URL}/releases`}
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                display: "inline-flex", alignItems: "center", gap: "0.4rem",
+                padding: "0.5rem 1rem", borderRadius: "8px",
+                border: "1px solid var(--color-border)", color: "var(--color-text)",
+                background: "transparent", fontSize: "0.875rem", fontWeight: 600,
+                textDecoration: "none", whiteSpace: "nowrap",
+                transition: "background-color 0.2s ease, border-color 0.2s ease",
+              }}
+              onMouseEnter={(e) => {
+                e.currentTarget.style.backgroundColor = "rgba(255,255,255,0.06)";
+                e.currentTarget.style.borderColor = "rgba(255,255,255,0.16)";
+              }}
+              onMouseLeave={(e) => {
+                e.currentTarget.style.backgroundColor = "transparent";
+                e.currentTarget.style.borderColor = "var(--color-border)";
+              }}
+            >
+              Releases &amp; upgrade notes
+            </a>
+          </div>
+
+          {updateInfo?.updateAvailable && (
+            <div
+              id="software-update-available"
+              style={{
+                marginTop: "1rem", padding: "0.85rem 1rem", borderRadius: "8px",
+                background: "rgba(78,159,212,0.12)", border: "1px solid rgba(78,159,212,0.45)",
+                fontSize: "0.9rem",
+              }}
+            >
+              <strong>Version {updateInfo.latest} is available.</strong>{" "}
+              <span style={{ color: "var(--color-muted)" }}>
+                Read the notes first, then deploy when the station is quiet &mdash; the deploy refuses to run
+                while anyone is listening unless you pass --force.
+              </span>
+            </div>
+          )}
+
+          {updateInfo && !updateInfo.updateAvailable && (
+            <div id="software-update-current" style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-muted)" }}>
+              Up to date{updateInfo.latest ? ` &mdash; latest release is ${updateInfo.latest}` : ""}.
+            </div>
+          )}
+
+          {!updateInfo && (
+            <div id="software-update-pending" style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-muted)" }}>
+              Checking for a newer release&hellip;
+            </div>
+          )}
         </section>
 
         <section className="card" id="section-diagnostics" style={activeTab === "system" ? undefined : { display: "none" }}>

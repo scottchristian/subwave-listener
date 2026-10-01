@@ -9,6 +9,12 @@ import SkillsPanel from "@/app/components/SkillsPanel";
 import { STATION } from "@/lib/station";
 import { plog, setVerbose } from "@/lib/log";
 import { canSkipAsListener, parseSkipVisibility, type SkipVisibility } from "@/lib/skipvisibility";
+import { APP_VERSION, REPO_URL } from "@/lib/version";
+
+// The software, not the station. Deliberately not env-driven: an operator
+// renaming their station should not rename the project, and the version footer is
+// where the two would otherwise get confused.
+const APP_NAME = "Subwave Listener";
 
 // Minimal icons
 const PlayIcon = () => (
@@ -2347,6 +2353,27 @@ export default function Home() {
           </div>
         </div>
       )}
+
+      {/* Version, and where updates come from.
+          The number is the same string package.json carries and the release is
+          tagged with (lib/version.ts), so it cannot drift from either — an operator
+          reading this knows exactly what is running. The link is what makes a
+          release useful: it is where the notes and the upgrade instructions are. */}
+      <footer id="app-footer" style={{ marginTop: "3rem", paddingTop: "1.25rem", borderTop: "1px solid rgba(255,255,255,0.10)", display: "flex", justifyContent: "center", alignItems: "center", gap: "0.5rem", flexWrap: "wrap", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+        <a
+          id="footer-version"
+          href={`${REPO_URL}/releases`}
+          target="_blank"
+          rel="noreferrer"
+          title={`${APP_NAME} ${APP_VERSION} — check for updates`}
+          style={{ color: "inherit", textDecoration: "none", borderBottom: "1px dotted rgba(255,255,255,0.28)", paddingBottom: "1px" }}
+        >
+          {APP_NAME} {APP_VERSION}
+        </a>
+        <span aria-hidden="true">&middot;</span>
+        <span>unofficial companion software</span>
+      </footer>
+
     </main>
   );
 }

@@ -36,6 +36,7 @@
 - [Documentation](#documentation)
 - [Branding your player](#branding-your-player)
 - [Security notes](#security-notes)
+- [Versions and updating](#versions-and-updating)
 - [Licence](#licence)
 
 ---
@@ -506,6 +507,50 @@ wrong:
 - **`npm run check:refs` fails if your own server details reach these
   documents.** It exists because that happened once: a design note was
   committed with a real address and hostname in it, in a public repository.
+
+---
+
+## Versions and updating
+
+Releases are published on this repository's
+[releases page](https://github.com/scottchristian/subwave-listener/releases), each
+with its own tag (`v0.0.1`, `v0.0.2`, …) and its own notes. That page is the
+canonical list of what has changed — check it before upgrading.
+
+### Finding out what you are running
+
+The player footer carries the version, on every page, at the bottom:
+
+> Subwave Listener 0.0.1 · unofficial companion software
+
+That number is read from `package.json` at build time, and it is the same string
+the release is tagged with, so it cannot drift from either. If you are not sure
+what is deployed, that is the number to quote in a bug report.
+
+### Knowing an update exists
+
+**Admin → System → Software** shows the installed version, and says so plainly when
+a newer release has been published, with a link to its notes. It checks once an
+hour; a station that cannot reach GitHub simply sees nothing, which is not an
+error.
+
+### Upgrading
+
+Nothing updates itself, and that is deliberate. A deploy rebuilds the player and
+restarts the process, which would cut off anyone listening at the time, so the
+decision is left to a person who can see the room is empty. Your deploy script
+should refuse to run while the station has listeners — pass `--force` only when you
+mean it.
+
+Upgrading from a release is an ordinary deploy: pull the tag, `npm ci`, build,
+restart. Your configuration lives in the environment and in the database, not in
+the checkout, so nothing needs migrating between patches.
+
+### If you maintain a fork
+
+The update check points at this repository's releases, so a fork sees no updates
+rather than being told to pull code that is not yours. To follow your own releases,
+change `REPO` in `lib/version.ts` — the version itself comes from `package.json`.
 
 ---
 
