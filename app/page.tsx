@@ -208,19 +208,65 @@ export default function Home() {
   // Fixed viewport position for the menu, clamped on-screen at open time.
   const [userMenuPos, setUserMenuPos] = useState<{ top: number; left: number } | null>(null);
   const userMenuBtnRef = useRef<HTMLButtonElement | null>(null);
-  const openUserMenu = () => {
+  const userMenuElRef = useRef<HTMLDivElement | null>(null);
+  /**
+   * Place the menu under the Account button, measured live rather than once at
+   * open time.
+   *
+   * The button is at the top of the page and the menu is position: fixed, so the
+   * two only agree until the page scrolls — after which the button moves and the
+   * menu stays where it was, leaving it floating over unrelated content with
+   * nothing to click back to. Re-measuring on scroll and resize keeps it attached.
+   *
+   * `preferAbove` flips the menu above the button when there is not enough room
+   * below. Without it a button near the bottom of a short viewport pushes the menu
+   * off the bottom of the screen, taking the sign-out button with it.
+   */
+  const positionUserMenu = () => {
     const r = userMenuBtnRef.current?.getBoundingClientRect();
-    if (r) {
-      const w = 260;
-      setUserMenuPos({
-        top: r.bottom + 8,
-        left: Math.min(Math.max(r.left, 8), Math.max(window.innerWidth - w - 8, 8)),
-      });
-    } else {
-      setUserMenuPos(null);
-    }
-    setUserMenuOpen(true);
+    if (!r) { setUserMenuPos(null); return; }
+    const w = userMenuElRef.current?.offsetWidth || 260;
+    const h = userMenuElRef.current?.offsetHeight || 0;
+    const gap = 8, edge = 8;
+
+    // Below the button if it fits with a little room to spare, otherwise above it.
+    const roomBelow = window.innerHeight - r.bottom - gap;
+    const preferAbove = h > 0 && h > roomBelow && r.top - gap - h >= edge;
+    const top = preferAbove ? r.top - gap - h : r.bottom + gap;
+
+    setUserMenuPos({
+      // Clamped last so a menu taller than the viewport still starts on screen
+      // rather than hanging off the top with its first entries unreachable.
+      top: Math.min(Math.max(top, edge), Math.max(window.innerHeight - h - edge, edge)),
+      left: Math.min(Math.max(r.left, edge), Math.max(window.innerWidth - w - edge, edge)),
+    });
   };
+
+  const openUserMenu = () => {
+    setUserMenuOpen(true);
+    // Measured after the open flag commits, so the menu exists in the DOM and its
+    // real height is available. Measuring before this renders gives offsetHeight 0,
+    // so the flip-above logic silently does nothing on the first open and the menu
+    // is positioned by the 260px-width fallback alone.
+    requestAnimationFrame(positionUserMenu);
+  };
+
+  // Keep it attached while it is open. `true` for capture: the page also scrolls
+  // inside .overlay-scroll areas that are not the window, and those do not bubble
+  // a scroll event to it. Removed on close so a closed menu costs no listener.
+  useEffect(() => {
+    if (!userMenuOpen) return;
+    const update = () => positionUserMenu();
+    window.addEventListener("scroll", update, { capture: true, passive: true });
+    window.addEventListener("resize", update);
+    return () => {
+      window.removeEventListener("scroll", update, { capture: true });
+      window.removeEventListener("resize", update);
+    };
+    // positionUserMenu is stable in practice and depends only on refs; re-running on
+    // every render would re-bind the listeners constantly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userMenuOpen]);
   const [nickDraft, setNickDraft] = useState("");
   const [myNickname, setMyNickname] = useState<string | null>(null);
   const [nickLoaded, setNickLoaded] = useState(false);
@@ -1716,7 +1762,7 @@ export default function Home() {
           {userMenuOpen && (
             <>
               <div id="user-menu-backdrop" onClick={() => setUserMenuOpen(false)} style={{ position: "fixed", inset: 0, zIndex: 1190 }} />
-              <div id="user-menu" role="menu" className="overlay-card-enter" style={{ position: "fixed", top: userMenuPos ? `${userMenuPos.top}px` : "76px", left: userMenuPos ? `${userMenuPos.left}px` : "8px", zIndex: 1200, width: "260px", maxWidth: "calc(100vw - 16px)", backgroundColor: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "0.5rem", boxShadow: "0 12px 32px rgba(0,0,0,0.5)" }}>
+              <div id="user-menu" role="menu" ref={userMenuElRef} className="overlay-card-enter" style={{ position: "fixed", top: userMenuPos ? `${userMenuPos.top}px` : "76px", left: userMenuPos ? `${userMenuPos.left}px` : "8px", zIndex: 1200, width: "260px", maxWidth: "calc(100vw - 16px)", backgroundColor: "var(--color-surface)", border: "1px solid var(--color-border)", borderRadius: "12px", padding: "0.5rem", boxShadow: "0 12px 32px rgba(0,0,0,0.5)" }}>
                 <div style={{ padding: "0.5rem 0.75rem", fontSize: "0.85rem", color: "var(--color-muted)", borderBottom: "1px solid var(--color-border)", marginBottom: "0.25rem" }}>
                   {/* Never fall back to session.user.email — that is a blind
                       index token, not the address. */}
