@@ -436,7 +436,7 @@ async function stepStation(body: Record<string, unknown>) {
     tagline: str("tagline"),
     description: str("description"),
     about: str("about"),
-    logo: str("logo") || "/official_logo.png",
+    logo: str("logo") || "/brand/logo.png",
     backendUrl,
     donateUrl: str("donateUrl"),
     nextauthUrl,

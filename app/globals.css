@@ -50,7 +50,9 @@ body::before {
   inset: -10%;
   width: 120%;
   height: 120%;
-  background-image: url("/bg.jpg");
+  /* Resolves to the station's own backdrop if it uploaded one, else the
+     shipped placeholder. See lib/brandpaths.ts. */
+  background-image: url("/brand/bg.jpg");
   background-size: cover;
   background-position: center;
   z-index: -1;

@@ -261,7 +261,7 @@ NEXT_PUBLIC_STATION_NAME="My Station"
 NEXT_PUBLIC_STATION_TAGLINE="Broadcasting beyond boundaries."
 NEXT_PUBLIC_STATION_DESCRIPTION="A private internet radio station with an AI DJ."
 NEXT_PUBLIC_STATION_ABOUT="A private internet radio station. Access is by invitation only."
-NEXT_PUBLIC_STATION_LOGO="/official_logo.png"
+NEXT_PUBLIC_STATION_LOGO="/brand/logo.png"
 ```
 
 ### Your addresses — read this part twice
@@ -991,14 +991,26 @@ the application so the new values reach people's browsers, and restarts only if
 the build succeeded — a failed build leaves the working version alone rather than
 taking your station offline.
 
-**By hand.** Edit the `NEXT_PUBLIC_STATION_*` lines and replace files in
-`public/`:
+**By hand.** Edit the `NEXT_PUBLIC_STATION_*` lines, and put your artwork in
+`data/brand/`:
 
 | File | Used for | Good size |
 |---|---|---|
-| `NEXT_PUBLIC_STATION_LOGO`'s target | header and sign-in screen | wide, about 5:1 |
-| `public/bg.jpg` | the background behind everything | large, dark or low-contrast |
-| `public/icons/` | the app icon on phones | square, 512×512 or larger |
+| `data/brand/logo.png` | header and sign-in screen | wide, about 5:1 |
+| `data/brand/bg.jpg` | the background behind everything | large, dark or low-contrast |
+| `data/brand/icons/` | the app icon on phones | square, 512×512 or larger |
+| `data/brand/favicon.ico` | the browser tab icon | square, 512×512 or larger |
+
+**Why `data/brand/` and not `public/`.** The repository ships placeholder artwork
+in `public/defaults/`, and a deploy replaces it. `data/brand/` holds your
+station's own artwork and is excluded from both the repository and the deploy, so
+a deploy can never overwrite it. The site asks for `/brand/logo.png` and similar
+regardless of what is in there: your file if you have one, the placeholder if you
+do not. So one URL serves either, uploads apply the moment they finish with no
+rebuild, and deleting a file from `data/brand/` puts the placeholder back.
+
+The two can be mixed. Upload a logo and leave the background as the placeholder,
+and each is served independently.
 
 **Why the background should be dark or busy-but-dark:** text sits directly on
 top of it with no panel behind it, so a bright sky makes some of the text

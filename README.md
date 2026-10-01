@@ -459,8 +459,14 @@ Everything about how it looks is yours:
 - **Logo** — upload it in the same place. It is used in the header, on the
   sign-in screen, and as the app icon on phones. A wide logo, roughly five times
   wider than it is tall, suits the header best.
-- **Background image** — replace `public/bg.jpg`. Because text sits directly on
-  top of it, a dark or low-contrast picture works best.
+- **Background image** — upload it in the same place, or drop it at
+  `data/brand/bg.jpg`. Because text sits directly on top of it, a dark or
+  low-contrast picture works best.
+
+  Uploads land in `data/brand/`, which belongs to your station alone: the
+  repository ships placeholders in `public/defaults/` and a deploy replaces those,
+  never yours. The site asks for a fixed `/brand/...` address either way, so
+  changing your artwork takes effect immediately — no rebuild, no restart.
 - **Colours and fonts** — `app/globals.css`. The main ones are near the top, as
   CSS variables.
 

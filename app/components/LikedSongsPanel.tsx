@@ -96,7 +96,7 @@ function LikedRow({ like, myUserId, onUnlike, onRequest, requested }: {
           id={`liked-art-${like.id}`}
           src={`${STATION_API}/api/cover/${like.trackId}`}
           alt=""
-          onError={(e) => { (e.target as HTMLImageElement).src = "/official_logo.png"; }}
+          onError={(e) => { (e.target as HTMLImageElement).src = "/brand/logo.png"; }}
           style={{ width: "44px", height: "44px", objectFit: "cover", borderRadius: "6px" }}
         />
         <span style={{ minWidth: 0 }}>

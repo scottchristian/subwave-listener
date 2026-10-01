@@ -26,8 +26,14 @@ export const STATION = {
     process.env.NEXT_PUBLIC_STATION_ABOUT,
     "A private internet radio station. Access is by invitation only — please sign in to listen to the live stream."
   ),
-  /** Logo path in public/ (replace the file to rebrand). */
-  logo: clean(process.env.NEXT_PUBLIC_STATION_LOGO, "/official_logo.png"),
+  /**
+   * Logo path. A stable URL, not a file in this repository: /brand/logo.png
+   * resolves to the station's own artwork if it has any and to the shipped
+   * placeholder if not, decided per request by lib/brandpaths.ts. Branding
+   * therefore applies with no rebuild, and replacing the artwork cannot change
+   * this value.
+   */
+  logo: clean(process.env.NEXT_PUBLIC_STATION_LOGO, "/brand/logo.png"),
   /**
    * Public Subwave backend base (no /api suffix needed — routes normalize it).
    * The browser calls this directly for now-playing/covers, so it must be the

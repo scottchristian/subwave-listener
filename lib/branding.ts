@@ -2,16 +2,22 @@ import sharp, { type Sharp } from "sharp";
 import pngToIco from "png-to-ico";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { BRAND_DIR } from "./brandpaths";
 
-const PUBLIC_DIR = path.join(process.cwd(), "public");
-const ICONS_DIR = path.join(PUBLIC_DIR, "icons");
+// Uploads go to data/brand/, NOT to public/.
+//
+// They used to overwrite public/official_logo.png and friends in place, which
+// meant the operator's artwork and the repository's placeholder were the same
+// file. Every deploy then re-uploaded the placeholder over it, and any branding
+// set through the dashboard was destroyed by the next deploy. The two are
+// separate now; see lib/brandpaths.ts, which decides what each public URL
+// resolves to.
+const ICONS_DIR = path.join(BRAND_DIR, "icons");
 
-// Fixed asset paths — uploads overwrite these in place, so branding applies
-// instantly with no rebuild (unlike app/*/icon routes, which bake at build).
 export const BRAND_PATHS = {
-  logo: path.join(PUBLIC_DIR, "official_logo.png"),
-  background: path.join(PUBLIC_DIR, "bg.jpg"),
-  favicon: path.join(PUBLIC_DIR, "favicon.ico"),
+  logo: path.join(BRAND_DIR, "logo.png"),
+  background: path.join(BRAND_DIR, "bg.jpg"),
+  favicon: path.join(BRAND_DIR, "favicon.ico"),
 } as const;
 
 const MAX_UPLOAD_BYTES = 5 * 1024 * 1024;
@@ -64,6 +70,7 @@ async function maskable(buf: Buffer, size: number): Promise<Buffer> {
 
 /** Regenerate every icon + favicon from a source image buffer. */
 export async function regenerateIcons(source: Buffer): Promise<string[]> {
+  // Recursive, so this creates data/brand/ as well as data/brand/icons/.
   await fs.mkdir(ICONS_DIR, { recursive: true });
   const jobs: [string, Buffer][] = [
     ["apple-touch-icon.png", await squareOnPlate(source, 180)],
@@ -95,6 +102,13 @@ export async function applyBrandingUpload(
 ): Promise<string[]> {
   const img = await readImage(buf);
   const normalized = await img.png().toBuffer();
+
+  // data/ is gitignored, so data/brand/ does not exist on a fresh install and is
+  // not carried across a deploy. Without this the first upload of a logo or a
+  // background fails with ENOENT — and only the logo and background, since
+  // regenerateIcons already made its own directory, so the icon button would keep
+  // working while the other two did not.
+  await fs.mkdir(BRAND_DIR, { recursive: true });
   if (kind === "background") {
     const jpg = await sharp(normalized).jpeg({ quality: 82 }).toBuffer();
     await fs.writeFile(BRAND_PATHS.background, jpg);
@@ -106,7 +120,7 @@ export async function applyBrandingUpload(
       .png()
       .toBuffer();
     await fs.writeFile(BRAND_PATHS.logo, logo);
-    return ["official_logo.png", ...(await regenerateIcons(normalized))];
+    return ["logo.png", ...(await regenerateIcons(normalized))];
   }
   return regenerateIcons(normalized);
 }
