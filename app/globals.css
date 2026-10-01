@@ -209,6 +209,18 @@ input {
   align-items: start;
 }
 
+/* A grid item's default min-width is `auto`, which means it is sized by its
+   content and cannot shrink below it. That is normally what you want — it stops
+   content spilling out of its track — but here the content is a track title, and
+   a title with no spaces in it ("Supercalifragilistic…") is one unbreakable word
+   as wide as the whole string. The result was a column that grew to 1706px
+   inside a 329px track on a phone, dragging the card and the art with it.
+   min-width: 0 lets the column honour its track instead, with the titles below
+   doing the wrapping. */
+.player-grid > * {
+  min-width: 0;
+}
+
 @media (min-width: 768px) {
   .player-grid {
     grid-template-columns: 1fr 1fr;
@@ -237,12 +249,21 @@ input {
   font-weight: 700;
   line-height: 1.2;
   margin-bottom: 0.5rem;
+  /* Track names are arbitrary strings from the music service — URLs, phonetic
+     spellings, DJ sets — so a title with no spaces in it is normal rather than
+     exceptional. `anywhere` rather than `break-word` because only `anywhere`
+     also affects min-content sizing, which is what actually stops the column
+     being sized by the longest word. See .player-grid > * above. */
+  overflow-wrap: anywhere;
 }
 
 .track-artist {
   font-size: var(--font-size-lg);
   color: var(--color-accent);
   margin-bottom: 2rem;
+  /* Same reasoning as .track-title: artist strings come from the same arbitrary
+     source and can be a single unbroken token. */
+  overflow-wrap: anywhere;
 }
 
 .meta-row {
