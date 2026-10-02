@@ -826,48 +826,6 @@ export default function Home() {
     else setUserMenuOpen(false);
   }, [tourStep]);
 
-  // Sync now playing metadata to OS media controls (Lock Screen / Control Center).
-  // MediaMetadata has no explicit field (title/artist/album/artwork only), so
-  // explicit tracks get a 🅴 title suffix when the admin toggle is on. The
-  // Spotify lookup lands async after first paint — trackExplicit re-fires this.
-  // Guarded by applied key: feed polls hand fresh objects, re-setting the
-  // same metadata every 5s (and spamming the log) is pure waste.
-  const mediaAppliedRef = useRef<string | null>(null);
-  useEffect(() => {
-    if ('mediaSession' in navigator) {
-      const np = stationData?.nowPlaying;
-      if (np) {
-        const artworkUrl = np.subsonic_id
-          ? `${STATION_API}/api/cover/${np.subsonic_id}`
-          : `${window.location.origin}${STATION.logo}`;
-        const title = np.title || `${stationName} Live`;
-        const suffixed = trackExplicit && explicitSuffix ? `${title} 🅴` : title;
-        const key = `${np.subsonic_id}|${suffixed}|${np.artist}|${np.album}|${artworkUrl}`;
-        if (key === mediaAppliedRef.current) return;
-        mediaAppliedRef.current = key;
-        if (trackExplicit) plog.info("lock screen explicit tag", { title, suffix: explicitSuffix });
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title: suffixed,
-          artist: np.artist || stationName,
-          album: np.album || stationName,
-          artwork: [
-            { src: artworkUrl, sizes: '512x512', type: 'image/jpeg' },
-            { src: artworkUrl, sizes: '512x512', type: 'image/png' }
-          ]
-        });
-      } else {
-        const defaultArtwork = `${window.location.origin}${STATION.logo}`;
-        navigator.mediaSession.metadata = new MediaMetadata({
-          title: 'Ready to Broadcast',
-          artist: stationName,
-          album: stationName,
-          artwork: [
-            { src: defaultArtwork, sizes: '512x512', type: 'image/png' }
-          ]
-        });
-      }
-    }
-  }, [stationData?.nowPlaying, trackExplicit, explicitSuffix, stationName]);
 
   useEffect(() => {
     const fetchDirectLinks = async () => {
@@ -1275,6 +1233,108 @@ export default function Home() {
   // bufferSeconds left, the next song is already buffered and inbound, so a
   // skip there would cut into it and desync the display from the audio.
   const skipLocked = trackRemaining !== null && trackRemaining <= streamBufferSec();
+
+  // Sync now playing metadata to OS media controls (Lock Screen / Control Center).
+  // MediaMetadata has no explicit field (title/artist/album/artwork only), so
+  // explicit tracks get a 🅴 title suffix when the admin toggle is on. The
+  // Spotify lookup lands async after first paint — trackExplicit re-fires this.
+  // Guarded by applied key: feed polls hand fresh objects, re-setting the
+  // same metadata every 5s (and spamming the log) is pure waste.
+  //
+  // Position state (the progress bar and remaining time) is NOT under the key
+  // guard — it has to be re-set as the clock ticks, every second while a track is
+  // playing. Same for the action handlers, which follow live button state.
+  const mediaAppliedRef = useRef<string | null>(null);
+  // Whether a lock-screen press would do exactly what the in-app Skip button does.
+  // The in-app button confirms when other listeners are present ("skip for every
+  // listener?"), and a lock screen cannot ask — so the handler is only registered
+  // when no confirm would be needed. Otherwise the button is removed (handler set
+  // to null) rather than left to dead-end. skipEnabled mirrors the in-app
+  // disabled state (cooldown, end-of-track lock, an action already running),
+  // and adminSkipTrack re-checks all of this itself, so a stale registration
+  // cannot skip something the UI would refuse.
+  const lockScreenSkipOn = (() => {
+    const listeners = stationData?.listeners?.current;
+    const isAdmin = !!(session?.user as any)?.isAdmin;
+    const shown = isAdmin || canSkipAsListener(skipVisibility, listeners);
+    const cooling = skipCooldownLeft > 0;
+    const enabled = !cooling && !skipLocked && adminBusy === null;
+    const needsConfirm = typeof listeners === "number" && listeners > 1;
+    return shown && enabled && !needsConfirm && !!stationData?.nowPlaying?.title;
+  })();
+  useEffect(() => {
+    if (!('mediaSession' in navigator)) return;
+    try {
+      navigator.mediaSession.playbackState = isPlaying ? "playing" : isLoading || isBuffering ? "paused" : "none";
+    } catch {}
+    if (lockScreenSkipOn) {
+      try {
+        navigator.mediaSession.setActionHandler("nexttrack", () => { void adminSkipTrack(); });
+      } catch {}
+    } else {
+      try {
+        navigator.mediaSession.setActionHandler("nexttrack", null);
+      } catch {}
+    }
+    try {
+      navigator.mediaSession.setActionHandler("play", () => { if (!isPlaying) togglePlay(); });
+    } catch {}
+    try {
+      navigator.mediaSession.setActionHandler("pause", () => { if (isPlaying) togglePlay(); });
+    } catch {}
+    const np = stationData?.nowPlaying;
+    if (np) {
+      const artworkUrl = np.subsonic_id
+        ? `${STATION_API}/api/cover/${np.subsonic_id}`
+        : `${window.location.origin}${STATION.logo}`;
+      const title = np.title || `${stationName} Live`;
+      const suffixed = trackExplicit && explicitSuffix ? `${title} 🅴` : title;
+      const key = `${np.subsonic_id}|${suffixed}|${np.artist}|${np.album}|${artworkUrl}`;
+      if (key !== mediaAppliedRef.current) {
+        mediaAppliedRef.current = key;
+        if (trackExplicit) plog.info("lock screen explicit tag", { title, suffix: explicitSuffix });
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: suffixed,
+          artist: np.artist || stationName,
+          album: np.album || stationName,
+          artwork: [
+            { src: artworkUrl, sizes: '512x512', type: 'image/jpeg' },
+            { src: artworkUrl, sizes: '512x512', type: 'image/png' }
+          ]
+        });
+      }
+      // Remaining time, from the same clock the on-screen countdown uses: the
+      // backend timestamp is when the track hit the wire and the listener hears it
+      // bufferSeconds later, so elapsed starts there. Clamped into range — a
+      // position outside [0, duration] makes setPositionState throw, and a track
+      // with no usable numbers simply gets no position rather than a wrong one.
+      try {
+        const duration = Number(np.duration);
+        const elapsed = Math.floor(Date.now() / 1000) - (Number(np.timestamp) + streamBufferSec());
+        // Both halves have to be numbers. A track with no timestamp (a live edge
+        // with nothing countable) makes elapsed NaN, and NaN clamps to NaN — which
+        // makes setPositionState throw. The try/catch would swallow it, but once a
+        // second, forever, so the check belongs here instead.
+        if (Number.isFinite(duration) && duration > 0 && Number.isFinite(elapsed)) {
+          navigator.mediaSession.setPositionState({
+            duration,
+            playbackRate: 1,
+            position: Math.min(Math.max(elapsed, 0), duration),
+          });
+        }
+      } catch {}
+    } else {
+      const defaultArtwork = `${window.location.origin}${STATION.logo}`;
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: 'Ready to Broadcast',
+        artist: stationName,
+        album: stationName,
+        artwork: [
+          { src: defaultArtwork, sizes: '512x512', type: 'image/png' }
+        ]
+      });
+    }
+  }, [stationData?.nowPlaying, trackExplicit, explicitSuffix, stationName, trackRemaining, lockScreenSkipOn, isPlaying, isLoading, isBuffering]);
 
   const adminBlockTrack = async (type: "track" | "album" | "artist") => {
     const np = stationData?.nowPlaying;
