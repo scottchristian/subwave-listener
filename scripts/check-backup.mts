@@ -103,6 +103,9 @@ try {
     `DATABASE_URL="file:../data/test.db"\n` +
     `DB_PROVIDER=sqlite\n` +
     `PII_ENCRYPTION_KEY="abc123"\n` +
+    `NEXTAUTH_SECRET="test-secret"\n` +
+    `GOOGLE_CLIENT_ID="test-client-id"\n` +
+    `GOOGLE_CLIENT_SECRET="test-client-secret"\n` +
     `QUOTED="she said \\"hi\\" \\\\ done"\n` +
     `EQUALS="a=b=c"\n` +
     `EMPTY=\n` +
@@ -294,6 +297,69 @@ try {
   ok(parsed["SP"] === "  p  ", "inner padding kept");
   ok(!("NOT_A_LINE" in parsed), "non-assignments skipped");
   ok(!("# comment" in parsed), "comments skipped");
+
+  // ---- Phase 7a: validation (on a fresh backup — Phase 6 pruned the original) ----
+  {
+    const src = await backup.createBackup("validation-src");
+    const created = src;
+    const v = await backup.validateBackup(created.id);
+    ok(v.ok === true, "fresh backup validates");
+    ok(v.rows > 0 && v.tables > 0, "validation counts rows and tables", `${v.rows} rows / ${v.tables} tables`);
+    ok(v.envKeys > 0, "validation counts settings");
+    // The encryption key must be in there — without it a restore decrypts nothing.
+    const envRaw = await fs.readFile(
+      path.join(appRoot, "data", "backups", created.id, "env.raw"), "utf8"
+    );
+    const envParsed = backup.parseEnvFile(envRaw);
+    for (const k of ["DATABASE_URL", "NEXTAUTH_SECRET", "PII_ENCRYPTION_KEY", "GOOGLE_CLIENT_ID"]) {
+      ok(!!envParsed[k], `backup holds ${k}`);
+    }
+    const backupsRoot = path.join(appRoot, "data", "backups");
+    const clone = async (suffix: string) => {
+      const src = path.join(backupsRoot, created.id);
+      const dest = path.join(backupsRoot, created.id + suffix);
+      await fs.rm(dest, { recursive: true, force: true });
+      await fs.cp(src, dest, { recursive: true });
+      const mp = path.join(dest, "manifest.json");
+      const m = JSON.parse(await fs.readFile(mp, "utf8"));
+      m.id = created.id + suffix;
+      await fs.writeFile(mp, JSON.stringify(m));
+      return created.id + suffix;
+    };
+    // Missing key -> error naming it.
+    const noKey = await clone("-nokey");
+    const noKeyRaw = await fs.readFile(path.join(backupsRoot, noKey, "env.raw"), "utf8");
+    await fs.writeFile(
+      path.join(backupsRoot, noKey, "env.raw"),
+      noKeyRaw.split("\n").filter((l) => !l.startsWith("PII_ENCRYPTION_KEY=")).join("\n")
+    );
+    const vNoKey = await backup.validateBackup(noKey);
+    ok(vNoKey.ok === false && vNoKey.errors.some((e) => e.includes("PII_ENCRYPTION_KEY")), "missing encryption key fails validation");
+    // Corrupt / missing parts.
+    const badDb = await clone("-baddb");
+    await fs.writeFile(path.join(backupsRoot, badDb, "db.json"), "{not json");
+    ok((await backup.validateBackup(badDb)).ok === false, "corrupt db.json fails");
+    const noDb = await clone("-nodb");
+    await fs.rm(path.join(backupsRoot, noDb, "db.json"));
+    ok((await backup.validateBackup(noDb)).ok === false, "missing db.json fails");
+    const noEnv = await clone("-noenv");
+    await fs.rm(path.join(backupsRoot, noEnv, "env.raw"));
+    ok((await backup.validateBackup(noEnv)).ok === false, "missing env.raw fails");
+    ok((await backup.validateBackup("does-not-exist")).ok === false, "unknown id fails");
+    // Missing brand dir warns only — the station survives without artwork.
+    const noBrand = await clone("-nobrand");
+    await fs.rm(path.join(backupsRoot, noBrand, "brand"), { recursive: true, force: true });
+    const vNoBrand = await backup.validateBackup(noBrand);
+    ok(vNoBrand.ok === true && vNoBrand.warnings.length > 0, "missing brand warns, still valid");
+    // Manifest claims a marker that is not there: warning, still valid.
+    const noMarker = await clone("-nomarker");
+    await fs.rm(path.join(backupsRoot, noMarker, ".setup-complete"), { force: true });
+    const vNoMarker = await backup.validateBackup(noMarker);
+    ok(vNoMarker.ok === true && vNoMarker.warnings.length > 0, "marker mismatch warns, still valid");
+    for (const id of [noKey, badDb, noDb, noEnv, noBrand, noMarker]) {
+      await backup.deleteBackup(id);
+    }
+  }
 
   // ---- Phase 7b: filename slugs ----
   const slugs: Array<[string, string, string]> = [

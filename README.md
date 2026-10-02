@@ -546,6 +546,14 @@ Upgrading from a release is an ordinary deploy: pull the tag, `npm ci`, build,
 restart. Your configuration lives in the environment and in the database, not in
 the checkout, so nothing needs migrating between patches.
 
+You can also update from **Admin → System → Software** instead of deploying by
+hand. Pick stable (a newer release), main, or develop; the station takes a
+settings backup first, validates it, then downloads, rebuilds and restarts —
+refusing while anyone is listening unless you accept interrupting them. If the
+build fails it rolls back to the backup automatically; if a booted version turns
+out bad, roll back from the same panel. Nothing updates itself on a schedule —
+every update is started by a person.
+
 ### Backups
 
 **Admin → System → Backups** snapshots everything that makes the station yours:

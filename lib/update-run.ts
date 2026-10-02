@@ -18,12 +18,14 @@ import {
   MIN_DISK_BYTES,
   WARN_DISK_BYTES,
   MAX_TARBALL_BYTES,
-  UPDATE_SNAPSHOT_DIR,
+  UPDATE_SNAPSHOT_FILE,
+  snapshotSource,
+  restoreSource,
   UPDATE_STAGE_DIR,
   type UpdateJob,
 } from "@/lib/update";
 import { APP_VERSION, REPO } from "@/lib/version";
-import { createBackup, restoreBackup } from "@/lib/backup";
+import { createBackup, restoreBackup, validateBackup } from "@/lib/backup";
 import { getSubwaveConfig } from "@/lib/subwave";
 import { scheduleBounce } from "@/lib/pm2app";
 
@@ -74,6 +76,31 @@ export async function fetchRelease(target: string): Promise<ReleaseInfo> {
     notes: rel.body ? rel.body.slice(0, 2000) : null,
     tarballUrl: releaseTarballUrl(tag),
   };
+}
+
+export type BranchHead = { branch: string; sha: string; tarballUrl: string };
+
+/** The tip of a branch, with the same trust model as a release tag: the repo is
+ * fixed, the ref must be exactly main or develop, and the tarball URL is
+ * derived — never taken from the network response or the client. */
+export async function fetchBranchHead(branch: "main" | "develop"): Promise<BranchHead> {
+  let res;
+  try {
+    res = await fetch(`https://api.github.com/repos/${REPO}/branches/${branch}`, {
+      headers: { Accept: "application/vnd.github+json", "User-Agent": `${REPO} update` },
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch {
+    throw new Error("could not reach GitHub — check the server has internet access");
+  }
+  if (!res.ok) throw new Error(`GitHub answered ${res.status} for branch ${branch}`);
+  const d = (await res.json()) as any;
+  const sha = d?.commit?.sha;
+  if (typeof sha !== "string" || !/^[0-9a-f]{40}$/.test(sha)) {
+    throw new Error(`GitHub did not return a commit for branch ${branch}`);
+  }
+  const { channelTarballUrl } = await import("@/lib/update");
+  return { branch, sha, tarballUrl: channelTarballUrl(branch) };
 }
 
 /** How many listeners are on air right now. Unknown counts as a refusal reason. */
@@ -208,10 +235,9 @@ async function failJob(appDir: string, job: UpdateJob, error: string): Promise<U
  * the still-live old process.
  */
 export async function rollbackSource(appDir: string): Promise<void> {
-  const snapDir = path.join(appDir, "data", UPDATE_SNAPSHOT_DIR);
-  await fs.access(snapDir);
-  await copySourceTree(snapDir, appDir);
-  await pruneStaleFiles(appDir, snapDir);
+  const snapFile = path.join(appDir, "data", UPDATE_SNAPSHOT_FILE);
+  await fs.access(snapFile);
+  await restoreSource(appDir, snapFile);
 }
 
 /**
@@ -220,15 +246,25 @@ export async function rollbackSource(appDir: string): Promise<void> {
  * across the pm2 restart at the end, which the file survives and the process
  * does not.
  */
-export async function runUpdatePipeline(appDir: string, target: string): Promise<void> {
+export type UpdatePlan = {
+  channel: "release" | "main" | "develop";
+  /** Display version: the tag version, or branch@sha7 until the build bakes its own. */
+  version: string;
+  tag: string;
+  tarballUrl: string;
+  sha: string | null;
+  notes: string | null;
+};
+
+export async function runUpdatePipeline(appDir: string, plan: UpdatePlan): Promise<void> {
   let job = (await readJob(appDir)) as UpdateJob;
   const log = async (line: string) => {
     job = await jobLog(appDir, job, line);
   };
 
   try {
-    const info = await fetchRelease(target);
-    await log(`release ${info.tag} confirmed on GitHub`);
+    const label = plan.channel === "release" ? plan.tag : `${plan.channel}@${(plan.sha || "").slice(0, 7)}`;
+    await log(`${label} confirmed on GitHub`);
 
     const pre = await preflight(appDir);
     if (!pre.tar) throw new Error("tar not found on this server");
@@ -241,21 +277,34 @@ export async function runUpdatePipeline(appDir: string, target: string): Promise
     // Snapshot source BEFORE the backup, so a failure between the two still
     // leaves the previous tree recoverable. node_modules excluded (reinstalled
     // from the lockfile when it changes).
-    const snapDir = path.join(appDir, "data", UPDATE_SNAPSHOT_DIR);
-    await fs.rm(snapDir, { recursive: true, force: true });
-    const snapFiles = await copySourceTree(appDir, snapDir);
+    const snapFile = path.join(appDir, "data", UPDATE_SNAPSHOT_FILE);
+    await fs.rm(snapFile, { force: true });
+    const snapFiles = await snapshotSource(appDir, snapFile);
     await log(`source snapshotted (${snapFiles} files)`);
 
-    const backup = await createBackup(`pre-update-v${info.version}`);
+    const backup = await createBackup(`pre-update-${plan.channel === "release" ? `v${plan.version}` : `${plan.channel}-${(plan.sha || "").slice(0, 7)}`}`);
     job.backupId = backup.id;
     await writeJob(appDir, job);
     await log(`settings backed up (${backup.id})`);
+
+    // Prove the backup restores before depending on it. A snapshot that cannot
+    // be read back is not a safety net — abort now, while the station is still
+    // untouched, rather than after its source has been replaced.
+    const validation = await validateBackup(backup.id);
+    for (const w of validation.warnings) await log(`backup warning: ${w}`);
+    if (!validation.ok) {
+      throw new Error(`pre-update backup failed validation: ${validation.errors.join("; ")}`);
+    }
+    await log(
+      `backup validated (${validation.rows} rows in ${validation.tables} tables, ` +
+        `${validation.envKeys} settings, ${validation.brandFiles} artwork files)`
+    );
 
     const stageDir = path.join(appDir, "data", UPDATE_STAGE_DIR);
     await fs.rm(stageDir, { recursive: true, force: true });
     await fs.mkdir(stageDir, { recursive: true });
     const archive = path.join(stageDir, "release.tar.gz");
-    const bytes = await downloadTarball(info.tarballUrl, archive);
+    const bytes = await downloadTarball(plan.tarballUrl, archive);
     await log(`downloaded ${(bytes / 1048576).toFixed(1)} MB`);
     await validateTarball(archive);
     await run("tar", ["-xzf", archive, "--strip-components=1", "-C", stageDir], { timeout: 120000 });
@@ -264,12 +313,14 @@ export async function runUpdatePipeline(appDir: string, target: string): Promise
     await copySourceTree(stageDir, appDir);
     const pruned = await pruneStaleFiles(appDir, stageDir);
     await log(`source updated (${pruned} stale files removed)`);
+    // Compare against the staged tree (not the snapshot): a difference means the
+    // release wants different dependencies than what is installed. Read before
+    // the stage dir is removed below.
+    const needInstall = await lockfileChanged(appDir, stageDir);
     await fs.rm(stageDir, { recursive: true, force: true });
 
     const npm = (await preflight(appDir)).npm as string;
-    if (await lockfileChanged(appDir, snapDir)) {
-      // snapDir holds the PREVIOUS tree, so a difference means the release
-      // wants different dependencies.
+    if (needInstall) {
       await log("dependencies changed — reinstalling (minutes)");
       await runStep(npm, ["ci", "--no-audit", "--no-fund"], appDir, 15 * 60 * 1000);
       await log("dependencies installed");
@@ -281,13 +332,25 @@ export async function runUpdatePipeline(appDir: string, target: string): Promise
       .access(prismaBin(appDir))
       .then(() => prismaBin(appDir))
       .catch(() => "npx");
+    // prisma/schema.prisma declares postgresql, and Prisma validates the URL
+    // against the schema's own provider — so a file: URL is rejected before it
+    // does anything. The swap above restored the canonical schema, which is
+    // correct for Postgres and wrong for SQLite; generate the sqlite variant to
+    // a temp path (inside prisma/ so migrations resolve) and point the commands
+    // at it. Same pattern as the setup wizard's database step.
+    let schemaArgs: string[] = [];
+    if (envProvider === "sqlite") {
+      const tmpSchema = path.join(appDir, "prisma", ".gen-sqlite.prisma");
+      await runStep(process.execPath, [path.join(appDir, "scripts", "gen-schema.mjs"), "sqlite", tmpSchema], appDir, 60 * 1000);
+      schemaArgs = ["--schema", tmpSchema];
+    }
     await log(`syncing ${envProvider} schema`);
     if (envProvider === "postgresql") {
       await runStep(prismaCmd, ["db", "push", "--skip-generate", "--accept-data-loss"], appDir, 5 * 60 * 1000);
     } else {
-      await runStep(prismaCmd, ["migrate", "deploy"], appDir, 5 * 60 * 1000);
+      await runStep(prismaCmd, ["migrate", "deploy", ...schemaArgs], appDir, 5 * 60 * 1000);
     }
-    await runStep(prismaCmd, ["generate"], appDir, 5 * 60 * 1000);
+    await runStep(prismaCmd, ["generate", ...schemaArgs], appDir, 5 * 60 * 1000);
 
     await log("building (minutes)");
     const before = await fs.stat(path.join(appDir, ".next", "BUILD_ID")).catch(() => null);
@@ -301,6 +364,16 @@ export async function runUpdatePipeline(appDir: string, target: string): Promise
     // The snapshot stays: it is the manual-rollback material if this version
     // turns out bad once booted. One generation only — the next update replaces
     // it — so the disk cost is one source tree, without node_modules.
+    // Record what is now installed, so reinstalling the same branch tip refuses
+    // instead of rebuilding an identical tree for nothing.
+    const { writeSource } = await import("@/lib/update");
+    await writeSource(appDir, {
+      channel: plan.channel,
+      ref: plan.channel === "release" ? plan.tag : plan.channel,
+      sha: plan.sha,
+      version: plan.version,
+    });
+    job.to = plan.version;
     job.status = "done";
     await writeJob(appDir, job);
     scheduleBounce(2000);
@@ -334,7 +407,6 @@ export async function runUpdatePipeline(appDir: string, target: string): Promise
  * new process; the snapshot and backup on disk are all it needs.
  */
 export async function runManualRollback(appDir: string, backupId: string): Promise<void> {
-  const snapDir = path.join(appDir, "data", UPDATE_SNAPSHOT_DIR);
   const before = await fs.readFile(path.join(appDir, "package-lock.json"), "utf8").catch(() => null);
   await rollbackSource(appDir);
   const { restoreBackup } = await import("@/lib/backup");

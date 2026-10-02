@@ -491,6 +491,13 @@ export default function AdminPage() {
   // Set when the server refuses for listeners on air: the button stays, and a
   // checkbox appears for the operator to accept interrupting them.
   const [updateNeedsListenerConfirm, setUpdateNeedsListenerConfirm] = useState(false);
+  const [updateSource, setUpdateSource] = useState<{
+    channel: string;
+    ref: string;
+    sha: string | null;
+    version: string;
+  } | null>(null);
+  const [updateChannel, setUpdateChannel] = useState<"release" | "main" | "develop">("release");
 
   const refreshUpdate = async () => {
     try {
@@ -498,6 +505,7 @@ export default function AdminPage() {
       if (r.ok) {
         const d = await r.json();
         setUpdateJob(d.job || null);
+        setUpdateSource(d.source || null);
       }
     } catch {
       // a station mid-restart answers nothing — the next poll gets it
@@ -514,7 +522,7 @@ export default function AdminPage() {
     return () => clearInterval(id);
   }, [updateJob?.status]);
 
-  const startUpdate = async (target: string) => {
+  const startUpdate = async (channel: "release" | "main" | "develop", target?: string) => {
     setUpdateBusy(true);
     setUpdateMsg("");
     setUpdateNeedsListenerConfirm(false);
@@ -522,7 +530,7 @@ export default function AdminPage() {
       const res = await fetch("/api/admin/update", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target, confirmListeners: updateConfirmListeners }),
+        body: JSON.stringify({ channel, target, confirmListeners: updateConfirmListeners }),
       });
       const d = await res.json().catch(() => ({}));
       if (res.status === 409 && d.needsConfirm) {
@@ -531,7 +539,7 @@ export default function AdminPage() {
         return;
       }
       if (!res.ok) throw new Error(d.error || "update failed to start");
-      setUpdateMsg(`Updating to v${d.to} — settings are backed up first, then the station rebuilds and restarts. Do not close this tab.`);
+      setUpdateMsg(`Updating to ${d.channel === "release" ? `v${d.to}` : d.to} — settings are backed up first, then the station rebuilds and restarts. Do not close this tab.`);
       await refreshUpdate();
     } catch (e) {
       setUpdateMsg(`Update failed to start: ${(e as Error)?.message || "unknown error"}`);
@@ -1751,7 +1759,9 @@ export default function AdminPage() {
             </a>
           </div>
 
-          {updateInfo?.updateAvailable && (
+          {/* Always rendered: stable updates appear here when one exists, and the
+              branch tips are offered regardless for testing. */}
+          <div>
             <div
               id="software-update-available"
               style={{
@@ -1761,22 +1771,66 @@ export default function AdminPage() {
               }}
             >
               <div>
-                <strong>Version {updateInfo.latest} is available.</strong>{" "}
+                {updateJob?.status === "running" ? (
+                  <strong>Updating to {updateJob.to}.</strong>
+                ) : updateInfo?.updateAvailable ? (
+                  <>
+                    <strong>Version {updateInfo.latest} is available.</strong>{" "}
+                  </>
+                ) : (
+                  <>
+                    <strong>Up to date on stable{updateInfo?.latest ? ` (v${updateInfo.latest})` : ""}.</strong>{" "}
+                  </>
+                )}
                 <span style={{ color: "var(--color-muted)" }}>
                   Read the notes first. Updating backs up the settings, then rebuilds and
                   restarts the station — it refuses while anyone is listening unless you
                   accept interrupting them below.
                 </span>
               </div>
+              {/* Channel: stable releases, or either branch tip for testing. */}
+              <div style={{ marginTop: "0.75rem", display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
+                {([
+                  ["release", updateInfo?.latest ? `Stable v${updateInfo.latest}` : "Stable"],
+                  ["main", "Main branch"],
+                  ["develop", "Developer branch"],
+                ] as const).map(([value, label]) => (
+                  <label key={value} className="check" style={{ fontSize: "0.85rem" }}>
+                    <input
+                      type="radio"
+                      name="update-channel"
+                      checked={updateChannel === value}
+                      onChange={() => setUpdateChannel(value)}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+              {updateSource ? (
+                <div style={{ marginTop: "0.25rem", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                  Installed from {updateSource.channel}
+                  {updateSource.sha ? ` @ ${updateSource.sha.slice(0, 7)}` : ` v${updateSource.version}`}.
+                </div>
+              ) : null}
               <div style={{ marginTop: "0.75rem", display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
                 <button
                   id="btn-start-update"
                   className="primary-btn"
                   style={{ width: "auto", padding: "0.5rem 1.1rem" }}
-                  disabled={updateBusy || updateJob?.status === "running"}
-                  onClick={() => updateInfo.latest && startUpdate(updateInfo.latest)}
+                  disabled={
+                    updateBusy ||
+                    updateJob?.status === "running" ||
+                    (updateChannel === "release" && !updateInfo?.updateAvailable)
+                  }
+                  onClick={() => startUpdate(updateChannel, updateInfo?.latest || undefined)}
                 >
-                  {updateJob?.status === "running" ? "Updating…" : updateBusy ? "Starting…" : `Update to v${updateInfo.latest}`}
+                  {updateJob?.status === "running"
+                    ? "Updating…"
+                    : updateBusy
+                      ? "Starting…"
+                      : updateChannel === "release"
+                        ? `Update to v${updateInfo?.latest}`
+                        : `Update to latest ${updateChannel}`}
                 </button>
                 {updateNeedsListenerConfirm ? (
                   <label className="check" style={{ fontSize: "0.85rem" }}>
@@ -1795,7 +1849,7 @@ export default function AdminPage() {
                 </div>
               ) : null}
             </div>
-          )}
+          </div>
 
           {updateMsg ? (
             <div id="software-update-msg" style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-accent)" }}>

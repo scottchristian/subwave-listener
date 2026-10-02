@@ -6,6 +6,9 @@
 import { promises as fs, createReadStream } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFile as _execFile } from "node:child_process";
+import { promisify as _promisify } from "node:util";
+const runLocal = _promisify(_execFile);
 
 const update = await import("../lib/update.ts");
 // update-run pulls next-auth and the prisma client at module load; neither is
@@ -48,6 +51,45 @@ try {
   throws(() => update.assertUpgradeAllowed("0.0.10", "0.0.9", true), "prerelease refused even when newer");
   update.assertUpgradeAllowed("0.0.10", "0.0.9", false);
   ok(true, "newer stable allowed");
+
+  // ---- channels: a closed set, or nothing fetches ----
+  const { parseChannel, channelTarballUrl, isSameSource, readSource, writeSource } =
+    await import("../lib/update.ts");
+  ok(parseChannel("release") === "release", "release parses");
+  ok(parseChannel("main") === "main", "main parses");
+  ok(parseChannel("develop") === "develop", "develop parses");
+  for (const bad of ["", "MAIN", "master", "staging", "https://evil", "../x", "release "] ) {
+    let threw = false;
+    try {
+      parseChannel(bad);
+    } catch {
+      threw = true;
+    }
+    ok(threw, `channel rejects ${JSON.stringify(bad)}`);
+  }
+  ok(
+    channelTarballUrl("develop") ===
+      "https://github.com/scottchristian/subwave-listener/archive/refs/heads/develop.tar.gz",
+    "branch tarball URL shape"
+  );
+  ok(
+    channelTarballUrl("main").endsWith("/refs/heads/main.tar.gz"),
+    "main tarball URL shape"
+  );
+  // Same-sha guard: tags never match (versions cover them), branches match only
+  // on identical channel+sha.
+  const rec = { channel: "develop", ref: "develop", sha: "a".repeat(40), version: "develop@aaaaaaa", updatedAt: "" } as any;
+  ok(isSameSource(rec, "develop", "a".repeat(40)) === true, "same branch tip refused");
+  ok(isSameSource(rec, "develop", "b".repeat(40)) === false, "new branch tip allowed");
+  ok(isSameSource(rec, "main", "a".repeat(40)) === false, "other channel allowed");
+  ok(isSameSource(null, "develop", "a".repeat(40)) === false, "no record allowed");
+  ok(isSameSource({ ...rec, channel: "release" } as any, "release", null) === false, "tags exempt");
+  ok((await readSource(tmp)) === null, "missing source reads null");
+  await writeSource(tmp, { channel: "develop", ref: "develop", sha: "c".repeat(40), version: "develop@ccccccc" });
+  const back = await readSource(tmp);
+  ok(back !== null && back.sha === "c".repeat(40) && back.channel === "develop", "source round-trips");
+  const smode = (await fs.stat(path.join(tmp, "data", "update-source.json"))).mode & 0o777;
+  ok(smode === 0o600, "source file is 0600", smode.toString(8));
 
   // ---- tarball URL is always our repo, always a tag ----
   const url = update.releaseTarballUrl("0.0.3");
@@ -94,6 +136,74 @@ try {
     ok((await fs.readFile(path.join(live, p), "utf8")) === want, `protected ${p} untouched`);
   }
 
+  // ---- source snapshot is an archive, and restores byte-faithfully ----
+  {
+    const live2 = path.join(tmp, "live2");
+    const arc = path.join(tmp, "snap.tar.gz");
+    const w = async (base: string, rel: string, content: string) => {
+      await fs.mkdir(path.dirname(path.join(base, rel)), { recursive: true });
+      await fs.writeFile(path.join(base, rel), content);
+    };
+    await w(live2, "app/page.tsx", "v1");
+    await w(live2, "lib/a.ts", "a");
+    await w(live2, ".env.local", "SECRET=live");
+    await w(live2, "data/backups/b.json", "{}");
+    await w(live2, "node_modules/dep/index.js", "dep");
+    const n = await update.snapshotSource(live2, arc);
+    ok(n > 2, "snapshot archives source files", `got ${n}`);
+    const list = await update.runStep("tar", ["-tzf", arc], live2, 30000);
+    for (const bad of [".env.local", "data", "node_modules", ".git"]) {
+      ok(!list.split("\n").some((l) => l === `./${bad}` || l.startsWith(`./${bad}/`)), `snapshot excludes ${bad}`);
+    }
+    // Mutate: change, add stale, delete, touch protected.
+    await w(live2, "app/page.tsx", "v2!!!");
+    await w(live2, "app/stale.ts", "stale");
+    await fs.rm(path.join(live2, "lib/a.ts"));
+    await w(live2, ".env.local", "SECRET=changed");
+    await update.restoreSource(live2, arc);
+    ok((await fs.readFile(path.join(live2, "app/page.tsx"), "utf8")) === "v1", "changed file reverted");
+    ok(!(await fs.stat(path.join(live2, "app/stale.ts")).catch(() => null)), "stale file pruned");
+    ok((await fs.readFile(path.join(live2, "lib/a.ts"), "utf8")) === "a", "deleted file restored");
+    // .env.local is deliberately NOT in the snapshot (env is the backup's job) —
+    // so it keeps whatever the live tree had, changed value and all.
+    ok((await fs.readFile(path.join(live2, ".env.local"), "utf8")).includes("SECRET=changed"), "protected env untouched by snapshot restore");
+    // Refusals: garbage, .. entries, protected paths.
+    let refused = 0;
+    await fs.writeFile(path.join(tmp, "garbage.tar.gz"), "not a tarball");
+    try {
+      await update.restoreSource(live2, path.join(tmp, "garbage.tar.gz"));
+    } catch {
+      refused++;
+    }
+    await runLocal("python3", ["-c", [
+      "import tarfile, io",
+      `t = tarfile.open(${JSON.stringify(path.join(tmp, "evil2.tar.gz"))}, "w:gz")`,
+      `b = b"x"`,
+      `i = tarfile.TarInfo("../evil.txt"); i.size = len(b)`,
+      "t.addfile(i, io.BytesIO(b))",
+      "t.close()",
+    ].join("; ")]);
+    try {
+      await update.restoreSource(live2, path.join(tmp, "evil2.tar.gz"));
+    } catch {
+      refused++;
+    }
+    await runLocal("python3", ["-c", [
+      "import tarfile, io",
+      `t = tarfile.open(${JSON.stringify(path.join(tmp, "evil3.tar.gz"))}, "w:gz")`,
+      `b = b"x"`,
+      `i = tarfile.TarInfo("data/evil.txt"); i.size = len(b)`,
+      "t.addfile(i, io.BytesIO(b))",
+      "t.close()",
+    ].join("; ")]);
+    try {
+      await update.restoreSource(live2, path.join(tmp, "evil3.tar.gz"));
+    } catch {
+      refused++;
+    }
+    ok(refused === 3, "corrupt, escaping and protected-path archives refused");
+  }
+
   // ---- lockfile comparison ----
   ok((await update.lockfileChanged(live, staged)) === false, "identical (both missing) lockfiles install to be safe");
   await write(live, "package-lock.json", '{"v":1}');
@@ -136,9 +246,7 @@ try {
     const goodDir = path.join(tmp, "rel-v9");
     await fs.mkdir(path.join(goodDir, "app"), { recursive: true });
     await fs.writeFile(path.join(goodDir, "app", "page.tsx"), "v9");
-    const { execFile: ex } = await import("node:child_process");
-    const { promisify: pr } = await import("node:util");
-    const runLocal = pr(ex);
+
     await runLocal("tar", ["-czf", path.join(tmp, "good.tar.gz"), "-C", tmp, "rel-v9"]);
     // Evil twin: absolute path + .. entries.
     // Evil twin with a .. entry. Crafted with python tarfile (stdlib) because

@@ -33,5 +33,8 @@
     ".next/dev/types/**/*.ts",
     "**/*.mts"
   ],
-  "exclude": ["node_modules"]
+  // data/ holds runtime state (databases, backups, update snapshots and stage
+  // trees) — never source. Without this, a build typechecks the update's own
+  // source snapshot as if it were the app, and fails on it.
+  "exclude": ["node_modules", "data"]
 }

@@ -119,21 +119,7 @@ async function dirSizeBytes(dir: string): Promise<number> {
 }
 
 async function countBrandFiles(): Promise<number> {
-  let n = 0;
-  const walk = async (dir: string): Promise<void> => {
-    let entries;
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const e of entries) {
-      if (e.isDirectory()) await walk(path.join(dir, e.name));
-      else if (e.isFile()) n++;
-    }
-  };
-  await walk(BRAND_DIR);
-  return n;
+  return countBrandFilesIn(BRAND_DIR);
 }
 
 /**
@@ -264,6 +250,126 @@ async function pruneBackups(): Promise<void> {
 
 export async function deleteBackup(id: string): Promise<void> {
   await fs.rm(backupPath(id), { recursive: true, force: true });
+}
+
+/**
+ * Keys without which a restored station cannot boot or cannot be itself.
+ * All four are written unconditionally by the setup wizard, so a configured
+ * station always has them — their absence means the backup is incomplete, not
+ * merely old.
+ */
+export const REQUIRED_ENV_KEYS = [
+  "DATABASE_URL",
+  "NEXTAUTH_SECRET",
+  "PII_ENCRYPTION_KEY",
+  "GOOGLE_CLIENT_ID",
+];
+
+export type BackupValidation = {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  tables: number;
+  rows: number;
+  envKeys: number;
+  brandFiles: number;
+};
+
+/**
+ * Is this backup restorable? Reads everything restore would read, before
+ * anything depends on it. Errors abort an update; warnings are logged.
+ * Counts are NOT compared against the live database — streams write constantly,
+ * so any live count is stale before it is read. Structure and completeness are
+ * what matter: every part present, parseable, and sufficient to boot.
+ */
+export async function validateBackup(id: string): Promise<BackupValidation> {
+  const errors: string[] = [];
+  const warnings: string[] = [];
+  const dir = backupPath(id);
+
+  const manifest = await fs
+    .readFile(path.join(dir, "manifest.json"), "utf8")
+    .then((r) => JSON.parse(r) as BackupManifest)
+    .catch(() => null);
+  if (!manifest || manifest.id !== id) {
+    return { ok: false, errors: ["manifest missing or mismatched"], warnings, tables: 0, rows: 0, envKeys: 0, brandFiles: 0 };
+  }
+
+  const envRaw = await fs.readFile(path.join(dir, "env.raw"), "utf8").catch(() => null);
+  let envKeys = 0;
+  if (envRaw === null) {
+    errors.push("env.raw missing");
+  } else {
+    const env = parseEnvFile(envRaw);
+    envKeys = Object.keys(env).length;
+    if (envKeys === 0) errors.push("env file is empty");
+    for (const k of REQUIRED_ENV_KEYS) {
+      if (!env[k]) errors.push(`env is missing ${k}`);
+    }
+  }
+
+  const dbRaw = await fs.readFile(path.join(dir, "db.json"), "utf8").catch(() => null);
+  let tables = 0;
+  let rows = 0;
+  if (dbRaw === null) {
+    errors.push("db.json missing");
+  } else {
+    try {
+      const db = JSON.parse(dbRaw) as Record<string, unknown>;
+      if (typeof db !== "object" || db === null || Array.isArray(db)) {
+        throw new Error("not an object");
+      }
+      for (const [t, r] of Object.entries(db)) {
+        if (!Array.isArray(r)) throw new Error(`table ${t} is not an array`);
+        tables++;
+        rows += r.length;
+      }
+      if (tables === 0) warnings.push("database dump holds no tables");
+    } catch (e) {
+      errors.push(`db.json corrupt: ${(e as Error)?.message || "unparseable"}`);
+    }
+  }
+
+  let brandFiles = 0;
+  try {
+    const st = await fs.stat(path.join(dir, "brand"));
+    if (!st.isDirectory()) throw new Error("not a directory");
+    brandFiles = await countBrandFilesIn(path.join(dir, "brand"));
+  } catch {
+    // Artwork is optional — a station with no uploads backs up an empty dir,
+    // which createBackup always writes. Missing entirely means an incomplete
+    // backup, but one the station survives: warn, do not abort.
+    warnings.push("brand directory missing");
+  }
+
+  if (manifest.markerPresent) {
+    try {
+      await fs.access(path.join(dir, ".setup-complete"));
+    } catch {
+      warnings.push("manifest claims a setup marker but it is not there");
+    }
+  }
+
+  return { ok: errors.length === 0, errors, warnings, tables, rows, envKeys, brandFiles };
+};
+
+/** File count under a directory. Exported for validation; createBackup counts live brand the same way. */
+export async function countBrandFilesIn(dir: string): Promise<number> {
+  let n = 0;
+  const walk = async (d: string): Promise<void> => {
+    let entries;
+    try {
+      entries = await fs.readdir(d, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (e.isDirectory()) await walk(path.join(d, e.name));
+      else if (e.isFile()) n++;
+    }
+  };
+  await walk(dir);
+  return n;
 }
 
 /**

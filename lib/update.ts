@@ -13,7 +13,13 @@ const run = promisify(execFile);
 // which run in tests.
 
 export const UPDATE_JOB_FILE = "update-job.json";
-export const UPDATE_SNAPSHOT_DIR = "update-source-snapshot";
+// The previous source, as ONE archive — never a tree. A tree inside data/
+// broke updates to any release whose tsconfig lacks the data exclude: the
+// build typechecks data/update-source-snapshot/**/*.ts against the NEW tree,
+// where the modules the snapshot imports do not exist yet. An archive is
+// invisible to tsc, to route discovery and to every future tsconfig, by
+// construction rather than by convention.
+export const UPDATE_SNAPSHOT_FILE = "update-source-snapshot.tar.gz";
 export const UPDATE_STAGE_DIR = "update-stage";
 
 // Files that are deployment facts, not source. Never overwritten by an update,
@@ -74,6 +80,68 @@ export function releaseTarballUrl(tag: string): string {
   return `https://github.com/${REPO}/archive/refs/tags/${v}.tar.gz`;
 }
 
+export type UpdateChannel = "release" | "main" | "develop";
+
+/**
+ * Exactly these three — anything else is not a place we fetch code from. A
+ * client-supplied channel that is not on this list cannot turn into a fetch of
+ * an attacker-chosen ref, for the same reason targets must parse as versions.
+ */
+export function parseChannel(raw: unknown): UpdateChannel {
+  if (raw === "release" || raw === "main" || raw === "develop") return raw;
+  throw new Error("unknown update channel");
+}
+
+export function channelTarballUrl(channel: Exclude<UpdateChannel, "release">): string {
+  return `https://github.com/${REPO}/archive/refs/heads/${channel}.tar.gz`;
+}
+
+export type UpdateSource = {
+  channel: UpdateChannel;
+  /** Tag (releases) or branch name. */
+  ref: string;
+  /** Commit sha for branches; null for tags (the version is the identity). */
+  sha: string | null;
+  version: string;
+  updatedAt: string;
+};
+
+export function sourcePath(appDir: string = process.cwd()): string {
+  return path.join(appDir, "data", "update-source.json");
+}
+
+export async function readSource(appDir: string = process.cwd()): Promise<UpdateSource | null> {
+  try {
+    const raw = await fs.readFile(sourcePath(appDir), "utf8");
+    const s = JSON.parse(raw) as UpdateSource;
+    if (!s || (s.channel !== "release" && s.channel !== "main" && s.channel !== "develop")) return null;
+    return s;
+  } catch {
+    return null;
+  }
+}
+
+export async function writeSource(appDir: string, source: Omit<UpdateSource, "updatedAt">): Promise<void> {
+  await fs.mkdir(path.join(appDir, "data"), { recursive: true });
+  const tmp = sourcePath(appDir) + ".tmp";
+  await fs.writeFile(tmp, JSON.stringify({ ...source, updatedAt: new Date().toISOString() }, null, 2), {
+    mode: 0o600,
+  });
+  await fs.rename(tmp, sourcePath(appDir));
+}
+
+/**
+ * Refuse to install the branch tip the station already runs. Tags do not need
+ * this — version comparison covers them — but two polls of the same branch can
+ * return the same sha, and rebuilding an identical tree wastes minutes and a
+ * restart for nothing.
+ */
+export function isSameSource(record: UpdateSource | null, channel: UpdateChannel, sha: string | null): boolean {
+  if (!record || record.channel !== channel) return false;
+  if (channel === "release") return false;
+  return !!sha && record.sha === sha;
+}
+
 export function jobPath(appDir: string = process.cwd()): string {
   return path.join(appDir, "data", UPDATE_JOB_FILE);
 }
@@ -107,11 +175,10 @@ export function jobRunning(job: UpdateJob | null): boolean {
 }
 
 /**
- * Copy a source tree, minus deployment facts. Used both ways: snapshotting the
- * live tree before an update, and putting it back on rollback. node_modules is
- * deliberately excluded — dependencies are reinstalled deterministically from
- * the lockfile when it changes, and snapshotting hundreds of megabytes per
- * update would turn every upgrade into a disk event.
+ * Archive the live tree for rollback. Same exclusion set as copySourceTree
+ * (deployment facts are never snapshotted), but as one tar.gz rather than a
+ * tree — see UPDATE_SNAPSHOT_FILE for why a tree breaks the build it is meant
+ * to save. Returns the archive path.
  */
 export async function copySourceTree(from: string, to: string): Promise<number> {
   let files = 0;
@@ -135,6 +202,82 @@ export async function copySourceTree(from: string, to: string): Promise<number> 
   await fs.mkdir(to, { recursive: true });
   await walk(from, to);
   return files;
+}
+
+/**
+ * Snapshot the live tree into a single archive for rollback. The exclusion set
+ * mirrors copySourceTree (deployment facts are never snapshotted, build output
+ * never restores), expressed as tar flags. GNU and BSD tar both accept these.
+ */
+export async function snapshotSource(appDir: string, archivePath: string): Promise<number> {
+  await fs.mkdir(path.dirname(archivePath), { recursive: true });
+  await run(
+    "tar",
+    [
+      "-czf", archivePath,
+      "--exclude=node_modules", "--exclude=.git", "--exclude=.next",
+      "--exclude=data", "--exclude=.env.local", "--exclude=*.db",
+      "--exclude=.DS_Store", "--exclude=tsconfig.tsbuildinfo",
+      "-C", appDir, ".",
+    ],
+    { timeout: 300000 }
+  );
+  const { stdout } = await run("tar", ["-tzf", archivePath], { timeout: 60000 });
+  const entries = stdout.split("\n").filter(Boolean);
+  // A listing proves it is a real archive with real content; a byte floor would
+  // be arbitrary (text compresses to almost nothing) and would false-fail on
+  // small trees.
+  if (!entries.length) throw new Error("source snapshot is empty — refusing");
+  return entries.length;
+}
+
+/**
+ * Restore a source snapshot: extract over the live tree, then delete live
+ * files the snapshot does not contain (a renamed route must not linger).
+ * Protected paths survive untouched — env, data and node_modules are restored
+ * by their own flows (backup, reinstall), never by this one.
+ */
+export async function restoreSource(appDir: string, archivePath: string): Promise<void> {
+  // Validate first: a corrupt archive must fail before it replaces anything.
+  const { stdout } = await run("tar", ["-tzf", archivePath], { timeout: 60000 });
+  const entries = stdout.split("\n").filter(Boolean);
+  if (!entries.length) throw new Error("source snapshot is empty — refusing");
+  for (const e of entries) {
+    // Skip the archive's own root entry ("." or "./") — it names no file.
+    if (e === "." || e === "./") continue;
+    const rel = e.replace(/^\.\//, "");
+    if (!rel || rel.startsWith("/") || rel.split("/").includes("..")) {
+      throw new Error("source snapshot has unsafe paths — refusing");
+    }
+    const top = rel.split("/")[0];
+    if (PROTECTED_PATHS.includes(top)) {
+      throw new Error(`source snapshot contains protected path ${top} — refusing`);
+    }
+  }
+  await run("tar", ["-xzf", archivePath, "-C", appDir], { timeout: 300000 });
+  const archived = new Set(entries.map((e) => e.replace(/^\.\//, "").replace(/\/$/, "")));
+  const collect = async (dir: string, base: string, out: Set<string>): Promise<void> => {
+    let list;
+    try {
+      list = await fs.readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of list) {
+      if (PROTECTED_PATHS.includes(e.name)) continue;
+      if (e.name === ".next" || e.name === ".DS_Store" || e.name === "tsconfig.tsbuildinfo") continue;
+      const rel = base ? `${base}/${e.name}` : e.name;
+      if (e.isDirectory()) await collect(path.join(dir, e.name), rel, out);
+      else if (e.isFile()) out.add(rel);
+    }
+  };
+  const live = new Set<string>();
+  await collect(appDir, "", live);
+  for (const rel of live) {
+    if (!archived.has(rel) && ![...archived].some((a) => a.startsWith(rel + "/"))) {
+      await fs.rm(path.join(appDir, rel), { recursive: true, force: true });
+    }
+  }
 }
 
 /**
