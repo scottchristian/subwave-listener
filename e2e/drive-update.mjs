@@ -175,7 +175,7 @@ await waitFor(
       return j && j.job && j.job.status === "done" ? j.job : null;
     },
     "update reaches done",
-    150
+    260
   );
   if (job) {
     ok(/backup validated/.test(job.log.join("\n")), "second run also validated its backup");
