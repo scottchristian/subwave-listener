@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "check": "npm run check:pii && npm run check:refs && npm run check:links && npm run check:setup && npm run check:version && npm run check:address && npm run check:request && npm run check:duration && npm run check:backup",
+    "check": "npm run check:pii && npm run check:refs && npm run check:links && npm run check:setup && npm run check:version && npm run check:address && npm run check:request && npm run check:duration && npm run check:backup && npm run check:update",
     "check:pii": "node scripts/check-pii.mjs",
     "check:refs": "node scripts/check-station-refs.mjs",
     "check:links": "node scripts/check-links.mjs",
@@ -16,7 +16,8 @@
     "check:address": "node scripts/check-address-reach.mts",
     "check:request": "node scripts/check-request-wait.mts",
     "check:duration": "node scripts/check-track-duration.mts",
-    "check:backup": "node --import ./scripts/test-register.mjs scripts/check-backup.mts"
+    "check:backup": "TEST_PRISMA_CLIENT=\"$PWD/.test-client\" node --import ./scripts/test-register.mjs scripts/check-backup.mts",
+    "check:update": "node --import ./scripts/test-register.mjs scripts/check-update.mts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",

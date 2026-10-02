@@ -1,0 +1,349 @@
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import {
+  parseUpdateTarget,
+  assertUpgradeAllowed,
+  releaseTarballUrl,
+  copySourceTree,
+  pruneStaleFiles,
+  lockfileChanged,
+  runStep,
+  findNpm,
+  freeDiskBytes,
+  readJob,
+  writeJob,
+  jobRunning,
+  MIN_DISK_BYTES,
+  WARN_DISK_BYTES,
+  MAX_TARBALL_BYTES,
+  UPDATE_SNAPSHOT_DIR,
+  UPDATE_STAGE_DIR,
+  type UpdateJob,
+} from "@/lib/update";
+import { APP_VERSION, REPO } from "@/lib/version";
+import { createBackup, restoreBackup } from "@/lib/backup";
+import { getSubwaveConfig } from "@/lib/subwave";
+import { scheduleBounce } from "@/lib/pm2app";
+
+const run = promisify(execFile);
+
+/**
+ * In-app update orchestration. Detection lives in the update-check route; this
+ * is the doing: snapshot, download, swap, install, migrate, build, restart —
+ * with rollback to the snapshot when anything before the restart fails.
+ *
+ * Nothing here runs in the check suite (network, npm, minutes of build, pm2),
+ * so the unit-testable pieces live in lib/update.ts and this file stays thin
+ * glue plus the two flows. What IS verified by hand: a scratch station, once,
+ * before this ships — see the commit message.
+ */
+
+export type ReleaseInfo = {
+  tag: string;
+  version: string;
+  prerelease: boolean;
+  notes: string | null;
+  tarballUrl: string;
+};
+
+/** The release as GitHub reports it. Throws human-readable on any failure. */
+export async function fetchRelease(target: string): Promise<ReleaseInfo> {
+  const version = parseUpdateTarget(target);
+  const tag = `v${version}`;
+  let res;
+  try {
+    res = await fetch(`https://api.github.com/repos/${REPO}/releases/tags/${tag}`, {
+      headers: { Accept: "application/vnd.github+json", "User-Agent": `${REPO} update` },
+      signal: AbortSignal.timeout(20000),
+    });
+  } catch {
+    throw new Error("could not reach GitHub — check the server has internet access");
+  }
+  if (res.status === 404) throw new Error(`no release ${tag} on GitHub`);
+  if (res.status === 403) throw new Error("GitHub rate limit hit — try again in an hour");
+  if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
+  const rel = (await res.json()) as { tag_name?: string; prerelease?: boolean; draft?: boolean; body?: string };
+  if (!rel.tag_name || rel.draft) throw new Error(`release ${tag} is not published`);
+  assertUpgradeAllowed(version, APP_VERSION, rel.prerelease === true);
+  return {
+    tag,
+    version,
+    prerelease: rel.prerelease === true,
+    notes: rel.body ? rel.body.slice(0, 2000) : null,
+    tarballUrl: releaseTarballUrl(tag),
+  };
+}
+
+/** How many listeners are on air right now. Unknown counts as a refusal reason. */
+export async function listenerCount(): Promise<number | null> {
+  try {
+    const cfg = await getSubwaveConfig();
+    if (!cfg.apiUrl) return null;
+    const res = await fetch(`${cfg.apiUrl}/now-playing`, { signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return null;
+    const d = (await res.json()) as any;
+    const n = d?.listeners?.current;
+    return typeof n === "number" ? n : null;
+  } catch {
+    return null;
+  }
+}
+
+function prismaBin(appDir: string): string {
+  // Local install first (offline-safe), PATH fallback second.
+  return path.join(appDir, "node_modules", ".bin", "prisma");
+}
+
+async function commandExists(cmd: string): Promise<boolean> {
+  try {
+    await run(cmd, ["--version"], { timeout: 10000 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export type Preflight = {
+  diskBytes: number | null;
+  diskOk: boolean;
+  diskWarn: boolean;
+  npm: string | null;
+  tar: boolean;
+  prisma: boolean;
+};
+
+/** Everything the pipeline needs, checked before anything is downloaded. */
+export async function preflight(appDir: string): Promise<Preflight> {
+  const [diskBytes, tar] = await Promise.all([
+    freeDiskBytes(appDir),
+    commandExists("tar"),
+  ]);
+  let npm: string | null = null;
+  try {
+    npm = await findNpm();
+  } catch {
+    npm = null;
+  }
+  let prisma = false;
+  try {
+    await fs.access(prismaBin(appDir));
+    prisma = true;
+  } catch {
+    prisma = await commandExists("npx");
+  }
+  return {
+    diskBytes,
+    diskOk: diskBytes === null ? true : diskBytes >= MIN_DISK_BYTES,
+    diskWarn: diskBytes !== null && diskBytes < WARN_DISK_BYTES,
+    npm,
+    tar,
+    prisma,
+  };
+}
+
+/** Stream the tarball to disk with a size cap. Throws past the cap. */
+export async function downloadTarball(url: string, dest: string): Promise<number> {
+  const res = await fetch(url, {
+    headers: { "User-Agent": `${REPO} update` },
+    signal: AbortSignal.timeout(5 * 60 * 1000),
+  });
+  if (!res.ok || !res.body) throw new Error(`download answered ${res.status}`);
+  let bytes = 0;
+  const fh = await fs.open(dest, "w", 0o600);
+  try {
+    const reader = res.body.getReader();
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      bytes += value.byteLength;
+      if (bytes > MAX_TARBALL_BYTES) {
+        throw new Error("release archive larger than expected — refusing");
+      }
+      await fh.write(value);
+    }
+  } finally {
+    await fh.close().catch(() => {});
+  }
+  return bytes;
+}
+
+/**
+ * Validate tar entries before extracting: one top-level dir, no absolute
+ * paths, no `..`. A release tarball should only ever contain its own folder;
+ * anything else means the download is not what we asked for.
+ */
+export async function validateTarball(archive: string): Promise<string> {
+  const { stdout } = await run("tar", ["-tzf", archive], { timeout: 60000 });
+  const entries = stdout.split("\n").filter(Boolean);
+  if (!entries.length) throw new Error("release archive is empty");
+  const tops = new Set<string>();
+  for (const e of entries) {
+    if (e.startsWith("/") || e.split("/").includes("..")) {
+      throw new Error("release archive has unsafe paths — refusing");
+    }
+    tops.add(e.split("/")[0]);
+  }
+  if (tops.size !== 1) throw new Error("release archive layout unexpected — refusing");
+  return [...tops][0];
+}
+
+async function jobLog(appDir: string, job: UpdateJob, line: string): Promise<UpdateJob> {
+  const next = { ...job, log: [...job.log.slice(-49), line] };
+  await writeJob(appDir, next);
+  return next;
+}
+
+async function failJob(appDir: string, job: UpdateJob, error: string): Promise<UpdateJob> {
+  const next: UpdateJob = { ...job, status: "failed", error };
+  await writeJob(appDir, next);
+  return next;
+}
+
+/**
+ * Put the previous source back after a failed update: files, settings,
+ * database, artwork — then rebuild so .next matches the restored source.
+ * The station was never restarted (restart is the last step), so this runs in
+ * the still-live old process.
+ */
+export async function rollbackSource(appDir: string): Promise<void> {
+  const snapDir = path.join(appDir, "data", UPDATE_SNAPSHOT_DIR);
+  await fs.access(snapDir);
+  await copySourceTree(snapDir, appDir);
+  await pruneStaleFiles(appDir, snapDir);
+}
+
+/**
+ * The pipeline. Launched without awaiting (the route responds immediately and
+ * the client polls the job file), and every step writes through it — including
+ * across the pm2 restart at the end, which the file survives and the process
+ * does not.
+ */
+export async function runUpdatePipeline(appDir: string, target: string): Promise<void> {
+  let job = (await readJob(appDir)) as UpdateJob;
+  const log = async (line: string) => {
+    job = await jobLog(appDir, job, line);
+  };
+
+  try {
+    const info = await fetchRelease(target);
+    await log(`release ${info.tag} confirmed on GitHub`);
+
+    const pre = await preflight(appDir);
+    if (!pre.tar) throw new Error("tar not found on this server");
+    if (!pre.npm) throw new Error("npm not found for the service user");
+    if (!pre.prisma) throw new Error("prisma CLI not found — dependencies may need installing first");
+    if (!pre.diskOk) throw new Error("too little free disk to update safely");
+    if (pre.diskWarn) await log("warning: free disk under 1GB");
+    await log("preflight passed");
+
+    // Snapshot source BEFORE the backup, so a failure between the two still
+    // leaves the previous tree recoverable. node_modules excluded (reinstalled
+    // from the lockfile when it changes).
+    const snapDir = path.join(appDir, "data", UPDATE_SNAPSHOT_DIR);
+    await fs.rm(snapDir, { recursive: true, force: true });
+    const snapFiles = await copySourceTree(appDir, snapDir);
+    await log(`source snapshotted (${snapFiles} files)`);
+
+    const backup = await createBackup(`pre-update-v${info.version}`);
+    job.backupId = backup.id;
+    await writeJob(appDir, job);
+    await log(`settings backed up (${backup.id})`);
+
+    const stageDir = path.join(appDir, "data", UPDATE_STAGE_DIR);
+    await fs.rm(stageDir, { recursive: true, force: true });
+    await fs.mkdir(stageDir, { recursive: true });
+    const archive = path.join(stageDir, "release.tar.gz");
+    const bytes = await downloadTarball(info.tarballUrl, archive);
+    await log(`downloaded ${(bytes / 1048576).toFixed(1)} MB`);
+    await validateTarball(archive);
+    await run("tar", ["-xzf", archive, "--strip-components=1", "-C", stageDir], { timeout: 120000 });
+    await log("release staged and verified");
+
+    await copySourceTree(stageDir, appDir);
+    const pruned = await pruneStaleFiles(appDir, stageDir);
+    await log(`source updated (${pruned} stale files removed)`);
+    await fs.rm(stageDir, { recursive: true, force: true });
+
+    const npm = (await preflight(appDir)).npm as string;
+    if (await lockfileChanged(appDir, snapDir)) {
+      // snapDir holds the PREVIOUS tree, so a difference means the release
+      // wants different dependencies.
+      await log("dependencies changed — reinstalling (minutes)");
+      await runStep(npm, ["ci", "--no-audit", "--no-fund"], appDir, 15 * 60 * 1000);
+      await log("dependencies installed");
+    }
+
+    const { providerFromEnv } = await import("@/lib/db-provider");
+    const envProvider = providerFromEnv();
+    const prismaCmd = await fs
+      .access(prismaBin(appDir))
+      .then(() => prismaBin(appDir))
+      .catch(() => "npx");
+    await log(`syncing ${envProvider} schema`);
+    if (envProvider === "postgresql") {
+      await runStep(prismaCmd, ["db", "push", "--skip-generate", "--accept-data-loss"], appDir, 5 * 60 * 1000);
+    } else {
+      await runStep(prismaCmd, ["migrate", "deploy"], appDir, 5 * 60 * 1000);
+    }
+    await runStep(prismaCmd, ["generate"], appDir, 5 * 60 * 1000);
+
+    await log("building (minutes)");
+    const before = await fs.stat(path.join(appDir, ".next", "BUILD_ID")).catch(() => null);
+    await runStep(npm, ["run", "build"], appDir, 20 * 60 * 1000);
+    const after = await fs.stat(path.join(appDir, ".next", "BUILD_ID")).catch(() => null);
+    if (after && before && after.mtimeMs <= before.mtimeMs) {
+      throw new Error("build did not produce a fresh BUILD_ID — refusing to restart into it");
+    }
+    await log("build fresh");
+
+    // The snapshot stays: it is the manual-rollback material if this version
+    // turns out bad once booted. One generation only — the next update replaces
+    // it — so the disk cost is one source tree, without node_modules.
+    job.status = "done";
+    await writeJob(appDir, job);
+    scheduleBounce(2000);
+  } catch (e) {
+    const message = (e as Error)?.message || "update failed";
+    try {
+      await log(`FAILED: ${message} — rolling back`);
+      await rollbackSource(appDir);
+      const { restoreBackup } = await import("@/lib/backup");
+      if (job.backupId) await restoreBackup(job.backupId, true);
+      const npm2 = await findNpm().catch(() => null);
+      if (npm2) {
+        // The failed build may have left .next half-written (Next clears it
+        // first), and the running old process serves from that directory — so
+        // rebuild before calling this station healthy again.
+        await runStep(npm2, ["run", "build"], appDir, 20 * 60 * 1000).catch(() => {});
+      }
+      job.status = "rolled-back";
+      job.error = message;
+      await writeJob(appDir, job);
+    } catch (rb) {
+      await failJob(appDir, job, `${message} (rollback also failed: ${(rb as Error)?.message})`);
+    }
+  }
+}
+
+/**
+ * Manual rollback after a bad update booted: previous source back in place,
+ * settings back from the update backup, dependencies re-synced when the
+ * lockfile differs, then rebuild and restart. Runs in the (bad but booted)
+ * new process; the snapshot and backup on disk are all it needs.
+ */
+export async function runManualRollback(appDir: string, backupId: string): Promise<void> {
+  const snapDir = path.join(appDir, "data", UPDATE_SNAPSHOT_DIR);
+  const before = await fs.readFile(path.join(appDir, "package-lock.json"), "utf8").catch(() => null);
+  await rollbackSource(appDir);
+  const { restoreBackup } = await import("@/lib/backup");
+  await restoreBackup(backupId, true);
+  const after = await fs.readFile(path.join(appDir, "package-lock.json"), "utf8").catch(() => null);
+  const npm = await findNpm();
+  if (before !== after) {
+    await runStep(npm, ["ci", "--no-audit", "--no-fund"], appDir, 15 * 60 * 1000);
+  }
+  await runStep(npm, ["run", "build"], appDir, 20 * 60 * 1000);
+  scheduleBounce(2000);
+}

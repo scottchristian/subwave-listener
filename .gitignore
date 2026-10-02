@@ -59,3 +59,9 @@ DEPLOY.md
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# check-script artifacts (throwaway sqlite client + generated test schema).
+# The scripts remove these on exit; this covers interrupted runs.
+/.test-client
+/prisma/.gen-test.prisma
+/prisma/.gen-sqlite.prisma

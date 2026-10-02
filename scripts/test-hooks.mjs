@@ -38,13 +38,15 @@ function resolveFile(href) {
 const REPO_ROOT = process.env.TEST_REPO_ROOT || process.cwd();
 
 export async function resolve(specifier, context, nextResolve) {
-  const root = REPO_ROOT;
   const testClient = process.env.TEST_PRISMA_CLIENT;
   if (specifier.startsWith("@/")) {
     return resolveFile(new URL("./" + specifier.slice(2), `file://${REPO_ROOT}/`).href);
   }
   if (testClient && (specifier === "@prisma/client" || specifier === ".prisma/client")) {
-    return { url: new URL("./index.js", `file://${testClient}/`).href, shortCircuit: true };
+    // Chained, not short-circuited: default resolution then handles the file URL
+    // exactly as a direct import would (CJS detection included). Short-circuiting
+    // with an explicit format loaded the same file with dead named bindings.
+    return nextResolve(new URL("./index.js", `file://${testClient}/`).href, context);
   }
   if (specifier.startsWith("./") || specifier.startsWith("../")) {
     const r = resolveFile(new URL(specifier, context.parentURL).href);

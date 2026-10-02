@@ -34,8 +34,14 @@ function ok(cond: boolean, name: string, extra = "") {
 
 const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "subwave-backup-test-"));
 const appRoot = path.join(tmpRoot, "app");
-const clientDir = path.join(os.tmpdir(), "subwave-test-client");
+// Repo-local and deterministic: the package.json script exports this BEFORE node
+// starts, because hook workers only see spawn-time env — assigning it here at
+// runtime arrives too late and silently tests the wrong client.
+const clientDir = path.join(REPO, ".test-client");
 const hashFile = path.join(clientDir, "schema.sha256");
+if (!process.env.TEST_PRISMA_CLIENT) {
+  throw new Error("TEST_PRISMA_CLIENT is not set — run via `npm run check:backup`");
+}
 const schemaPath = path.join(REPO, "prisma", ".gen-test.prisma");
 
 async function cleanup() {
@@ -82,7 +88,6 @@ try {
   } else {
     console.log("  (test prisma client reused)");
   }
-  process.env.TEST_PRISMA_CLIENT = clientDir;
 
   // ---- Phase 1: fixtures ----
   const dbFile = path.join(tmpRoot, "test.db");
@@ -114,6 +119,10 @@ try {
   const backup = await import("../lib/backup.ts");
   const { PrismaClient } = await import("@prisma/client");
   const prisma = new PrismaClient();
+  // Prove the hook mapping held: this pragma succeeds on sqlite and throws on
+  // postgres. Without it, a broken mapping silently tests the wrong engine —
+  // which is exactly how 53 green assertions once ran against ambient state.
+  await prisma.$queryRawUnsafe("PRAGMA database_list");
 
   // Seed: users with dependents (FK order matters), secrets-looking settings,
   // and volume on the history table.

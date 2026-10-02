@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { STATION } from "@/lib/station";
 import { APP_VERSION, REPO_URL } from "@/lib/version";
 import type { BackupSummary } from "@/lib/backup";
+import type { UpdateJob } from "@/lib/update";
 import DatabasePanel from "./DatabasePanel";
 import CollapsibleSection from "./CollapsibleSection";
 import HeaderToggle from "./HeaderToggle";
@@ -477,6 +478,85 @@ export default function AdminPage() {
     } finally {
       setBackupBusy(null);
       setRestoreConfirmId(null);
+    }
+  };
+
+  // In-app update: state, polling and actions. The job file survives the pm2
+  // restart at the end of an update, so polling resumes into the new process
+  // and the outcome is visible without anyone having watched it happen.
+  const [updateJob, setUpdateJob] = useState<UpdateJob | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  const [updateMsg, setUpdateMsg] = useState("");
+  const [updateConfirmListeners, setUpdateConfirmListeners] = useState(false);
+  // Set when the server refuses for listeners on air: the button stays, and a
+  // checkbox appears for the operator to accept interrupting them.
+  const [updateNeedsListenerConfirm, setUpdateNeedsListenerConfirm] = useState(false);
+
+  const refreshUpdate = async () => {
+    try {
+      const r = await fetch("/api/admin/update");
+      if (r.ok) {
+        const d = await r.json();
+        setUpdateJob(d.job || null);
+      }
+    } catch {
+      // a station mid-restart answers nothing — the next poll gets it
+    }
+  };
+
+  useEffect(() => {
+    refreshUpdate();
+  }, [status, session]);
+
+  useEffect(() => {
+    if (updateJob?.status !== "running") return;
+    const id = setInterval(refreshUpdate, 5000);
+    return () => clearInterval(id);
+  }, [updateJob?.status]);
+
+  const startUpdate = async (target: string) => {
+    setUpdateBusy(true);
+    setUpdateMsg("");
+    setUpdateNeedsListenerConfirm(false);
+    try {
+      const res = await fetch("/api/admin/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ target, confirmListeners: updateConfirmListeners }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (res.status === 409 && d.needsConfirm) {
+        setUpdateMsg(d.error);
+        setUpdateNeedsListenerConfirm(true);
+        return;
+      }
+      if (!res.ok) throw new Error(d.error || "update failed to start");
+      setUpdateMsg(`Updating to v${d.to} — settings are backed up first, then the station rebuilds and restarts. Do not close this tab.`);
+      await refreshUpdate();
+    } catch (e) {
+      setUpdateMsg(`Update failed to start: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const rollbackUpdate = async () => {
+    setUpdateBusy(true);
+    setUpdateMsg("");
+    try {
+      const res = await fetch("/api/admin/update/rollback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "rollback failed to start");
+      setUpdateMsg("Rolling back to the pre-update state — the station restarts when it is back in place.");
+      await refreshUpdate();
+    } catch (e) {
+      setUpdateMsg(`Rollback failed to start: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setUpdateBusy(false);
     }
   };
 
@@ -1680,13 +1760,80 @@ export default function AdminPage() {
                 fontSize: "0.9rem",
               }}
             >
-              <strong>Version {updateInfo.latest} is available.</strong>{" "}
-              <span style={{ color: "var(--color-muted)" }}>
-                Read the notes first, then deploy when the station is quiet &mdash; the deploy refuses to run
-                while anyone is listening unless you pass --force.
-              </span>
+              <div>
+                <strong>Version {updateInfo.latest} is available.</strong>{" "}
+                <span style={{ color: "var(--color-muted)" }}>
+                  Read the notes first. Updating backs up the settings, then rebuilds and
+                  restarts the station — it refuses while anyone is listening unless you
+                  accept interrupting them below.
+                </span>
+              </div>
+              <div style={{ marginTop: "0.75rem", display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+                <button
+                  id="btn-start-update"
+                  className="primary-btn"
+                  style={{ width: "auto", padding: "0.5rem 1.1rem" }}
+                  disabled={updateBusy || updateJob?.status === "running"}
+                  onClick={() => updateInfo.latest && startUpdate(updateInfo.latest)}
+                >
+                  {updateJob?.status === "running" ? "Updating…" : updateBusy ? "Starting…" : `Update to v${updateInfo.latest}`}
+                </button>
+                {updateNeedsListenerConfirm ? (
+                  <label className="check" style={{ fontSize: "0.85rem" }}>
+                    <input
+                      type="checkbox"
+                      checked={updateConfirmListeners}
+                      onChange={(e) => setUpdateConfirmListeners(e.target.checked)}
+                    />
+                    I know listeners are on air — update anyway
+                  </label>
+                ) : null}
+              </div>
+              {updateJob?.status === "running" ? (
+                <div id="update-progress" style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "var(--color-muted)" }}>
+                  {(updateJob.log.slice(-3).join(" · ")) || "Starting…"}
+                </div>
+              ) : null}
             </div>
           )}
+
+          {updateMsg ? (
+            <div id="software-update-msg" style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-accent)" }}>
+              {updateMsg}
+            </div>
+          ) : null}
+
+          {updateJob && updateJob.status !== "running" && (updateJob.status === "done" || updateJob.status === "failed" || updateJob.status === "rolled-back") ? (
+            <div
+              id="software-update-last"
+              style={{
+                marginTop: "1rem", padding: "0.85rem 1rem", borderRadius: "8px",
+                border: "1px solid var(--color-border)", fontSize: "0.875rem",
+              }}
+            >
+              <div>
+                {updateJob.status === "done" ? (
+                  <>Last update to <strong>v{updateJob.to}</strong> completed. Verify the station, then carry on.</>
+                ) : updateJob.status === "rolled-back" ? (
+                  <>Last update to <strong>v{updateJob.to}</strong> was rolled back{updateJob.error ? `: ${updateJob.error}` : ""}.</>
+                ) : (
+                  <>Last update to <strong>v{updateJob.to}</strong> failed{updateJob.error ? `: ${updateJob.error}` : ""}.</>
+                )}
+              </div>
+              {updateJob.backupId && (updateJob.status === "failed" || updateJob.status === "done") ? (
+                <div style={{ marginTop: "0.6rem" }}>
+                  <button
+                    id="btn-rollback-update"
+                    className="seg-btn"
+                    disabled={updateBusy}
+                    onClick={rollbackUpdate}
+                  >
+                    Roll back to v{updateJob.from}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           {updateInfo && !updateInfo.updateAvailable && (
             <div id="software-update-current" style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-muted)" }}>
