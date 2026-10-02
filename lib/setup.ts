@@ -90,6 +90,13 @@ export function looksConfigured(env: Record<string, string | undefined> = proces
   // NEXT_PUBLIC_STATION_NAME is required, and that is the fix for a trap this
   // check used to spring.
   //
+  // The operator no longer types a name — it is read from the SUB/WAVE host — but
+  // it is still WRITTEN here, so it is still the right tie-breaker. Setup fetches the
+  // name from the host and bakes it in as a copy for first paint; the player then
+  // prefers the live value from the host. Removing this from the list would restore
+  // the lockout described below, because a half-finished install would once again be
+  // indistinguishable from one that finished before the wizard existed.
+  //
   // Secrets, Google credentials and a database URL are all written by the first
   // three steps, so an install partway through the wizard has all three — the
   // same set as an install that finished before the wizard existed. The two are

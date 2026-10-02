@@ -12,6 +12,7 @@ import {
   markerPath,
 } from "@/lib/setup";
 import { getServerSession } from "next-auth";
+import prisma from "@/lib/prisma";
 import { authOptions } from "../../auth/[...nextauth]/route";
 
 const WATCHED = [
@@ -35,6 +36,20 @@ export async function GET() {
 
   const env = readEnvValues(WATCHED);
   const has = (k: string) => Boolean(env[k] && env[k].trim());
+
+  // The Subwave host credentials live in the database, not the environment.
+  // A database that is not up yet simply reports the step as unfinished, which is
+  // what it is — the database step comes before this one.
+  const sw: Record<string, string> = { subwaveApiUrl: "", subwaveAdminUser: "", subwaveAdminPass: "" };
+  try {
+    const rows = await prisma.setting.findMany({
+      where: { key: { in: Object.keys(sw) } },
+      select: { key: true, value: true },
+    });
+    for (const r of rows) sw[r.key] = r.value || "";
+  } catch {
+    // not migrated yet, or unreachable — leave the blanks
+  }
 
   // Who am I, if anyone? Once the Google credentials are in place the operator
   // signs in, and the account that signs in first becomes the admin. Reported
@@ -73,7 +88,14 @@ export async function GET() {
       google: has("GOOGLE_CLIENT_ID") && has("GOOGLE_CLIENT_SECRET"),
       signedIn: Boolean(signedIn?.isAdmin),
       database: has("DATABASE_URL"),
-      station: has("NEXT_PUBLIC_STATION_NAME") && has("NEXT_PUBLIC_BACKEND_URL"),
+      // The host credentials. In the Setting table, because that is where
+      // getSubwaveConfig() reads them from and where Admin -> Sub/Wave Server
+      // writes them — so this step needs no rebuild, which is why it can sit
+      // before the one that does.
+      subwave: Boolean(sw.subwaveApiUrl && sw.subwaveAdminUser && sw.subwaveAdminPass),
+      // The name is NOT part of this any more: it belongs to the Subwave host and
+      // is read from there at runtime. Requiring it here would mean asking for it.
+      station: has("NEXT_PUBLIC_BACKEND_URL"),
     },
   });
 }

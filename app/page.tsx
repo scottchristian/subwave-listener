@@ -509,6 +509,23 @@ export default function Home() {
   const stepRefs = useRef<(HTMLElement | null)[]>([]);
   const STATION_API = STATION.backendUrl;
 
+  // The station's name belongs to the SUB/WAVE host, and /state already carries it
+  // in every poll the player was making anyway — it was being fetched and ignored.
+  // Preferring it here is what makes the host the real source: rename the station
+  // there and this follows on the next poll, with no rebuild and no second copy.
+  //
+  // STATION.name stays as the value for first paint, the browser tab before the
+  // first poll lands, and the build-time metadata that cannot wait for a fetch.
+  const hostStationName: string | null = appStateData?.station?.name || null;
+  const stationName = hostStationName || STATION.name;
+
+  // Keep the tab title in step, for the same reason. The static title in the layout
+  // is whatever was true at build time and cannot know any of this.
+  useEffect(() => {
+    if (!hostStationName) return;
+    document.title = hostStationName;
+  }, [hostStationName]);
+
   const lastTrackKeyRef = useRef<string | null>(null);
   const promoteTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   // Freshest fetch, so a held promotion commits latest data (a request queued
@@ -810,7 +827,7 @@ export default function Home() {
         const artworkUrl = np.subsonic_id
           ? `${STATION_API}/api/cover/${np.subsonic_id}`
           : `${window.location.origin}${STATION.logo}`;
-        const title = np.title || `${STATION.name} Live`;
+        const title = np.title || `${stationName} Live`;
         const suffixed = trackExplicit && explicitSuffix ? `${title} 🅴` : title;
         const key = `${np.subsonic_id}|${suffixed}|${np.artist}|${np.album}|${artworkUrl}`;
         if (key === mediaAppliedRef.current) return;
@@ -818,8 +835,8 @@ export default function Home() {
         if (trackExplicit) plog.info("lock screen explicit tag", { title, suffix: explicitSuffix });
         navigator.mediaSession.metadata = new MediaMetadata({
           title: suffixed,
-          artist: np.artist || STATION.name,
-          album: np.album || STATION.name,
+          artist: np.artist || stationName,
+          album: np.album || stationName,
           artwork: [
             { src: artworkUrl, sizes: '512x512', type: 'image/jpeg' },
             { src: artworkUrl, sizes: '512x512', type: 'image/png' }
@@ -829,15 +846,15 @@ export default function Home() {
         const defaultArtwork = `${window.location.origin}${STATION.logo}`;
         navigator.mediaSession.metadata = new MediaMetadata({
           title: 'Ready to Broadcast',
-          artist: STATION.name,
-          album: STATION.name,
+          artist: stationName,
+          album: stationName,
           artwork: [
             { src: defaultArtwork, sizes: '512x512', type: 'image/png' }
           ]
         });
       }
     }
-  }, [stationData?.nowPlaying, trackExplicit, explicitSuffix]);
+  }, [stationData?.nowPlaying, trackExplicit, explicitSuffix, stationName]);
 
   useEffect(() => {
     const fetchDirectLinks = async () => {
@@ -1518,7 +1535,7 @@ export default function Home() {
         {/* Banner Block */}
         <div id="unauth-on-air" style={{ textAlign: "center", background: "rgba(0,0,0,0.73)", padding: "2rem", borderRadius: "12px", border: "1px solid rgba(255,255,255,0.1)", display: "flex", flexDirection: "column", gap: "1rem" }}>
           <div id="logo-container-unauth">
-            <Image id="logo-img-unauth" src={STATION.logo} alt={STATION.name} width={400} height={80} className="logo-img" style={{ margin: '0 auto', filter: "drop-shadow(0px 4px 12px rgba(0,0,0,0.6))" }} priority />
+            <Image id="logo-img-unauth" src={STATION.logo} alt={stationName} width={400} height={80} className="logo-img" style={{ margin: '0 auto', filter: "drop-shadow(0px 4px 12px rgba(0,0,0,0.6))" }} priority />
             <p id="tagline-unauth" className="tagline" style={{ marginTop: '0.5rem' }}>{STATION.tagline}</p>
           </div>
 
@@ -1564,7 +1581,7 @@ export default function Home() {
     return (
       <main id="main-pending" className="container centered-column" style={{ justifyContent: "center" }}>
         <div id="logo-container-pending">
-          <Image id="logo-img-pending" src={STATION.logo} alt={STATION.name} width={400} height={80} className="logo-img" style={{ margin: '0 auto', filter: "drop-shadow(0px 4px 12px rgba(0,0,0,0.6))" }} priority />
+          <Image id="logo-img-pending" src={STATION.logo} alt={stationName} width={400} height={80} className="logo-img" style={{ margin: '0 auto', filter: "drop-shadow(0px 4px 12px rgba(0,0,0,0.6))" }} priority />
           <p id="tagline-pending" className="tagline" style={{ marginTop: '1rem' }}>{STATION.tagline}</p>
         </div>
         <div id="card-pending" className="card">
@@ -1723,7 +1740,7 @@ export default function Home() {
 
       <header id="header-player" style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "1rem", marginBottom: "3rem" }}>
         <div id="header-logo-container">
-          <Image id="header-logo-img" src={STATION.logo} alt={STATION.name} width={300} height={60} className="logo-img" style={{ filter: "drop-shadow(0px 4px 12px rgba(0,0,0,0.6))" }} priority />
+          <Image id="header-logo-img" src={STATION.logo} alt={stationName} width={300} height={60} className="logo-img" style={{ filter: "drop-shadow(0px 4px 12px rgba(0,0,0,0.6))" }} priority />
         </div>
           
         {/* The three header chips. Wrapped rather than allowed to overflow, so a
@@ -1916,7 +1933,7 @@ export default function Home() {
             <div id="now-playing-info" ref={el => { stepRefs.current[2] = el; }} style={{ position: tourStep === 2 ? "relative" : "static", zIndex: tourStep === 2 ? 1000 : 1 }}>
               <h2 id="now-playing-title" className="track-title" style={{ viewTransitionName: 'now-playing-title', width: 'fit-content' } as any}>{stationData?.nowPlaying?.title || "Ready to Broadcast"}</h2>
               <div id="now-playing-artist" className="track-artist" style={{ viewTransitionName: 'now-playing-artist', width: 'fit-content' } as any}>
-                {stationData?.nowPlaying?.artist || `${STATION.name} Live`}
+                {stationData?.nowPlaying?.artist || `${stationName} Live`}
                 {stationData?.nowPlaying?.album ? <span id="now-playing-album" style={{ opacity: 0.85 }}> &middot; {stationData.nowPlaying.album}</span> : null}
                 {stationData?.nowPlaying?.year ? <span style={{ opacity: 0.7 }}> &bull; {stationData.nowPlaying.year}</span> : null}
               </div>
@@ -2307,7 +2324,7 @@ export default function Home() {
         }}
       >
         <div id="tour-text" key={tourStep} className="tour-text fade-swap">
-          {tourStep === 0 && `Welcome to ${STATION.name}! This quick guide will show you how to listen to the radio.`}
+          {tourStep === 0 && `Welcome to ${stationName}! This quick guide will show you how to listen to the radio.`}
           {tourStep === 1 && "Tap the big Play button to start the radio stream."}
           {tourStep === 2 && "This shows you what song is playing right now."}
           {tourStep === 3 && "Open a song in Spotify or Apple Music here — or tap the heart to save it to your Liked Songs."}

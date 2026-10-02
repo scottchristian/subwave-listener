@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../../auth/[...nextauth]/route";
 import { applyIdentity } from "@/lib/applyidentity";
+import { getHostIdentity, resetHostIdentityCache } from "@/lib/hostidentity";
 
 // Current public identity values (all public info — safe to serve to admin).
 export async function GET() {
@@ -9,10 +10,13 @@ export async function GET() {
   if (!(session?.user as any)?.isAdmin) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
+  // Name and description are the host's. Report what it says now, falling back to
+  // the baked copy only when it cannot be reached — the panel shows these read-only.
+  const host = await getHostIdentity();
   return NextResponse.json({
-    name: process.env.NEXT_PUBLIC_STATION_NAME || "",
+    name: host.name || process.env.NEXT_PUBLIC_STATION_NAME || "",
     tagline: process.env.NEXT_PUBLIC_STATION_TAGLINE || "",
-    description: process.env.NEXT_PUBLIC_STATION_DESCRIPTION || "",
+    description: host.description || process.env.NEXT_PUBLIC_STATION_DESCRIPTION || "",
     about: process.env.NEXT_PUBLIC_STATION_ABOUT || "",
     logo: process.env.NEXT_PUBLIC_STATION_LOGO || "",
     backendUrl: process.env.NEXT_PUBLIC_BACKEND_URL || "",
@@ -39,15 +43,30 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
   const str = (k: string) => String(body[k] ?? "").trim();
-  const name = str("name");
   const backendUrl = str("backendUrl");
   const nextauthUrl = str("nextauthUrl");
-  if (!name || !backendUrl || !nextauthUrl) {
+  if (!backendUrl || !nextauthUrl) {
     return NextResponse.json(
-      { error: "Station name, backend URL and app URL are required" },
+      { error: "Backend URL and app URL are required" },
       { status: 400 }
     );
   }
+
+  // Deliberately NOT taken from the request body. The name and the description are
+  // the SUB/WAVE host's, so a POST that carries them is ignored for those two keys
+  // and they are read from the host instead — that is what stops this panel from
+  // being a second way to set them.
+  const host = await getHostIdentity({ fresh: true });
+  if (!host.name) {
+    return NextResponse.json(
+      {
+        error:
+          "Could not read your station's name from the SUB/WAVE host, so there is nothing to bake in. Check Admin → Sub/WAVE Server.",
+      },
+      { status: 502 }
+    );
+  }
+  const name = host.name;
   for (const [label, v] of [["backend URL", backendUrl], ["app URL", nextauthUrl]] as const) {
     try {
       const u = new URL(v);
@@ -60,7 +79,7 @@ export async function POST(req: Request) {
   const result = await applyIdentity({
     name,
     tagline: str("tagline"),
-    description: str("description"),
+    description: host.description || "",
     about: str("about"),
     logo: str("logo"),
     backendUrl,
@@ -71,5 +90,6 @@ export async function POST(req: Request) {
   if (!result.ok) {
     return NextResponse.json({ error: result.error }, { status: 500 });
   }
+  resetHostIdentityCache();
   return NextResponse.json({ ok: true, restarting: result.restarting, reason: result.reason });
 }

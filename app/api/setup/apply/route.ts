@@ -29,6 +29,8 @@ import {
 import { applyIdentity, scheduleRestart } from "@/lib/applyidentity";
 import { cancelScheduledBounce } from "@/lib/pm2app";
 import { providerFromEnv } from "@/lib/db-provider";
+import prisma from "@/lib/prisma";
+import { getHostIdentity } from "@/lib/hostidentity";
 
 const run = promisify(execFile);
 
@@ -54,6 +56,8 @@ export async function POST(req: Request) {
         return stepGoogle(str("clientId"), str("clientSecret"), str("adminEmail"), str("nextauthUrl"));
       case "database":
         return await stepDatabase(str("provider"), str("databaseUrl"), str("sqlitePath"));
+      case "subwave":
+        return await stepSubwave(str("apiUrl"), str("adminUser"), str("adminPass"), str("stationPassword"));
       case "station":
         return await stepStation(body);
       case "complete":
@@ -402,15 +406,125 @@ async function stepDatabase(provider: string, databaseUrl: string, sqlitePath: s
 }
 
 /** Station name, branding, the backend address, and whether to be indexed. */
+/**
+ * Save the SUB/WAVE host credentials, having proved they work.
+ *
+ * These four live in the Setting table rather than the environment, which is where
+ * getSubwaveConfig() already reads them and where Admin -> Sub/Wave Server writes
+ * them. That is why this step exists before the identity step and needs no rebuild:
+ * the values are read at request time, so saving them is a database write and
+ * nothing restarts.
+ *
+ * The credentials are proved before they are saved. Saving credentials that do not
+ * work would leave a station that looks set up and silently cannot skip a track or
+ * ask the host for anything — the sort of failure that shows up weeks later as
+ * "the skip button does nothing".
+ */
+async function stepSubwave(apiUrl: string, adminUser: string, adminPass: string, stationPassword: string) {
+  if (!apiUrl) return NextResponse.json({ error: "Your station's server address is needed." }, { status: 400 });
+  if (!adminUser || !adminPass) {
+    return NextResponse.json(
+      { error: "The admin username and password are needed — this app uses them to skip tracks and manage the station." },
+      { status: 400 }
+    );
+  }
+
+  let base: URL;
+  try {
+    base = new URL(apiUrl);
+    if (base.protocol !== "http:" && base.protocol !== "https:") throw new Error("scheme");
+  } catch {
+    return NextResponse.json({ error: "The server address must be a full http:// or https:// address." }, { status: 400 });
+  }
+  const normalised = base.href.replace(/\/+$/, "").endsWith("/api")
+    ? base.href.replace(/\/+$/, "")
+    : base.href.replace(/\/+$/, "") + "/api";
+
+  const auth = "Basic " + Buffer.from(`${adminUser}:${adminPass}`).toString("base64");
+
+  // Prove it: reachable, and the credentials accepted. /state needs no auth and is
+  // the cheapest proof of life; /settings is the one that actually needs them.
+  let hostName: string | null = null;
+  let hostDescription: string | null = null;
+  try {
+    const anon = await fetch(`${normalised}/state`, { signal: AbortSignal.timeout(15000) });
+    if (!anon.ok) {
+      return NextResponse.json(
+        { error: `The server answered ${anon.status}. Check the address — it may need /api on the end.` },
+        { status: 502 }
+      );
+    }
+    const a: any = await anon.json().catch(() => null);
+    if (typeof a?.station?.name === "string") hostName = a.station.name.trim() || null;
+  } catch {
+    return NextResponse.json(
+      { error: "Could not reach that server address. Check it for typos, and that the station is running." },
+      { status: 502 }
+    );
+  }
+
+  try {
+    const res = await fetch(`${normalised}/settings`, {
+      headers: { Authorization: auth },
+      signal: AbortSignal.timeout(15000),
+    });
+    if (res.status === 401 || res.status === 403) {
+      return NextResponse.json(
+        { error: "The server answered, but rejected that username and password." },
+        { status: 502 }
+      );
+    }
+    if (!res.ok) {
+      return NextResponse.json(
+        { error: `The server answered ${res.status} to the credentials check.` },
+        { status: 502 }
+      );
+    }
+    const d: any = await res.json().catch(() => null);
+    const v = d?.values || {};
+    if (typeof v.station === "string" && v.station.trim()) hostName = v.station.trim();
+    if (typeof v.stationDescription === "string") hostDescription = v.stationDescription.trim() || null;
+  } catch {
+    return NextResponse.json(
+      { error: "The station answered, but the credentials check did not complete." },
+      { status: 502 }
+    );
+  }
+
+  // Only now are they written.
+  const rows: { key: string; value: string }[] = [
+    { key: "subwaveApiUrl", value: normalised },
+    { key: "subwaveAdminUser", value: adminUser },
+    { key: "subwaveAdminPass", value: adminPass },
+  ];
+  if (stationPassword) rows.push({ key: "stationPassword", value: stationPassword });
+
+  try {
+    for (const r of rows) {
+      await prisma.setting.upsert({ where: { key: r.key }, update: { value: r.value }, create: r });
+    }
+  } catch (e) {
+    return NextResponse.json(
+      { error: `Could not save the credentials: ${(e as Error)?.message?.split("\n")[0] || "database error"}` },
+      { status: 500 }
+    );
+  }
+
+  return NextResponse.json({
+    ok: true,
+    message: "Signed in to your station.",
+    stationName: hostName,
+    stationDescription: hostDescription,
+    stationPasswordSaved: Boolean(stationPassword),
+    restart: false,
+  });
+}
+
 async function stepStation(body: Record<string, unknown>) {
   const str = (k: string) => String(body[k] ?? "").trim();
-  const name = str("name");
   const backendUrl = str("backendUrl");
   const nextauthUrl = str("nextauthUrl");
 
-  if (!name) {
-    return NextResponse.json({ error: "Your station needs a name." }, { status: 400 });
-  }
   if (!backendUrl) {
     return NextResponse.json(
       { error: "We need the public address of your SUB/WAVE station." },
@@ -427,14 +541,33 @@ async function stepStation(body: Record<string, unknown>) {
     );
   }
 
+  // The name and the description are not asked for, because the SUB/WAVE host
+  // already holds both. Read them here rather than trusting the request body, so
+  // there is exactly one place a station's identity can come from and no way to
+  // set one by sending a different value.
+  //
+  // What gets baked in is only a copy for first paint and for the build-time
+  // metadata. The player prefers the live value from the host on every load, so
+  // this never becomes the source of truth — see lib/hostidentity.ts.
+  const identity = await getHostIdentity({ fresh: true });
+  if (!identity.name) {
+    return NextResponse.json(
+      {
+        error:
+          "Could not read your station's name from the SUB/WAVE host. Check the server address and credentials in the previous step.",
+      },
+      { status: 502 }
+    );
+  }
+
   // robots.txt is written BEFORE the build, so it is in place even if the build
   // below fails. A station that failed to build should still not be indexed.
   writeRobotsTxt(body.discoverable === true);
 
   const result = await applyIdentity({
-    name,
+    name: identity.name,
     tagline: str("tagline"),
-    description: str("description"),
+    description: identity.description || "",
     about: str("about"),
     logo: str("logo") || "/brand/logo.png",
     backendUrl,

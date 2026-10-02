@@ -96,9 +96,10 @@ export default function AdminPage() {
   const [spotifySecret, setSpotifySecret] = useState("");
   const [musicMsg, setMusicMsg] = useState("");
   const [musicBusy, setMusicBusy] = useState(false);
-  const [idName, setIdName] = useState("");
+  // Station name and description, read from the SUB/WAVE host and shown read-only.
+  // null while loading, so the inputs can say so rather than flashing empty.
+  const [hostIdentity, setHostIdentity] = useState<{ name: string | null; description: string | null } | null>(null);
   const [idTagline, setIdTagline] = useState("");
-  const [idDescription, setIdDescription] = useState("");
   const [idAbout, setIdAbout] = useState("");
   const [idBackendUrl, setIdBackendUrl] = useState("");
   const [idDonateUrl, setIdDonateUrl] = useState("");
@@ -201,12 +202,17 @@ export default function AdminPage() {
         .then(r => r.json())
         .then(d => { if (typeof d.devices === "number") setPushDevices(d.devices); })
         .catch(() => {});
+      // Station name and description come from the host, not from this app. Read
+      // through an API route because doing it here would pull the database — and
+      // the host credentials it lives behind — into the browser bundle.
+      fetch("/api/admin/host-identity")
+        .then((r) => (r.ok ? r.json() : null))
+        .then((d) => setHostIdentity(d || { name: null, description: null }))
+        .catch(() => setHostIdentity({ name: null, description: null }));
       fetch("/api/admin/identity/save")
         .then(r => r.json())
         .then(d => {
-          if (d.name) setIdName(d.name);
           if (d.tagline) setIdTagline(d.tagline);
-          if (d.description) setIdDescription(d.description);
           if (d.about) setIdAbout(d.about);
           if (d.backendUrl) setIdBackendUrl(d.backendUrl);
           if (d.donateUrl) setIdDonateUrl(d.donateUrl);
@@ -669,10 +675,10 @@ export default function AdminPage() {
       const res = await fetch("/api/admin/identity/save", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        // No name, no description — the server reads both from the SUB/WAVE host
+        // when it applies these, so there is no way to set one from this panel.
         body: JSON.stringify({
-          name: idName,
           tagline: idTagline,
-          description: idDescription,
           about: idAbout,
           backendUrl: idBackendUrl,
           donateUrl: idDonateUrl,
@@ -1061,21 +1067,49 @@ export default function AdminPage() {
           hidden={activeTab !== "station"}
         >
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+            {/* Station name and share description are NOT editable here. They live on
+                the SUB/WAVE host and are read from it — see lib/hostidentity.ts.
+                Shown read-only so an operator can see what is actually in use and
+                where to change it, rather than discovering an empty box. */}
             <div>
-              <label htmlFor="input-id-name" style={{ display: "block", marginBottom: "0.5rem" }}>Station Name</label>
-              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Site title, PWA name, push sender, lock-screen label.</div>
-              <input id="input-id-name" type="text" value={idName} onChange={(e) => setIdName(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
+                <label htmlFor="host-station-name" style={{ display: "block" }}>Station Name</label>
+                <span style={{ fontSize: "0.8rem", color: "var(--color-accent)" }}>from your SUB/WAVE host</span>
+              </div>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", margin: "0.25rem 0 0.5rem" }}>
+                Site title, browser tab and PWA name. Change it on the SUB/WAVE host and it
+                follows here on the next load — there is nothing to keep in step.
+              </div>
+              <input
+                id="host-station-name"
+                type="text"
+                value={hostIdentity?.name ?? ""}
+                readOnly
+                placeholder={hostIdentity === null ? "Reading from your station…" : "Your station host did not report a name"}
+                className="input-field"
+                style={{ width: "100%", maxWidth: "400px", opacity: 0.75, cursor: "not-allowed" }}
+              />
             </div>
             <div>
-              <label htmlFor="input-id-tagline" style={{ display: "block", marginBottom: "0.5rem" }}>Tagline</label>
-              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Short line under the logo.</div>
-              <input id="input-id-tagline" type="text" value={idTagline} onChange={(e) => setIdTagline(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
+              <div style={{ display: "flex", alignItems: "baseline", justifyContent: "space-between", gap: "1rem", flexWrap: "wrap" }}>
+                <label htmlFor="host-station-description" style={{ display: "block" }}>Short Description</label>
+                <span style={{ fontSize: "0.8rem", color: "var(--color-accent)" }}>from your SUB/WAVE host</span>
+              </div>
+              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", margin: "0.25rem 0 0.5rem" }}>
+                Share metadata and the install prompt. Also set on the host; blank there means
+                blank here.
+              </div>
+              <input
+                id="host-station-description"
+                type="text"
+                value={hostIdentity?.description ?? ""}
+                readOnly
+                placeholder={hostIdentity === null ? "Reading from your station…" : "Not set on your station host"}
+                className="input-field"
+                style={{ width: "100%", maxWidth: "400px", opacity: 0.75, cursor: "not-allowed" }}
+              />
             </div>
-            <div>
-              <label htmlFor="input-id-description" style={{ display: "block", marginBottom: "0.5rem" }}>Short Description</label>
-              <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Search/share metadata and PWA description.</div>
-              <input id="input-id-description" type="text" value={idDescription} onChange={(e) => setIdDescription(e.target.value)} className="input-field" style={{ width: "100%", maxWidth: "400px" }} />
-            </div>
+
             <div>
               <label htmlFor="input-id-about" style={{ display: "block", marginBottom: "0.5rem" }}>About (sign-in card)</label>
               <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginTop: "0.25rem" }}>Paragraph guests read before signing in.</div>

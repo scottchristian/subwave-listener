@@ -29,6 +29,8 @@ type Steps = {
   google: boolean;
   signedIn: boolean;
   database: boolean;
+  /** SUB/WAVE host credentials, saved and verified against the host itself. */
+  subwave: boolean;
   station: boolean;
 };
 
@@ -48,14 +50,15 @@ type Status = {
   steps: Steps;
 };
 
-const STEP_ORDER = ["secrets", "google", "database", "station"] as const;
+const STEP_ORDER = ["secrets", "google", "database", "subwave", "station"] as const;
 type StepId = (typeof STEP_ORDER)[number];
 
 const STEP_TITLES: Record<StepId, string> = {
   secrets: "Security keys",
   google: "Sign-in",
   database: "Database",
-  station: "Your station",
+  subwave: "Your station host",
+  station: "Your player",
 };
 
 export default function SetupPage() {
@@ -195,6 +198,10 @@ export default function SetupPage() {
                 pollUntilUp={pollUntilUp}
                 reload={load}
               />
+            ) : null}
+
+            {step === "subwave" ? (
+              <SubwaveStep status={status} setMessage={setMessage} />
             ) : null}
 
             {step === "station" ? (
@@ -669,10 +676,125 @@ type Probe = {
   detail: string;
 };
 
+function SubwaveStep({ status, setMessage }: { status: Status; setMessage: (m: { kind: "ok" | "warn" | "error"; text: string } | null) => void }) {
+  const [apiUrl, setApiUrl] = useState("");
+  const [adminUser, setAdminUser] = useState("");
+  const [adminPass, setAdminPass] = useState("");
+  const [stationPassword, setStationPassword] = useState("");
+  const [busy, setBusy] = useState(false);
+  // What the host says it is called. Shown so the operator can see this step
+  // reached the station they meant, before anything is built on top of it.
+  const [host, setHost] = useState<{ name: string | null; description: string | null } | null>(null);
+
+  const save = async () => {
+    setBusy(true);
+    setMessage(null);
+    try {
+      const res = await fetch("/api/setup/apply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ step: "subwave", apiUrl, adminUser, adminPass, stationPassword }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setMessage({ kind: "error", text: d.error || "Could not sign in to your station." });
+        return;
+      }
+      setHost({ name: d.stationName || null, description: d.stationDescription || null });
+      setMessage({ kind: "ok", text: d.message || "Signed in to your station." });
+      // Not kept: it has been saved, and leaving it in a field on screen is a
+      // password written down where a shoulder-surfer can read it.
+      setAdminPass("");
+      setStationPassword("");
+    } catch {
+      setMessage({ kind: "error", text: "Lost connection while signing in. Nothing was saved." });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const missing = !apiUrl || !adminUser || !adminPass;
+
+  return (
+    <>
+      <h2>Your station host</h2>
+      <p className="muted">
+        Sign in to the SUB/WAVE station this player belongs to. Everything the station
+        knows about itself — its name, its description — is read from there rather
+        than typed here, so it gets asked for once and then belongs to that host.
+      </p>
+
+      <Field
+        label="Station server address"
+        hint="The address this machine uses to reach your station. The /api suffix is added for you if you leave it off."
+        value={apiUrl}
+        onChange={setApiUrl}
+      />
+      <Field
+        label="Admin username"
+        hint="SUB/WAVE ADMIN_USER. Used to skip tracks and manage the station."
+        value={adminUser}
+        onChange={setAdminUser}
+      />
+      <Field
+        label="Admin password"
+        hint="SUB/WAVE ADMIN_PASS. Kept in your database rather than in a file on disk."
+        value={adminPass}
+        onChange={setAdminPass}
+        type="password"
+      />
+      <Field
+        label="Station password"
+        hint="The password Icecast checks per listener. Without it the audio will not play, though everything else will. You can add it later in Admin → Sub/WAVE Server."
+        value={stationPassword}
+        onChange={setStationPassword}
+        type="password"
+      />
+
+      <Note kind="warn">
+        <p>
+          These are checked before they are saved. A station that looks set up but
+          cannot skip a track or read anything from its host is the sort of thing that
+          goes unnoticed for weeks.
+        </p>
+      </Note>
+
+      <Actions>
+        <button className="btn primary" disabled={busy || missing} onClick={save}>
+          {busy ? "Checking…" : "Sign in and continue"}
+        </button>
+        {missing ? <span className="muted small">The address, username and password are all needed.</span> : null}
+      </Actions>
+
+      {host ? (
+        <Note kind="ok">
+          <p id="subwave-host-report">
+            {host.name ? (
+              <>
+                That host says it is <strong>{host.name}</strong>.
+              </>
+            ) : (
+              <>Connected, though it did not report a station name.</>
+            )}{" "}
+            {host.description
+              ? "Its description will be used for the page metadata and the install prompt."
+              : "It has no share description set, so the player will fall back to a neutral one."}
+          </p>
+          <p className="muted small">
+            To change the name or the description, change them on the SUB/WAVE host.
+            This app reads them from there and never asks for them.
+          </p>
+        </Note>
+      ) : null}
+    </>
+  );
+}
+
+
 function StationStep({ status, setMessage }: { status: Status; setMessage: (m: { kind: "ok" | "warn" | "error"; text: string } | null) => void }) {
-  const [name, setName] = useState("");
+  // No name, no description: both belong to the SUB/WAVE host and are read from it.
+  // See lib/hostidentity.ts. What is left here is what this app actually owns.
   const [tagline, setTagline] = useState("");
-  const [description, setDescription] = useState("");
   const [about, setAbout] = useState("");
   const [backendUrl, setBackendUrl] = useState(status.backendUrl || "");
   const [nextauthUrl, setNextauthUrl] = useState(status.nextauthUrl || guessUrl());
@@ -686,8 +808,8 @@ function StationStep({ status, setMessage }: { status: Status; setMessage: (m: {
   const probedFor = useRef<string | null>(null);
 
   /**
-   * Ask the address whether it is a working SUB/WAVE station, and take its answer
-   * from the same response.
+   * Ask the address whether it is a working SUB/WAVE station, so a mistyped one is
+   * caught here rather than after the minute-long build.
    *
    * Runs in the browser on purpose. That is the listener's own path — the same URL
    * and the same cross-origin rules the player will use — so a pass here means the
@@ -722,28 +844,17 @@ function StationStep({ status, setMessage }: { status: Status; setMessage: (m: {
       if (!data || typeof data !== "object") {
         return { ok: false, detail: "That address answered, but not like a SUB/WAVE station." };
       }
-      // dj.station is the station's own name; dj.tagline is its tagline when set.
-      // Both are read straight from the host so they cannot disagree with it.
-      const stationName = typeof data?.dj?.station === "string" ? data.dj.station.trim() : "";
-      const taglineFromHost = typeof data?.dj?.tagline === "string" ? data.dj.tagline.trim() : "";
       const track = data?.nowPlaying?.title
         ? `${data.nowPlaying.title}${data.nowPlaying.artist ? " \u2014 " + data.nowPlaying.artist : ""}`
         : null;
       return {
         ok: true,
-        stationName: stationName || null,
-        detail: track ? `Connected. On air: ${track}` : "Connected. The station is reachable, though nothing is playing right now.",
-        // Carried on the result so the caller can fill the tagline without a
-        // second round trip.
-        ...(taglineFromHost ? { taglineFromHost } : {}),
-      } as Probe;
+        detail: track
+          ? `Connected. On air: ${track}`
+          : "Connected. The station is reachable, though nothing is playing right now.",
+      };
     } catch (e) {
       const timedOut = (e as Error)?.name === "TimeoutError";
-      // The two failures need different advice. A private address that fails is
-      // unreachable from here *and* from every listener, so the problem is local
-      // (nothing is listening on it). A public address that fails is either the
-      // wrong address or the station is down \u2014 and blaming the network would send
-      // the operator off to check their router for a name that never resolved.
       const priv = addressIsPubliclyReachable(raw);
       return {
         ok: false,
@@ -758,17 +869,13 @@ function StationStep({ status, setMessage }: { status: Status; setMessage: (m: {
     }
   };
 
+
   const runTest = async () => {
     setProbing(true);
     setMessage(null);
     const result = await testConnection();
     setProbe(result);
     probedFor.current = backendUrl.trim();
-    if (result.ok) {
-      // Fill from the host rather than asking the operator to retype what it
-      // already knows. Never overwrite a name they have typed.
-      setName((prev) => (prev.trim() ? prev : result.stationName || ""));
-    }
     setProbing(false);
   };
 
@@ -793,8 +900,7 @@ function StationStep({ status, setMessage }: { status: Status; setMessage: (m: {
       <>
         <h2>Your station is ready</h2>
         <p className="ok">
-          <strong>{name}</strong> is set up. The application has restarted, so the name is
-          live.
+          Your station is set up. The application has restarted, so it is live.
         </p>
         <p className="muted">
           Two things worth doing next: approve your first listeners from the admin
@@ -814,29 +920,31 @@ function StationStep({ status, setMessage }: { status: Status; setMessage: (m: {
 
   return (
     <>
-      <h2>Your station</h2>
       <p className="muted">
-        The last step. This one rebuilds the application, because a station name is
-        compiled into the page that listeners load — changing it is not just a
-        restart. Expect about a minute.
+        The last step, and the only one that rebuilds: the address and the two pieces
+        of text below are compiled into the page listeners load, so changing them is
+        not just a restart. Expect about a minute.
       </p>
 
-      <Field
-        label="Station name"
-        hint="Appears in the header and the browser tab. Test the connection below and this fills itself in from the station — edit it if you want the player to say something different."
-        value={name}
-        onChange={setName}
-      />
+      <Note kind="ok">
+        <p>
+          <strong>Your station's name and description come from your SUB/WAVE host</strong>,{" "}
+          not from here. They were read from it in the previous step and are read again
+          every time the player loads, so renaming the station there renames it here
+          too — no rebuild, and nothing to keep in step.
+        </p>
+      </Note>
+
       <Field label="Short tagline" hint="One line, shown under the logo" value={tagline} onChange={setTagline} />
-      <Field label="Description" hint="Used for the page metadata and the install prompt" value={description} onChange={setDescription} />
       <Field label="About" hint="The longer text on the sign-in screen" value={about} onChange={setAbout} />
 
       <Field
         label="Your SUB/WAVE station address"
-        hint="The public address of your station — the one a browser outside your home can open. Not a home network address like 192.168.x.x."
+        hint="The public address of your station — the one a browser outside your home can open. Not a home network address like 192.168.x.x. This is not the same as the server address in the previous step: that one is how this machine reaches your station, this one is how a listener's browser does."
         value={backendUrl}
         onChange={setBackendUrl}
       />
+
 
       <Actions>
         <button className="btn" disabled={probing || !backendUrl.trim()} onClick={runTest}>
@@ -908,11 +1016,13 @@ function StationStep({ status, setMessage }: { status: Status; setMessage: (m: {
                 headers: { "Content-Type": "application/json" },
                 // No timeout: the build is genuinely slow and a client-side abort
                 // would just mean the operator thinks it failed when it did not.
+                // No name and no description: both belong to the SUB/WAVE host.
+                // The server reads them from there and bakes in only what it read,
+                // so the browser bundle has a sensible value before the first poll
+                // lands — never an independently-editable one.
                 body: JSON.stringify({
                   step: "station",
-                  name,
                   tagline,
-                  description,
                   about,
                   backendUrl,
                   nextauthUrl,
