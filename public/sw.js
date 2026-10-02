@@ -8,8 +8,10 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(data.title, {
       body: data.body,
-      icon: "/icons/icon-192.png",
-      badge: "/icons/icon-192.png",
+      // These must match the manifest's icon paths (lib/brandpaths.ts): /icons/*
+      // does not exist, so notifications rendered with no icon at all.
+      icon: "/brand/icons/icon-192.png",
+      badge: "/brand/icons/icon-192.png",
       data: { url: data.url || "/admin" },
     })
   );
