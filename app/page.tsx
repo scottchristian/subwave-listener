@@ -11,6 +11,7 @@ import { STATION } from "@/lib/station";
 import { plog, setVerbose } from "@/lib/log";
 import { canSkipAsListener, parseSkipVisibility, type SkipVisibility } from "@/lib/skipvisibility";
 import { APP_VERSION, REPO_URL } from "@/lib/version";
+import { resolveTrackDuration } from "@/lib/trackduration";
 // The request ladder: what we tell a listener while the booth has not answered.
 import {
   requestWaitMessage,
@@ -79,40 +80,56 @@ const WeatherIcon = ({ condition }: { condition?: string }) => {
   );
 };
 
-const SongCountdown = ({ nowPlaying, bufferSeconds }: { nowPlaying: any, bufferSeconds: number }) => {
+const SongCountdown = ({ nowPlaying, bufferSeconds, duration }: { nowPlaying: any, bufferSeconds: number, duration: number | null }) => {
+  const [elapsed, setElapsed] = useState<number | null>(null);
   const [remaining, setRemaining] = useState<number | null>(null);
 
   useEffect(() => {
-    if (!nowPlaying || !nowPlaying.timestamp || !nowPlaying.duration) {
+    if (!nowPlaying || !nowPlaying.timestamp) {
+      setElapsed(null);
       setRemaining(null);
       return;
     }
 
-    const audibleEnd = nowPlaying.timestamp + (bufferSeconds || 0) + nowPlaying.duration;
+    // Duration may come from now-playing or from the history fallback the caller
+    // resolved — either way it is a real length, not a guess. Without any length
+    // there is still something honest to show: how long it has been on, which is
+    // always knowable from the timestamp.
+    const audibleStart = Number(nowPlaying.timestamp) + (bufferSeconds || 0);
+    const audibleEnd = duration != null ? audibleStart + duration : null;
     
     // Run once immediately, then every second
     const update = () => {
       const now = Math.floor(Date.now() / 1000);
-      const diff = audibleEnd - now;
-      // Clamp at 0 rather than hiding: the display holds the old track until
-      // the delayed promotion commits, and a vanishing timer reads as broken.
-      setRemaining(diff >= 0 ? diff : 0);
+      if (audibleEnd != null) {
+        const diff = audibleEnd - now;
+        // Clamp at 0 rather than hiding: the display holds the old track until
+        // the delayed promotion commits, and a vanishing timer reads as broken.
+        setRemaining(diff >= 0 ? diff : 0);
+        setElapsed(null);
+      } else {
+        setRemaining(null);
+        setElapsed(Math.max(0, now - audibleStart));
+      }
     };
     
     update();
     const interval = setInterval(update, 1000);
 
     return () => clearInterval(interval);
-  }, [nowPlaying, bufferSeconds]);
+  }, [nowPlaying, bufferSeconds, duration]);
 
-  if (remaining === null) return null;
+  if (remaining === null && elapsed === null) return null;
 
-  const mins = Math.floor(remaining / 60);
-  const secs = Math.floor(remaining % 60);
+  const show = (remaining !== null ? remaining : elapsed) as number;
+  const mins = Math.floor(show / 60);
+  const secs = Math.floor(show % 60);
   
   return (
     <div id="song-countdown" style={{ color: "var(--color-muted)", fontSize: "0.95rem", fontWeight: 500, marginTop: "0.25rem" }}>
-      -{mins}:{secs.toString().padStart(2, "0")} remaining
+      {remaining !== null
+        ? <>-{mins}:{secs.toString().padStart(2, "0")} remaining</>
+        : <>{mins}:{secs.toString().padStart(2, "0")} on air</>}
     </div>
   );
 };
@@ -531,6 +548,15 @@ export default function Home() {
   // first poll lands, and the build-time metadata that cannot wait for a fetch.
   const hostStationName: string | null = appStateData?.station?.name || null;
   const stationName = hostStationName || STATION.name;
+
+  // The track length, for the countdown, the skip lock and the lock screen.
+  // now-playing.duration is null whenever the host does not know it (untracked
+  // pick, untagged file), so without the history fallback all three silently
+  // stop — which reads as a broken player rather than an unknown length.
+  const trackDuration: number | null = resolveTrackDuration(
+    stationData?.nowPlaying,
+    appStateData?.history
+  );
 
   // Keep the tab title in step, for the same reason. The static title in the layout
   // is whatever was true at build time and cannot know any of this.
@@ -1217,17 +1243,17 @@ export default function Home() {
   const [trackRemaining, setTrackRemaining] = useState<number | null>(null);
   useEffect(() => {
     const np = stationData?.nowPlaying;
-    if (!np?.timestamp || !np?.duration) {
+    if (!np?.timestamp || trackDuration == null) {
       setTrackRemaining(null);
       return;
     }
-    const audibleEnd = Number(np.timestamp) + streamBufferSec() + Number(np.duration);
+    const audibleEnd = Number(np.timestamp) + streamBufferSec() + (trackDuration as number);
     const update = () =>
       setTrackRemaining(Math.max(0, audibleEnd - Math.floor(Date.now() / 1000)));
     update();
     const id = setInterval(update, 1000);
     return () => clearInterval(id);
-  }, [stationData?.nowPlaying?.timestamp, stationData?.nowPlaying?.duration, stationData?.stream?.bufferSeconds]);
+  }, [stationData?.nowPlaying?.timestamp, trackDuration, stationData?.stream?.bufferSeconds]);
 
   // The end-of-track lock: once the displayed track has no more than
   // bufferSeconds left, the next song is already buffered and inbound, so a
@@ -1309,13 +1335,15 @@ export default function Home() {
       // position outside [0, duration] makes setPositionState throw, and a track
       // with no usable numbers simply gets no position rather than a wrong one.
       try {
-        const duration = Number(np.duration);
+        // trackDuration is the resolved length (now-playing or history) — the
+        // same value the countdown shows, so the lock screen never disagrees.
+        const duration = trackDuration as number | null;
         const elapsed = Math.floor(Date.now() / 1000) - (Number(np.timestamp) + streamBufferSec());
         // Both halves have to be numbers. A track with no timestamp (a live edge
         // with nothing countable) makes elapsed NaN, and NaN clamps to NaN — which
         // makes setPositionState throw. The try/catch would swallow it, but once a
         // second, forever, so the check belongs here instead.
-        if (Number.isFinite(duration) && duration > 0 && Number.isFinite(elapsed)) {
+        if (duration != null && Number.isFinite(duration) && duration > 0 && Number.isFinite(elapsed)) {
           navigator.mediaSession.setPositionState({
             duration,
             playbackRate: 1,
@@ -1334,7 +1362,7 @@ export default function Home() {
         ]
       });
     }
-  }, [stationData?.nowPlaying, trackExplicit, explicitSuffix, stationName, trackRemaining, lockScreenSkipOn, isPlaying, isLoading, isBuffering]);
+  }, [stationData?.nowPlaying, trackExplicit, explicitSuffix, stationName, trackRemaining, trackDuration, lockScreenSkipOn, isPlaying, isLoading, isBuffering]);
 
   const adminBlockTrack = async (type: "track" | "album" | "artist") => {
     const np = stationData?.nowPlaying;
@@ -2091,7 +2119,8 @@ export default function Home() {
               {isPlaying && (
               <SongCountdown 
                 nowPlaying={stationData?.nowPlaying} 
-                bufferSeconds={streamBufferSec()} 
+                bufferSeconds={streamBufferSec()}
+                duration={trackDuration}
               />
               )}
               
