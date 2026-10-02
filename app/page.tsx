@@ -3,6 +3,7 @@
 import { useSession, signIn, signOut } from "next-auth/react";
 import { useEffect, useState, useRef } from "react";
 import Image from "next/image";
+import LoadingDots from "@/app/components/LoadingDots";
 import LikeButton from "@/app/components/LikeButton";
 import LikedSongsPanel from "@/app/components/LikedSongsPanel";
 import SkillsPanel from "@/app/components/SkillsPanel";
@@ -10,6 +11,12 @@ import { STATION } from "@/lib/station";
 import { plog, setVerbose } from "@/lib/log";
 import { canSkipAsListener, parseSkipVisibility, type SkipVisibility } from "@/lib/skipvisibility";
 import { APP_VERSION, REPO_URL } from "@/lib/version";
+// The request ladder: what we tell a listener while the booth has not answered.
+import {
+  requestWaitMessage,
+  REQUEST_TIMEOUT_SEC,
+  REQUEST_TIMEOUT_MESSAGE,
+} from "@/lib/requestwait";
 
 // The software, not the station. Deliberately not env-driven: an operator
 // renaming their station should not rename the project, and the version footer is
@@ -120,8 +127,14 @@ export default function Home() {
   const [reqSong, setReqSong] = useState("");
   const [reqName, setReqName] = useState("");
   const [reqAck, setReqAck] = useState("");
-  const [isSubmitting, setIsSubmitting] = useState(false);
+  // A request is not one action, it is three: posting it, waiting for the booth to
+  // answer, and settling. Only the last of those knows how it turned out, so the
+  // earlier two have to say something honest rather than a single fixed line that
+  // turns out to be true for as long as the tab is open.
+  const [reqStage, setReqStage] = useState<"idle" | "posting" | "waiting">("idle");
+  const [reqWaitSecs, setReqWaitSecs] = useState(0);
   const [pendingReqId, setPendingReqId] = useState<string | null>(null);
+
   const [isAsleepWakeup, setIsAsleepWakeup] = useState(false);
   // Post-awake stall indicator: rebuffering after the stream started shows
   // the same loading treatment (debounced so micro-stalls don't flash it).
@@ -1417,33 +1430,89 @@ export default function Home() {
   }, [status, session, accessDenied]);
 
   useEffect(() => {
-    let pollInterval: NodeJS.Timeout;
-    if (pendingReqId) {
-      pollInterval = setInterval(async () => {
-        try {
-          const res = await fetch(`/api/request?id=${pendingReqId}`);
-          if (res.ok) {
-            const data = await res.json();
-            if (data.status === 'resolved' || data.success) {
-              setReqAck(data.ack || "We've got you fam, your request is coming down the line in the next few min!");
-              setPendingReqId(null);
-            } else if (data.status === 'rejected' || data.status === 'unknown') {
-              setReqAck(data.message || "Sorry, the DJ couldn't schedule your request right now.");
-              setPendingReqId(null);
-            }
+    if (!pendingReqId) return;
+
+    let pollFails = 0;
+    let gaveUp = false;
+    let waited = 0;
+
+    const finish = (ack: string) => {
+      if (gaveUp) return;
+      gaveUp = true;
+      setReqAck(ack);
+      setPendingReqId(null);
+      setReqStage("idle");
+      setReqWaitSecs(0);
+      // The cooldown starts only now — once we know how it turned out. Starting it
+      // on submit meant a listener who got no answer at all could not retry for
+      // thirty seconds with no idea why the button was dead.
+      startReqCooldown(30);
+    };
+
+    const poll = async () => {
+      if (gaveUp) return;
+      try {
+        const res = await fetch(`/api/request?id=${pendingReqId}`, { cache: "no-store" });
+        if (!res.ok) {
+          // A transient blip is not a broken request. A run of them is, and saying
+          // so is better than either pretending it is fine or abandoning a request
+          // that is very likely still queued.
+          if (++pollFails >= 3) {
+            finish("Something went wrong checking with the booth. Your request was sent — try again in a moment.");
           }
-        } catch (e) {
-          plog.error("request status poll failed", e instanceof Error ? e.message : e);
+          return;
         }
-      }, 5000);
-    }
-    return () => clearInterval(pollInterval);
+        pollFails = 0;
+        const data = await res.json();
+        if (data.status === "resolved" || data.success) {
+          finish(data.ack || "Got you — your request is coming up.");
+        } else if (data.status === "rejected" || data.status === "unknown") {
+          finish(data.message || "Sorry, the DJ couldn’t schedule that one right now.");
+        }
+      } catch (e) {
+        plog.error("request status poll failed", e instanceof Error ? e.message : e);
+        if (++pollFails >= 3) {
+          finish("Lost contact while checking with the booth. Your request was sent — try again in a moment.");
+        }
+      }
+    };
+
+    const pollId = setInterval(poll, 5000);
+
+    // The clock behind the escalating message, and the deadline under it. Both live
+    // here so they cannot drift apart: the message cannot say "struggling" without
+    // the timeout being the thing that actually stops the waiting.
+    //
+    // The elapsed count is a plain closure variable rather than a setState
+    // updater. An updater has to be pure, and doing setReqAck() inside one is not:
+    // React decides when to run it, so the ack was being written a second time
+    // after the booth had already answered — a resolved request showed "still
+    // checking with the DJ" instead of the DJ's reply.
+    const tickId = setInterval(() => {
+      if (gaveUp) return;
+      const next = waited + 1;
+      waited = next;
+      if (next >= REQUEST_TIMEOUT_SEC) {
+        // Out of patience, not out of queue: the request is still on the booth's
+        // list, and saying so is the honest end to this.
+        finish(REQUEST_TIMEOUT_MESSAGE);
+        return;
+      }
+      setReqWaitSecs(next);
+      setReqAck(requestWaitMessage(next));
+    }, 1000);
+
+    return () => {
+      clearInterval(pollId);
+      clearInterval(tickId);
+    };
   }, [pendingReqId]);
 
+
   const submitRequest = async () => {
-    if (!reqSong || isSubmitting || reqCooldownLeft > 0) return;
+    if (!reqSong || reqStage !== "idle" || reqCooldownLeft > 0) return;
     setReqAck("");
-    setIsSubmitting(true);
+    setReqStage("posting");
     try {
       plog.info("request out", { track: reqSong, name: reqName || "Anonymous Listener" });
       const res = await fetch("/api/request", {
@@ -1454,30 +1523,49 @@ export default function Home() {
           name: reqName,
         })
       });
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
       plog.info("request response", { status: res.status, data });
 
-      if (data.requestId && data.status === "pending") {
-        setPendingReqId(data.requestId);
-        setReqAck("Request sent to the booth, waiting for the DJ...");
-        setReqSong("");
+      // A 500 or anything else that is not a rate limit means the request may not
+      // have reached the booth at all. Say so plainly rather than implying it did.
+      if (!res.ok && res.status !== 429) {
+        setReqStage("idle");
+        setReqAck("Something went wrong sending that — it may not have reached the booth. Try again in a moment.");
+        startReqCooldown(30);
+        return;
+      }
+
+      if (res.status === 429) {
+        setReqStage("idle");
+        setReqAck(data.error || "The booth is taking too many requests right now — try again shortly.");
         startReqCooldown(typeof data.retryAfterSec === "number" ? data.retryAfterSec : 30);
+        return;
+      }
+
+      setReqSong("");
+
+      if (data.requestId && data.status === "pending") {
+        // Accepted. The booth still has to answer, and until it does nobody knows
+        // whether the request will be played — so the cooldown waits for that rather
+        // than starting now, and the message says what is actually happening.
+        setPendingReqId(data.requestId);
+        setReqWaitSecs(0);
+        setReqStage("waiting");
+        setReqAck(requestWaitMessage(0));
       } else {
-        setReqAck(data.message || data.ack || data.error || "Request submitted!");
-        if (res.ok) {
-          setReqSong("");
-          startReqCooldown(30);
-        } else if (res.status === 429 && typeof data.retryAfterSec === "number") {
-          startReqCooldown(data.retryAfterSec);
-        }
+        // Answered inline, so the booth already told us.
+        setReqStage("idle");
+        setReqAck(data.message || data.ack || data.error || "Request sent to the booth.");
+        startReqCooldown(30);
       }
     } catch (e) {
       plog.error("request submit failed", e instanceof Error ? e.message : e);
-      setReqAck("Failed to submit request.");
-    } finally {
-      setIsSubmitting(false);
+      setReqStage("idle");
+      setReqAck("Something went wrong sending that — the station could not be reached. Try again in a moment.");
+      startReqCooldown(30);
     }
   };
+
 
   const advanceTour = () => {
     if (tourStep >= 9) {
@@ -2224,21 +2312,50 @@ export default function Home() {
               value={reqName}
               onChange={e => setReqName(e.target.value)}
             />
-            <button 
-              id="btn-submit-request" 
-              className="submit-btn" 
+            {/* Locked for the whole of posting AND waiting: the button stays dead
+                until the booth has actually answered or we have given up on it,
+                which is what the dots beside the label are saying. */}
+            <button
+              id="btn-submit-request"
+              className="submit-btn"
               onClick={submitRequest}
-              disabled={!reqSong || isSubmitting || reqCooldownLeft > 0}
+              disabled={!reqSong || reqStage !== "idle" || reqCooldownLeft > 0}
             >
-              {isSubmitting ? "Sending your request..." : reqCooldownLeft > 0 ? `Send again in ${reqCooldownLeft}s` : "Send to the booth"}
-              {!isSubmitting && reqCooldownLeft === 0 && (
+              {reqStage === "posting"
+                ? "Sending your request"
+                : reqStage === "waiting"
+                  ? `Checking with the DJ · ${reqWaitSecs}s`
+                  : reqCooldownLeft > 0
+                    ? `Send again in ${reqCooldownLeft}s`
+                    : "Send to the booth"}
+              {reqStage === "posting" ? <LoadingDots label="Sending your request" /> : null}
+              {reqStage === "waiting" ? <LoadingDots label="Waiting for the DJ" /> : null}
+              {reqStage === "idle" && reqCooldownLeft === 0 ? (
                 <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.25" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
                   <path d="M7 7h10v10"></path>
                   <path d="M7 17 17 7"></path>
                 </svg>
-              )}
+              ) : null}
             </button>
-            {reqAck && <div id="request-ack-text" style={{ marginTop: "1rem", color: "var(--color-accent)", fontSize: "0.875rem" }}>{reqAck}</div>}
+            {reqAck && (
+              <div
+                id="request-ack-text"
+                role="status"
+                aria-live="polite"
+                style={{
+                  marginTop: "1rem",
+                  // Red only for the states that are actually a problem, so the
+                  // escalating "still nothing" line does not read as an error.
+                  color: reqStage === "idle" && /wrong|lost|stopped waiting/i.test(reqAck)
+                    ? "#e06a5c"
+                    : "var(--color-accent)",
+                  fontSize: "0.875rem",
+                }}
+              >
+                {reqAck}
+              </div>
+            )}
+
           </div>
 
           {(session?.user as any)?.canUseDj && (

@@ -7,13 +7,14 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "check": "npm run check:pii && npm run check:refs && npm run check:links && npm run check:setup && npm run check:version && npm run check:address",
+    "check": "npm run check:pii && npm run check:refs && npm run check:links && npm run check:setup && npm run check:version && npm run check:address && npm run check:request",
     "check:pii": "node scripts/check-pii.mjs",
     "check:refs": "node scripts/check-station-refs.mjs",
     "check:links": "node scripts/check-links.mjs",
     "check:setup": "node scripts/check-setup.mjs",
     "check:version": "node scripts/check-version-compare.mts",
-    "check:address": "node scripts/check-address-reach.mts"
+    "check:address": "node scripts/check-address-reach.mts",
+    "check:request": "node scripts/check-request-wait.mts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",
