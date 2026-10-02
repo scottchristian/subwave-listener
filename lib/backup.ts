@@ -7,13 +7,16 @@ import { promisify } from "node:util";
 // module pulls in must resolve relatively (it does: prisma, version,
 // db-provider and envfile have no @/ imports of their own).
 import prisma from "./prisma";
-import { APP_VERSION } from "./version";
+import { APP_VERSION, REPO } from "./version";
+import { getHostIdentity } from "./hostidentity";
 import { providerFromEnv } from "./db-provider";
 import { ENV_FILE } from "./envfile";
 
 const run = promisify(execFile);
 
 export const APP_DIR = process.cwd();
+// "scottchristian/subwave-listener" -> "subwave-listener" for filenames.
+const REPO_NAME = (REPO.split("/")[1] || "subwave-listener").toLowerCase();
 export const BACKUP_DIR = path.join(APP_DIR, "data", "backups");
 export const BRAND_DIR = path.join(APP_DIR, "data", "brand");
 export const MARKER_FILE = path.join(path.dirname(ENV_FILE), ".setup-complete");
@@ -22,6 +25,21 @@ export const MARKER_FILE = path.join(path.dirname(ENV_FILE), ".setup-complete");
 // archives. Ten is enough history to be useful without growing the disk
 // silently; anything older is pruned on the next create.
 export const BACKUP_RETENTION = 10;
+
+/**
+ * Make a name safe for a filename: lowercase, runs of anything else become one
+ * hyphen, leading/trailing hyphens trimmed. "Causeway FM" -> "causeway-fm".
+ * Falls back rather than returning empty, because an empty slug makes a broken
+ * filename and a weird station name should not break downloads.
+ */
+export function slugifyName(raw: string, fallback: string): string {
+  const slug = raw
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+  return slug || fallback;
+}
 
 // Every table, in an order that respects the only foreign keys in the schema:
 // everything with a userId points at User, so User is written first and wiped
@@ -48,6 +66,8 @@ export type BackupManifest = {
   label: string;
   createdAt: string;
   appVersion: string;
+  /** Station name as known when the backup was taken (host, else baked env). */
+  stationName: string;
   dbProvider: string;
   /** Row counts per table, as dumped. Missing tables are absent, not zero. */
   tables: Record<string, number>;
@@ -129,6 +149,14 @@ export async function createBackup(label = ""): Promise<BackupSummary> {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_").slice(0, 19);
   const rand = Math.random().toString(36).slice(2, 8);
   const id = `${stamp}-${rand}`;
+  // Station name for the download filename. Host first (it owns the name),
+  // baked env as fallback, never fatal.
+  let stationName = process.env.NEXT_PUBLIC_STATION_NAME || "";
+  try {
+    stationName = (await getHostIdentity()).name || stationName;
+  } catch {
+    // unreachable host — env fallback (possibly empty) stands
+  }
   const dir = backupPath(id);
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 
@@ -184,6 +212,7 @@ export async function createBackup(label = ""): Promise<BackupSummary> {
       label,
       createdAt: new Date().toISOString(),
       appVersion: APP_VERSION,
+      stationName,
       dbProvider: providerFromEnv(),
       tables,
       envKeys: Object.keys(env),
@@ -244,8 +273,12 @@ export async function deleteBackup(id: string): Promise<void> {
  */
 export async function archiveBackup(id: string): Promise<{ filePath: string; fileName: string }> {
   const dir = backupPath(id);
-  await fs.access(path.join(dir, "manifest.json"));
-  const fileName = `subwave-backup-${id}.tar.gz`;
+  const manifest = JSON.parse(await fs.readFile(path.join(dir, "manifest.json"), "utf8")) as BackupManifest;
+  if (manifest.id !== id) throw new Error("backup manifest mismatch");
+  const fileName = `${slugifyName(REPO_NAME, "subwave-listener")}-${slugifyName(
+    manifest.stationName || "",
+    "station"
+  )}-${id}.tar.gz`;
   const filePath = path.join(BACKUP_DIR, fileName);
   await fs.rm(filePath, { force: true });
   await run("tar", ["-czf", filePath, "-C", BACKUP_DIR, id]);

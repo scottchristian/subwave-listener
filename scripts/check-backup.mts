@@ -250,7 +250,13 @@ try {
   ok(!listed.some((b) => b.id === "junk-dir"), "list ignores junk dirs and stray files");
 
   // ---- Phase 5: archive integrity ----
-  const { filePath } = await backup.archiveBackup(created.id);
+  const { filePath, fileName } = await backup.archiveBackup(created.id);
+  ok(
+    /^[a-z0-9-]+-[a-z0-9-]+-\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}-[a-z0-9]+\.tar\.gz$/.test(fileName),
+    "download filename carries app, station and id",
+    fileName
+  );
+  ok(!/\s/.test(fileName), "download filename has no whitespace", fileName);
   const { execFile: exec2 } = await import("node:child_process");
   const { promisify: prom2 } = await import("node:util");
   const listing = (await prom2(exec2)("tar", ["-tzf", filePath]).then((r: any) => r.stdout).catch(() => "")) as string;
@@ -279,6 +285,27 @@ try {
   ok(parsed["SP"] === "  p  ", "inner padding kept");
   ok(!("NOT_A_LINE" in parsed), "non-assignments skipped");
   ok(!("# comment" in parsed), "comments skipped");
+
+  // ---- Phase 7b: filename slugs ----
+  const slugs: Array<[string, string, string]> = [
+    ["Causeway FM", "causeway-fm", "spaces"],
+    ["  Padded  ", "padded", "padding trimmed"],
+    ["Rock & Roll!", "rock-roll", "punctuation"],
+    ["UPPER", "upper", "case"],
+    ["a".repeat(100), "a".repeat(60), "capped at 60"],
+    ["", "station", "empty falls back"],
+    ["!!!", "station", "punctuation-only falls back"],
+    ["caf\u00e9", "caf", "non-ascii dropped"],
+  ];
+  for (const [raw, want, why] of slugs) {
+    const got = backup.slugifyName(raw, "station");
+    if (got !== want) {
+      failed++;
+      console.log(`  FAIL  slugify(${JSON.stringify(raw)}) -> ${JSON.stringify(got)}, wanted ${JSON.stringify(want)} (${why})`);
+    } else {
+      passed++;
+    }
+  }
 
   // ---- Phase 8: delete ----
   await backup.deleteBackup(afterPrune[0].id);
