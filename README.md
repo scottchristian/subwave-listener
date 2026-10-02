@@ -332,7 +332,7 @@ yourself — the wizard writes its own configuration and creates its own databas
 | **Security keys** | Nothing. It generates them and shows you the one that matters. |
 | **Sign-in** | A Google Cloud project (about five minutes, and the wizard walks you through it), plus your own email address |
 | **Database** | Nothing if you take the recommendation. |
-| **Your station** | Its name, and the public address of your SUB/WAVE station |
+| **Your station** | The public address of your SUB/WAVE station. Its name is read back from the station once the connection is tested — edit it only if you want the player to say something different. |
 
 ### The one thing it cannot do for you
 

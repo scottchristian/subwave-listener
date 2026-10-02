@@ -19,7 +19,8 @@
 // survive a dropped connection by re-reading status on reload rather than
 // pretending to know more than the server does.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { addressIsPubliclyReachable } from "@/lib/addressreach";
 import type { ReactNode } from "react";
 import { RootNotice, HandoverCommands } from "./RootNotice";
 
@@ -660,6 +661,14 @@ function DatabaseStep({ status, busy, setBusy, setMessage, pollUntilUp, reload }
   );
 }
 
+type Probe = {
+  ok: boolean;
+  /** The station name the host reports, when it reports one. */
+  stationName?: string | null;
+  /** A human sentence saying what happened, for the operator. */
+  detail: string;
+};
+
 function StationStep({ status, setMessage }: { status: Status; setMessage: (m: { kind: "ok" | "warn" | "error"; text: string } | null) => void }) {
   const [name, setName] = useState("");
   const [tagline, setTagline] = useState("");
@@ -670,6 +679,114 @@ function StationStep({ status, setMessage }: { status: Status; setMessage: (m: {
   const [discoverable, setDiscoverable] = useState(false);
   const [busy, setBusy] = useState(false);
   const [done, setDone] = useState(false);
+  // Null until tested. "Finish setup" stays disabled until this says ok, so a
+  // mistyped address is caught here rather than after the minute-long build.
+  const [probe, setProbe] = useState<Probe | null>(null);
+  const [probing, setProbing] = useState(false);
+  const probedFor = useRef<string | null>(null);
+
+  /**
+   * Ask the address whether it is a working SUB/WAVE station, and take its answer
+   * from the same response.
+   *
+   * Runs in the browser on purpose. That is the listener's own path — the same URL
+   * and the same cross-origin rules the player will use — so a pass here means the
+   * player will actually load, including the CORS question that a server-side probe
+   * would not catch. It also means this server never fetches an operator-supplied
+   * URL, so adding the check adds no new unauthenticated endpoint.
+   */
+  const testConnection = async (): Promise<Probe> => {
+    const raw = backendUrl.trim();
+    if (!raw) return { ok: false, detail: "Enter your station address first." };
+    let base: URL;
+    try {
+      base = new URL(raw);
+      if (base.protocol !== "http:" && base.protocol !== "https:") throw new Error("scheme");
+    } catch {
+      return { ok: false, detail: "That has to be a full http:// or https:// address." };
+    }
+    const api = base.href.replace(/\/+$/, "").endsWith("/api")
+      ? base.href.replace(/\/+$/, "")
+      : base.href.replace(/\/+$/, "") + "/api";
+
+    try {
+      const res = await fetch(`${api}/now-playing`, {
+        headers: { Accept: "application/json" },
+        signal: AbortSignal.timeout(15000),
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        return { ok: false, detail: `The server answered ${res.status}. Check the address, and that it includes /api.` };
+      }
+      const data: any = await res.json().catch(() => null);
+      if (!data || typeof data !== "object") {
+        return { ok: false, detail: "That address answered, but not like a SUB/WAVE station." };
+      }
+      // dj.station is the station's own name; dj.tagline is its tagline when set.
+      // Both are read straight from the host so they cannot disagree with it.
+      const stationName = typeof data?.dj?.station === "string" ? data.dj.station.trim() : "";
+      const taglineFromHost = typeof data?.dj?.tagline === "string" ? data.dj.tagline.trim() : "";
+      const track = data?.nowPlaying?.title
+        ? `${data.nowPlaying.title}${data.nowPlaying.artist ? " \u2014 " + data.nowPlaying.artist : ""}`
+        : null;
+      return {
+        ok: true,
+        stationName: stationName || null,
+        detail: track ? `Connected. On air: ${track}` : "Connected. The station is reachable, though nothing is playing right now.",
+        // Carried on the result so the caller can fill the tagline without a
+        // second round trip.
+        ...(taglineFromHost ? { taglineFromHost } : {}),
+      } as Probe;
+    } catch (e) {
+      const timedOut = (e as Error)?.name === "TimeoutError";
+      // The two failures need different advice. A private address that fails is
+      // unreachable from here *and* from every listener, so the problem is local
+      // (nothing is listening on it). A public address that fails is either the
+      // wrong address or the station is down \u2014 and blaming the network would send
+      // the operator off to check their router for a name that never resolved.
+      const priv = addressIsPubliclyReachable(raw);
+      return {
+        ok: false,
+        detail: timedOut
+          ? `No answer after 15 seconds. ${priv
+              ? "Check the address, and that the station is running."
+              : "Nothing is answering on your own network either, so this is not a reachability problem \u2014 check the address and that the station is running."}`
+          : priv
+            ? "Could not reach that address. Check it for typos, and that the station is running \u2014 including whether it needs /api on the end."
+            : "Could not reach that address from your own network, so nothing is listening on it. Check the address, and that the station is running.",
+      };
+    }
+  };
+
+  const runTest = async () => {
+    setProbing(true);
+    setMessage(null);
+    const result = await testConnection();
+    setProbe(result);
+    probedFor.current = backendUrl.trim();
+    if (result.ok) {
+      // Fill from the host rather than asking the operator to retype what it
+      // already knows. Never overwrite a name they have typed.
+      setName((prev) => (prev.trim() ? prev : result.stationName || ""));
+    }
+    setProbing(false);
+  };
+
+  /**
+   * Retest automatically the first time an address stops being the one that
+   * passed. Editing the field is the operator telling us it changed, and a stale
+   * green tick on a new address is exactly the lie this gate exists to prevent.
+   */
+  useEffect(() => {
+    if (probedFor.current === null) return;
+    if (probedFor.current === backendUrl.trim() && probe?.ok) return;
+    setProbe(null);
+  }, [backendUrl]);
+
+  // A failed test is not the only reason to stop: a private address would pass
+  // the test from this machine and still fail for every listener.
+  const addressLooksPublic = addressIsPubliclyReachable(backendUrl);
+  const canFinish = !!probe?.ok && addressLooksPublic && !probing && !busy;
 
   if (done) {
     return (
@@ -704,7 +821,12 @@ function StationStep({ status, setMessage }: { status: Status; setMessage: (m: {
         restart. Expect about a minute.
       </p>
 
-      <Field label="Station name" hint="Appears in the header and the browser tab" value={name} onChange={setName} />
+      <Field
+        label="Station name"
+        hint="Appears in the header and the browser tab. Test the connection below and this fills itself in from the station — edit it if you want the player to say something different."
+        value={name}
+        onChange={setName}
+      />
       <Field label="Short tagline" hint="One line, shown under the logo" value={tagline} onChange={setTagline} />
       <Field label="Description" hint="Used for the page metadata and the install prompt" value={description} onChange={setDescription} />
       <Field label="About" hint="The longer text on the sign-in screen" value={about} onChange={setAbout} />
@@ -715,6 +837,46 @@ function StationStep({ status, setMessage }: { status: Status; setMessage: (m: {
         value={backendUrl}
         onChange={setBackendUrl}
       />
+
+      <Actions>
+        <button className="btn" disabled={probing || !backendUrl.trim()} onClick={runTest}>
+          {probing ? "Testing…" : "Test connection"}
+        </button>
+      </Actions>
+
+      {probe ? (
+        <Note kind={probe.ok ? (addressLooksPublic ? "ok" : "warn") : "error"}>
+          {probe.ok ? (
+            addressLooksPublic ? (
+              <p id="probe-ok">{probe.detail}</p>
+            ) : (
+              <p id="probe-ok-private">
+                <strong>It answered, but your listeners cannot reach that address.</strong> This
+                browser is on the same network as it, so the test passed {'—'} every listener's
+                browser would not. See the note below.
+              </p>
+            )
+          ) : (
+            <p id="probe-failed">{probe.detail}</p>
+          )}
+        </Note>
+      ) : null}
+
+      {backendUrl.trim() && !addressLooksPublic ? (
+        <Note kind="warn">
+          <p id="address-private-note">
+            <strong>That address is only reachable from this machine or your own network.</strong>{" "}
+            Your listeners' browsers talk to the station directly {'—'} now-playing, the schedule,
+            cover art {'—'} so they need an address that works from the public internet. This one will
+            play perfectly here, and nowhere else.
+          </p>
+          <p>
+            If the station is only ever listened to from inside your own network, carry on: it will
+            work for you. If it is a public station, use the address that opens from a browser on
+            mobile data, with the ports your router needs forwarded.
+          </p>
+        </Note>
+      ) : null}
       <Field
         label="This app's public address"
         hint="Must match the one you registered with Google"
@@ -736,7 +898,7 @@ function StationStep({ status, setMessage }: { status: Status; setMessage: (m: {
       <Actions>
         <button
           className="btn primary"
-          disabled={busy}
+          disabled={busy || !canFinish}
           onClick={async () => {
             setBusy(true);
             setMessage({ kind: "warn", text: "Building your station. This takes about a minute — do not close this tab." });
@@ -775,6 +937,19 @@ function StationStep({ status, setMessage }: { status: Status; setMessage: (m: {
         >
           {busy ? "Building… this takes about a minute" : "Finish setup"}
         </button>
+        {!canFinish && !busy ? (
+          <span className="muted small" id="finish-blocked-why">
+            {!backendUrl.trim()
+              ? "Enter your station address."
+              : probing
+                ? "Testing the connection…"
+                : !probe
+                  ? "Test the connection first."
+                  : !probe.ok
+                    ? "The connection did not pass."
+                    : "Use an address your listeners can reach."}
+          </span>
+        ) : null}
       </Actions>
     </>
   );
