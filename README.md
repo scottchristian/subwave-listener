@@ -546,6 +546,14 @@ Upgrading from a release is an ordinary deploy: pull the tag, `npm ci`, build,
 restart. Your configuration lives in the environment and in the database, not in
 the checkout, so nothing needs migrating between patches.
 
+### Backups
+
+**Admin → System → Backups** snapshots everything that makes the station yours:
+the settings file, the whole database, the station artwork and the setup marker.
+Take one before upgrading, and download one to keep somewhere off the server —
+snapshots on the server alone do not survive losing the server. Restoring one
+puts all four back and restarts the station on them.
+
 ### If you maintain a fork
 
 The update check points at this repository's releases, so a fork sees no updates

@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { STATION } from "@/lib/station";
 import { APP_VERSION, REPO_URL } from "@/lib/version";
+import type { BackupSummary } from "@/lib/backup";
 import DatabasePanel from "./DatabasePanel";
 import CollapsibleSection from "./CollapsibleSection";
 import HeaderToggle from "./HeaderToggle";
@@ -59,6 +60,12 @@ export default function AdminPage() {
     current: string; latest: string | null; updateAvailable: boolean;
     releaseUrl: string; notes: string | null; checkedAt: string;
   } | null>(null);
+  // Server-side backups (env, database, artwork, setup marker). Null until
+  // loaded; the panel fetches them with the rest of the admin data.
+  const [backups, setBackups] = useState<BackupSummary[] | null>(null);
+  const [backupBusy, setBackupBusy] = useState<"create" | string | null>(null);
+  const [backupMsg, setBackupMsg] = useState("");
+  const [restoreConfirmId, setRestoreConfirmId] = useState<string | null>(null);
   // The three header chips. All default on, so opening the panel shows the
   // station as it is rather than as a fresh install would be.
   const [headerListeners, setHeaderListeners] = useState(true);
@@ -178,6 +185,13 @@ export default function AdminPage() {
   useEffect(() => {
     if (status !== "authenticated" || !(session?.user as any)?.isAdmin) return;
     let cancelled = false;
+    // Backups list. Failure leaves the panel saying nothing — same reasoning
+    // as the update check: a station that cannot reach its own disk is in
+    // trouble this panel cannot help with.
+    fetch("/api/admin/backup")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setBackups(d.backups || []); })
+      .catch(() => {});
     fetch("/api/admin/update-check")
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (!cancelled && d) setUpdateInfo(d); })
@@ -400,6 +414,71 @@ export default function AdminPage() {
     }
   };
 
+
+  /**
+   * Backup actions. Each refreshes the list afterwards so the panel never shows a
+   * backup that no longer exists (or hides one that does). Restore navigates
+   * nowhere: the station restarts underneath, and the admin page simply starts
+   * failing its polls until the new process answers.
+   */
+  const refreshBackups = async () => {
+    try {
+      const r = await fetch("/api/admin/backup");
+      if (r.ok) {
+        const d = await r.json();
+        setBackups(d.backups || []);
+      }
+    } catch {
+      // leave the old list rather than blanking it on a transient failure
+    }
+  };
+
+  const createBackupNow = async () => {
+    setBackupBusy("create");
+    setBackupMsg("");
+    try {
+      const res = await fetch("/api/admin/backup", { method: "POST" });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "backup failed");
+      setBackupMsg(`Backed up ${Object.values((d.backup.tables || {}) as Record<string, number>).reduce((a: number, b: number) => a + b, 0)} database rows plus settings and artwork.`);
+      await refreshBackups();
+    } catch (e) {
+      setBackupMsg(`Backup failed: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setBackupBusy(null);
+    }
+  };
+
+  const deleteBackupNow = async (id: string) => {
+    setBackupBusy(id);
+    try {
+      await fetch(`/api/admin/backup/${id}`, { method: "DELETE" });
+      await refreshBackups();
+    } finally {
+      setBackupBusy(null);
+      if (restoreConfirmId === id) setRestoreConfirmId(null);
+    }
+  };
+
+  const restoreBackupNow = async (id: string) => {
+    setBackupBusy(id);
+    setBackupMsg("");
+    try {
+      const res = await fetch(`/api/admin/backup/${id}/restore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "restore failed");
+      setBackupMsg("Restored. The station is restarting on those settings now — give it half a minute, then reload.");
+    } catch (e) {
+      setBackupMsg(`Restore failed: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setBackupBusy(null);
+      setRestoreConfirmId(null);
+    }
+  };
 
   const saveStreamMode = async (mode: "relay" | "direct") => {    setStreamMode(mode);
     await fetch("/api/admin/settings", {
@@ -1621,6 +1700,133 @@ export default function AdminPage() {
             </div>
           )}
         </section>
+
+        {/* Backups: everything that makes this station this station, snapshotted. */}
+        <section className="card" id="section-backups" style={activeTab === "system" ? undefined : { display: "none" }}>
+          <h2>Backups</h2>
+          <p className="about-text" style={{ marginTop: "0.5rem", fontSize: "0.875rem" }}>
+            The settings file, the whole database, the station artwork and the setup
+            marker — everything a failed update would need to put back. Snapshots live
+            on this server; download one to keep it somewhere else.
+          </p>
+
+          <div style={{ marginTop: "1rem", display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
+            <button
+              id="btn-create-backup"
+              className="primary-btn"
+              style={{ width: "auto", padding: "0.5rem 1.1rem" }}
+              disabled={backupBusy !== null}
+              onClick={createBackupNow}
+            >
+              {backupBusy === "create" ? "Backing up…" : "Back up now"}
+            </button>
+            {backupMsg ? (
+              <span id="backup-msg" style={{ fontSize: "0.875rem", color: "var(--color-accent)" }}>{backupMsg}</span>
+            ) : null}
+          </div>
+
+          <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {backups === null ? (
+              <div style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>Loading backups…</div>
+            ) : backups.length === 0 ? (
+              <div id="backups-empty" style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>
+                No backups yet. Take one before changing anything you cannot easily undo.
+              </div>
+            ) : (
+              backups.map((b) => {
+                const rows = Object.values(b.tables).reduce((a: number, x: number) => a + x, 0);
+                const when = (() => {
+                  try {
+                    return new Date(b.createdAt).toLocaleString();
+                  } catch {
+                    return b.createdAt;
+                  }
+                })();
+                const size = b.sizeBytes > 1048576
+                  ? `${(b.sizeBytes / 1048576).toFixed(1)} MB`
+                  : `${Math.max(1, Math.round(b.sizeBytes / 1024))} KB`;
+                const busy = backupBusy === b.id;
+                const confirming = restoreConfirmId === b.id;
+                return (
+                  <div
+                    key={b.id}
+                    id={`backup-${b.id}`}
+                    style={{
+                      display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap",
+                      padding: "0.7rem 0.9rem", borderRadius: "8px",
+                      border: "1px solid var(--color-border)", background: "rgba(255,255,255,0.03)",
+                    }}
+                  >
+                    <div style={{ flex: "1 1 200px", minWidth: 0 }}>
+                      <div style={{ fontSize: "0.9rem", fontWeight: 600 }}>
+                        {b.label || "Backup"} <span style={{ fontWeight: 400, color: "var(--color-muted)" }}>· v{b.appVersion}</span>
+                      </div>
+                      <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                        {when} · {rows.toLocaleString()} rows · {b.brandFiles} artwork files · {size}
+                      </div>
+                    </div>
+                    {confirming ? (
+                      <>
+                        <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                          Restore, replacing current settings? The station restarts.
+                        </span>
+                        <button
+                          id={`btn-restore-confirm-${b.id}`}
+                          className="primary-btn"
+                          style={{ width: "auto", padding: "0.4rem 0.9rem", fontSize: "0.8rem" }}
+                          disabled={busy}
+                          onClick={() => restoreBackupNow(b.id)}
+                        >
+                          {busy ? "Restoring…" : "Yes, restore"}
+                        </button>
+                        <button
+                          id={`btn-restore-cancel-${b.id}`}
+                          className="seg-btn"
+                          disabled={busy}
+                          onClick={() => setRestoreConfirmId(null)}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <a
+                          id={`btn-download-backup-${b.id}`}
+                          href={`/api/admin/backup/${b.id}/download`}
+                          style={{
+                            fontSize: "0.8rem", fontWeight: 600, color: "var(--color-text)",
+                            border: "1px solid var(--color-border)", borderRadius: "8px",
+                            padding: "0.4rem 0.9rem", textDecoration: "none", whiteSpace: "nowrap",
+                          }}
+                        >
+                          Download
+                        </a>
+                        <button
+                          id={`btn-restore-backup-${b.id}`}
+                          className="seg-btn"
+                          disabled={backupBusy !== null}
+                          onClick={() => setRestoreConfirmId(b.id)}
+                        >
+                          Restore
+                        </button>
+                        <button
+                          id={`btn-delete-backup-${b.id}`}
+                          className="seg-btn"
+                          disabled={backupBusy !== null}
+                          onClick={() => deleteBackupNow(b.id)}
+                          aria-label={`Delete backup ${b.label || b.id}`}
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </section>
+
 
         <section className="card" id="section-diagnostics" style={activeTab === "system" ? undefined : { display: "none" }}>
           <h2>Diagnostics</h2>
