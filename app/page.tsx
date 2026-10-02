@@ -1996,10 +1996,15 @@ export default function Home() {
                     </div>
                   )}
                   <div id="up-next-info" style={{ flex: 1, minWidth: 0 }}>
-                    <div id="up-next-title" style={{ viewTransitionName: 'up-next-title', width: 'fit-content', fontSize: "1.05rem", fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } as any}>
+                    {/* maxWidth alongside fit-content is load-bearing. fit-content resolves to
+                      max-content, so on its own it grew the box to the full width of the
+                      title and the overflow/ellipsis below had nothing to clip — a long
+                      track name ran straight out of the card. The cap keeps the hug for a
+                      short title and lets the ellipsis do its job on a long one. */}
+                    <div id="up-next-title" style={{ viewTransitionName: 'up-next-title', width: 'fit-content', maxWidth: '100%',fontSize: "1.05rem", fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } as any}>
                       {getNextSong().title}
                     </div>
-                    <div id="up-next-artist" style={{ viewTransitionName: 'up-next-artist', width: 'fit-content', fontSize: "0.85rem", color: "var(--color-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: "0.15rem" } as any}>
+                    <div id="up-next-artist" style={{ viewTransitionName: 'up-next-artist', width: 'fit-content', maxWidth: '100%',fontSize: "0.85rem", color: "var(--color-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: "0.15rem" } as any}>
                       <span style={{ color: "var(--color-text)" }}>{getNextSong().artist}</span>
                       {getNextSong().album && <span> &middot; {getNextSong().album}</span>}
                       {getNextSong().year && <span> &middot; {getNextSong().year}</span>}
@@ -2066,10 +2071,10 @@ export default function Home() {
                       </div>
                     )}
                     <div id={`next-playing-info-${i}`} style={{ flex: 1, minWidth: 0 }}>
-                      <div id={`next-playing-title-${i}`} style={{ viewTransitionName: `coming-up-title-${i}`, width: 'fit-content', fontSize: "1rem", fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } as any}>
+                      <div id={`next-playing-title-${i}`} style={{ viewTransitionName: `coming-up-title-${i}`, width: 'fit-content', maxWidth: '100%',fontSize: "1rem", fontWeight: 700, color: "#fff", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" } as any}>
                         {track.title}
                       </div>
-                      <div id={`next-playing-artist-${i}`} style={{ viewTransitionName: `coming-up-artist-${i}`, width: 'fit-content', fontSize: "0.85rem", color: "var(--color-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: "0.25rem" } as any}>
+                      <div id={`next-playing-artist-${i}`} style={{ viewTransitionName: `coming-up-artist-${i}`, width: 'fit-content', maxWidth: '100%',fontSize: "0.85rem", color: "var(--color-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: "0.25rem" } as any}>
                         <span style={{ color: "var(--color-text)" }}>{track.artist}</span>
                         {track.album && <span> &middot; {track.album}</span>}
                       </div>
