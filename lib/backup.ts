@@ -2,10 +2,14 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import prisma from "@/lib/prisma";
-import { APP_VERSION } from "@/lib/version";
-import { providerFromEnv } from "@/lib/db-provider";
-import { ENV_FILE } from "@/lib/envfile";
+// NOTE: relative imports, not @/ — lib/prisma.ts precedent. Plain node runs
+// the check scripts and cannot resolve the @/ alias, so everything this
+// module pulls in must resolve relatively (it does: prisma, version,
+// db-provider and envfile have no @/ imports of their own).
+import prisma from "./prisma";
+import { APP_VERSION } from "./version";
+import { providerFromEnv } from "./db-provider";
+import { ENV_FILE } from "./envfile";
 
 const run = promisify(execFile);
 
@@ -129,12 +133,15 @@ export async function createBackup(label = ""): Promise<BackupSummary> {
   await fs.mkdir(dir, { recursive: true, mode: 0o700 });
 
   try {
-    // 1. Env. Read raw and parsed — raw is what restores byte-faithfully,
-    // parsed is what lets a future UI show what's inside without re-parsing.
+    // 1. Env, stored twice: raw bytes (what restore writes back — comments,
+    // `export` lines and all) and parsed JSON (what lets a future UI show what's
+    // inside without re-parsing). Restoring from raw means a line the parser
+    // skips can never be silently dropped.
     const envRaw = await fs.readFile(ENV_FILE, "utf8").catch((e) => {
       throw new Error(`cannot read env file: ${(e as Error).message}`);
     });
     const env = parseEnvFile(envRaw);
+    await fs.writeFile(path.join(dir, "env.raw"), envRaw, { mode: 0o600 });
     await fs.writeFile(path.join(dir, "env.json"), JSON.stringify(env, null, 2), { mode: 0o600 });
 
     // 2. Database, table by table. A table that does not exist (older schema,
@@ -270,17 +277,14 @@ export async function restoreBackup(id: string, confirm: boolean): Promise<{ tab
   if (manifest.id !== id) throw new Error("backup manifest mismatch");
 
   // 1. Env first, so a later failure still leaves the file closest to the backup.
-  // updateEnvFile-style merge is wrong here: keys added since the backup (a new
-  // version's variable, a rotated secret) must not survive a rollback to before
-  // they existed... but deleting unknown keys could also strand the app if the
-  // code is newer than the backup. Restore is for same-version rollback, where
-  // neither case applies — so write exactly what was backed up.
-  const env = JSON.parse(await fs.readFile(path.join(dir, "env.json"), "utf8")) as Record<string, string>;
-  const lines = Object.entries(env).map(
-    ([k, v]) => `${k}="${String(v).replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
-  );
+  // Written from the raw bytes, not re-rendered from parsed JSON: comments and
+  // lines the parser skips (`export FOO=bar`) survive byte-faithfully. A merge
+  // would be wrong here — keys added since the backup must not survive a rollback
+  // to before they existed. Restore is for same-version rollback, where writing
+  // exactly what was backed up is correct.
+  const envRaw = await fs.readFile(path.join(dir, "env.raw"), "utf8");
   const tmp = `${ENV_FILE}.restore-${Date.now()}`;
-  await fs.writeFile(tmp, lines.join("\n") + "\n", { mode: 0o600 });
+  await fs.writeFile(tmp, envRaw, { mode: 0o600 });
   await fs.rename(tmp, ENV_FILE);
 
   // 2. Database. Dependents are wiped before User, re-inserted after — the
