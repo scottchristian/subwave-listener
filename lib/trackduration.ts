@@ -1,4 +1,28 @@
 /**
+ * Has the track outlived its supposed length?
+ *
+ * History durations are measured airings, and an airing cut short — a skip, a
+ * restart mid-song — measures short. So a resolved duration can UNDERESTIMATE,
+ * and the countdown then sits at -0:00 while the song keeps playing. That is
+ * exactly what it looks like: wrong, and stuck.
+ *
+ * `rawRemaining` is the unclamped audibleEnd - now (negative once past the end).
+ * Past -GRACE the duration is discredited: the track is still the same one (same
+ * timestamp and id — callers re-resolve on change, so this cannot be a new song)
+ * and it has simply outlasted the number. Callers switch to elapsed display and
+ * release the skip lock rather than acting on a number they no longer believe.
+ *
+ * The grace covers the normal end-of-track window, where the display still shows
+ * the old track until the backend promotes the next one. That lag is seconds
+ * (polls are 5s); past fifteen it is not lag, it is a wrong duration.
+ */
+export const DURATION_OVERSHOOT_GRACE_SEC = 15;
+
+export function isDurationDiscredited(rawRemainingSec: number): boolean {
+  return rawRemainingSec < -DURATION_OVERSHOOT_GRACE_SEC;
+}
+
+/**
  * How long the current track will play, when the backend does not say.
  *
  * now-playing carries `duration` only when the Subwave host knows it — a tracked

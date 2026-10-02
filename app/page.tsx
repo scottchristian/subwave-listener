@@ -11,7 +11,7 @@ import { STATION } from "@/lib/station";
 import { plog, setVerbose } from "@/lib/log";
 import { canSkipAsListener, parseSkipVisibility, type SkipVisibility } from "@/lib/skipvisibility";
 import { APP_VERSION, REPO_URL } from "@/lib/version";
-import { resolveTrackDuration } from "@/lib/trackduration";
+import { resolveTrackDuration, isDurationDiscredited } from "@/lib/trackduration";
 // The request ladder: what we tell a listener while the booth has not answered.
 import {
   requestWaitMessage,
@@ -102,11 +102,20 @@ const SongCountdown = ({ nowPlaying, bufferSeconds, duration }: { nowPlaying: an
     const update = () => {
       const now = Math.floor(Date.now() / 1000);
       if (audibleEnd != null) {
-        const diff = audibleEnd - now;
-        // Clamp at 0 rather than hiding: the display holds the old track until
-        // the delayed promotion commits, and a vanishing timer reads as broken.
-        setRemaining(diff >= 0 ? diff : 0);
-        setElapsed(null);
+        const raw = audibleEnd - now;
+        if (isDurationDiscredited(raw)) {
+          // Outlived its supposed length: the resolved duration was an
+          // underestimate (a history airing cut short by a skip), and -0:00
+          // stuck on screen is exactly what that looks like. Show how long it
+          // has actually been on instead.
+          setRemaining(null);
+          setElapsed(Math.max(0, now - audibleStart));
+        } else {
+          // Clamp at 0 rather than hiding: the display holds the old track until
+          // the delayed promotion commits, and a vanishing timer reads as broken.
+          setRemaining(raw >= 0 ? raw : 0);
+          setElapsed(null);
+        }
       } else {
         setRemaining(null);
         setElapsed(Math.max(0, now - audibleStart));
@@ -1248,8 +1257,13 @@ export default function Home() {
       return;
     }
     const audibleEnd = Number(np.timestamp) + streamBufferSec() + (trackDuration as number);
-    const update = () =>
-      setTrackRemaining(Math.max(0, audibleEnd - Math.floor(Date.now() / 1000)));
+    const update = () => {
+      // A discredited duration reports null, not 0: locking skip against a
+      // number we no longer believe would disable the button for no reason, and
+      // the tooltip would read "-0s left" on a song still playing.
+      const raw = audibleEnd - Math.floor(Date.now() / 1000);
+      setTrackRemaining(isDurationDiscredited(raw) ? null : Math.max(0, raw));
+    };
     update();
     const id = setInterval(update, 1000);
     return () => clearInterval(id);
@@ -1343,7 +1357,9 @@ export default function Home() {
         // with nothing countable) makes elapsed NaN, and NaN clamps to NaN — which
         // makes setPositionState throw. The try/catch would swallow it, but once a
         // second, forever, so the check belongs here instead.
-        if (duration != null && Number.isFinite(duration) && duration > 0 && Number.isFinite(elapsed)) {
+        // A discredited duration also drops the position bar: pinning it at full
+        // while the song keeps playing is the lock-screen version of -0:00 stuck.
+        if (duration != null && Number.isFinite(duration) && duration > 0 && Number.isFinite(elapsed) && !isDurationDiscredited(duration - elapsed)) {
           navigator.mediaSession.setPositionState({
             duration,
             playbackRate: 1,

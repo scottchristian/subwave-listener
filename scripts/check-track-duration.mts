@@ -1,6 +1,10 @@
 // Throwaway: resolveTrackDuration. The countdown's correctness depends on this
 // returning a real measured length or null — never a guess.
-import { resolveTrackDuration } from "../lib/trackduration.ts";
+import {
+  resolveTrackDuration,
+  isDurationDiscredited,
+  DURATION_OVERSHOOT_GRACE_SEC,
+} from "../lib/trackduration.ts";
 
 type Case = [np: any, history: any, expected: number | null, why: string];
 
@@ -37,5 +41,22 @@ for (const [np, history, expected, why] of cases) {
     console.log(`  FAIL  -> ${got}, wanted ${expected}  (${why})`);
   }
 }
-console.log(`  ${cases.length - failed}/${cases.length} passed`);
+// The stuck-at-zero guard: only past the grace, never inside it.
+const grace: Array<[raw: number, expected: boolean, why: string]> = [
+  [10, false, "still playing"],
+  [0, false, "exactly at the end — the promotion window"],
+  [-1, false, "a second past — still the promotion window"],
+  [-DURATION_OVERSHOOT_GRACE_SEC, false, "exactly at the grace boundary"],
+  [-DURATION_OVERSHOOT_GRACE_SEC - 1, true, "past the grace — discredited"],
+  [-300, true, "minutes past — discredited"],
+];
+for (const [raw, expected, why] of grace) {
+  const got = isDurationDiscredited(raw);
+  if (got !== expected) {
+    failed++;
+    console.log(`  FAIL  raw=${raw} -> ${got}, wanted ${expected}  (${why})`);
+  }
+}
+const total = cases.length + grace.length;
+console.log(`  ${total - failed}/${total} passed`);
 if (failed) process.exit(1);
