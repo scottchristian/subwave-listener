@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../../auth/[...nextauth]/route";
 import { runManualRollback } from "@/lib/update-run";
-import { readJob, writeJob, jobRunning } from "@/lib/update";
+import { readJob, writeJob, canRollback } from "@/lib/update";
 
 // Manual rollback to the pre-update snapshot + settings backup. Only meaningful
 // when a previous update left both behind — i.e. a job exists with a backupId.
@@ -24,27 +24,27 @@ export async function POST(req: Request) {
   }
 
   const job = await readJob(appDir);
-  if (jobRunning(job)) {
-    return NextResponse.json({ error: "An update is currently running" }, { status: 409 });
+  const allowed = canRollback(job);
+  if (!allowed.ok) {
+    return NextResponse.json({ error: allowed.error }, { status: allowed.error.includes("running") ? 409 : 400 });
   }
-  if (!job?.backupId) {
-    return NextResponse.json({ error: "Nothing to roll back to — no update backup on record" }, { status: 400 });
-  }
+  const backupId: string = allowed.backupId;
+  const liveJob = job as NonNullable<typeof job>;
 
-  job.status = "running";
-  job.log = [...job.log.slice(-49), `manual rollback to pre-update state started`];
-  await writeJob(appDir, job);
+  liveJob.status = "running";
+  liveJob.log = [...liveJob.log.slice(-49), `manual rollback to pre-update state started`];
+  await writeJob(appDir, liveJob);
 
-  runManualRollback(appDir, job.backupId)
+  runManualRollback(appDir, backupId)
     .then(async () => {
-      const j = (await readJob(appDir)) || job;
+      const j = (await readJob(appDir)) || liveJob;
       j.status = "rolled-back";
       j.error = undefined;
       j.log = [...j.log.slice(-49), "rolled back — restarting"];
       await writeJob(appDir, j);
     })
     .catch(async (e) => {
-      const j = (await readJob(appDir)) || job;
+      const j = (await readJob(appDir)) || liveJob;
       j.status = "failed";
       j.error = `rollback failed: ${(e as Error)?.message}`;
       await writeJob(appDir, j);

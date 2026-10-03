@@ -10,7 +10,7 @@ import {
   listenerCount,
   type UpdatePlan,
 } from "@/lib/update-run";
-import { readJob, writeJob, jobRunning, parseChannel, readSource, isSameSource } from "@/lib/update";
+import { readJob, writeJob, canStartUpdate, gateOnListeners, parseChannel, readSource, isSameSource } from "@/lib/update";
 import type { UpdateJob } from "@/lib/update";
 
 async function requireAdmin() {
@@ -51,9 +51,9 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  const existing = await readJob(appDir);
-  if (jobRunning(existing)) {
-    return NextResponse.json({ error: "An update is already running" }, { status: 409 });
+  const startable = canStartUpdate(await readJob(appDir));
+  if (!startable.ok) {
+    return NextResponse.json({ error: startable.error }, { status: 409 });
   }
 
   // Confirm the target exists and is an upgrade before touching anything.
@@ -101,19 +101,11 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: (e as Error)?.message || "bad target" }, { status: 400 });
   }
 
-  // The on-air gate, same rule as deploy.sh: refuse with listeners unless the
-  // operator confirms knowing the count. Unknown counts as listeners present.
-  const listeners = await listenerCount();
-  if ((listeners === null || listeners > 0) && body.confirmListeners !== true) {
+  // The on-air gate, same rule as deploy.sh (see gateOnListeners).
+  const gated = gateOnListeners(await listenerCount(), body.confirmListeners === true);
+  if (!gated.ok) {
     return NextResponse.json(
-      {
-        error:
-          listeners === null
-            ? "Could not read the listener count — confirm to update blind, or wait until the room is verifiably empty."
-            : `${listeners} listener(s) on air — confirm to interrupt them, or wait until the room is empty.`,
-        listeners,
-        needsConfirm: true,
-      },
+      { error: gated.error, listeners: gated.listeners, needsConfirm: true },
       { status: 409 }
     );
   }

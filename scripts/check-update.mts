@@ -91,6 +91,52 @@ try {
   const smode = (await fs.stat(path.join(tmp, "data", "update-source.json"))).mode & 0o777;
   ok(smode === 0o600, "source file is 0600", smode.toString(8));
 
+  // ---- gates: the same answers the routes give ----
+  const {
+    canStartUpdate: canStart,
+    gateOnListeners: gate,
+    canRollback: canRb,
+  } = await import("../lib/update.ts");
+  const runningJob = (over: object = {}) =>
+    ({
+      status: "running", from: "0.0.2", to: "0.0.3", backupId: "b",
+      startedAt: "", updatedAt: new Date().toISOString(), log: [], ...over,
+    }) as import("../lib/update.ts").UpdateJob;
+  const doneJob = (over: object = {}) => ({ ...runningJob({ status: "done" }), ...over });
+  ok(canStart(null).ok === true, "start allowed with no job");
+  ok(canStart(doneJob()).ok === true, "start allowed after a finished job");
+  ok(canStart(runningJob()).ok === false, "start refused while running");
+  ok(canStart(runningJob({ updatedAt: new Date(Date.now() - 3 * 3600 * 1000).toISOString() })).ok === true,
+    "start allowed when the running job is stale");
+  // Listeners: null/0/1+/confirmed matrix. Unknown counts as occupied.
+  const gateCases: Array<[number | null, boolean, boolean, string]> = [
+    [null, false, false, "unknown room refuses without confirm"],
+    [null, true, true, "unknown room proceeds with confirm"],
+    [0, false, true, "empty room proceeds freely"],
+    [0, true, true, "empty room with confirm proceeds"],
+    [1, false, false, "one listener refuses without confirm"],
+    [1, true, true, "one listener proceeds with confirm"],
+    [5, false, false, "five listeners refuse without confirm"],
+    [5, true, true, "five listeners proceed with confirm"],
+  ];
+  for (const [listeners, confirmed, want, why] of gateCases) {
+    const r = gate(listeners, confirmed);
+    ok(r.ok === want, `gate: ${why}`);
+    if (!want) {
+      ok(
+        (r as any).listeners === listeners || listeners === null,
+        `gate refusal carries the count for ${why}`
+      );
+    }
+  }
+  // Rollback needs a finished job with a backup behind it.
+  ok(canRb(null).ok === false, "rollback refused with no job");
+  ok(canRb(runningJob()).ok === false, "rollback refused while running");
+  ok(canRb(doneJob({ backupId: null } as any)).ok === false, "rollback refused without a backup");
+  const rbOk = canRb(doneJob({ backupId: "b9" }));
+  ok(rbOk.ok === true && (rbOk as any).backupId === "b9", "rollback allowed with a backup");
+  ok(canRb(doneJob({ status: "failed", backupId: "b9" })).ok === true, "rollback allowed after failure");
+
   // ---- tarball URL is always our repo, always a tag ----
   const url = update.releaseTarballUrl("0.0.3");
   ok(

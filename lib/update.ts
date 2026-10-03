@@ -166,6 +166,47 @@ export async function writeJob(appDir: string, job: UpdateJob): Promise<void> {
   await fs.rename(tmp, jobPath(appDir));
 }
 
+/**
+ * May an update start? A running job owns the updater — anything else may.
+ * Pure so the route and the tests agree on the answer.
+ */
+export function canStartUpdate(job: UpdateJob | null): { ok: true } | { ok: false; error: string } {
+  if (jobRunning(job)) return { ok: false, error: "An update is already running" };
+  return { ok: true };
+}
+
+/**
+ * The on-air gate, same rule as deploy.sh: refuse with listeners on air (or an
+ * unreadable room — unknown counts as occupied) unless the operator confirms
+ * knowing the count. Pure so the route and the tests agree on the answer.
+ */
+export function gateOnListeners(
+  listeners: number | null,
+  confirmed: boolean
+): { ok: true } | { ok: false; listeners: number | null; error: string } {
+  if ((listeners === null || listeners > 0) && !confirmed) {
+    return {
+      ok: false,
+      listeners,
+      error:
+        listeners === null
+          ? "Could not read the listener count — confirm to update blind, or wait until the room is verifiably empty."
+          : `${listeners} listener(s) on air — confirm to interrupt them, or wait until the room is empty.`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * May a manual rollback start? Needs a finished job with a backup behind it —
+ * rolling back with nothing to roll back to would wipe settings for nothing.
+ */
+export function canRollback(job: UpdateJob | null): { ok: true; backupId: string } | { ok: false; error: string } {
+  if (jobRunning(job)) return { ok: false, error: "An update is currently running" };
+  if (!job?.backupId) return { ok: false, error: "Nothing to roll back to — no update backup on record" };
+  return { ok: true, backupId: job.backupId };
+}
+
 /** A job younger than this that still says "running" owns the updater. */
 export const JOB_STALE_MS = 2 * 60 * 60 * 1000;
 
