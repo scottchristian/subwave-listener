@@ -60,6 +60,7 @@ export default function AdminPage() {
   const [updateInfo, setUpdateInfo] = useState<{
     current: string; latest: string | null; updateAvailable: boolean;
     releaseUrl: string; notes: string | null; checkedAt: string;
+    channel: "release" | "main" | "develop";
   } | null>(null);
   // Server-side backups (env, database, artwork, setup marker). Null until
   // loaded; the panel fetches them with the rest of the admin data.
@@ -193,9 +194,21 @@ export default function AdminPage() {
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (!cancelled && d) setBackups(d.backups || []); })
       .catch(() => {});
-    fetch("/api/admin/update-check")
+    // no-store: the server keeps its own hourly cache (GitHub rate limits),
+    // but the browser must not serve a stale channel — the radio follows the
+    // saved preference, and a cached answer points it at the previous one.
+    fetch("/api/admin/update-check", { cache: "no-store" })
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (!cancelled && d) setUpdateInfo(d); })
+      .then((d) => {
+        if (!cancelled && d) {
+          setUpdateInfo(d);
+          // The server owns the saved channel — the radio follows it rather
+          // than resetting to Stable on every visit.
+          if (d.channel === "release" || d.channel === "main" || d.channel === "develop") {
+            setUpdateChannel(d.channel);
+          }
+        }
+      })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [status, session]);
@@ -521,6 +534,24 @@ export default function AdminPage() {
     const id = setInterval(refreshUpdate, 5000);
     return () => clearInterval(id);
   }, [updateJob?.status]);
+
+  /**
+   * Choosing a channel saves it: "receive developer updates" is a persistent
+   * preference, not a per-click choice. The next check (and the prompt it may
+   * produce) follows the saved channel.
+   */
+  const saveUpdateChannel = async (channel: "release" | "main" | "develop") => {
+    setUpdateChannel(channel);
+    try {
+      await fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "updateChannel", value: channel }),
+      });
+    } catch {
+      // cosmetic if it fails — the update itself still takes an explicit channel
+    }
+  };
 
   const startUpdate = async (channel: "release" | "main" | "develop", target?: string) => {
     setUpdateBusy(true);
@@ -1775,7 +1806,11 @@ export default function AdminPage() {
                   <strong>Updating to {updateJob.to}.</strong>
                 ) : updateInfo?.updateAvailable ? (
                   <>
-                    <strong>Version {updateInfo.latest} is available.</strong>{" "}
+                    <strong>
+                      {updateInfo.channel === "release"
+                        ? `Version ${updateInfo.latest} is available.`
+                        : `A ${updateInfo.channel} update is available (${updateInfo.latest}).`}
+                    </strong>{" "}
                   </>
                 ) : (
                   <>
@@ -1791,7 +1826,9 @@ export default function AdminPage() {
               {/* Channel: stable releases, or either branch tip for testing. */}
               <div style={{ marginTop: "0.75rem", display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
                 {([
-                  ["release", updateInfo?.latest ? `Stable v${updateInfo.latest}` : "Stable"],
+                  // updateInfo.latest belongs to the SAVED channel, so it is only a
+                  // version number on release — on a branch it reads develop@abc1234.
+                  ["release", updateInfo?.channel === "release" && updateInfo?.latest ? `Stable v${updateInfo.latest}` : "Stable"],
                   ["main", "Main branch"],
                   ["develop", "Developer branch"],
                 ] as const).map(([value, label]) => (
@@ -1800,7 +1837,7 @@ export default function AdminPage() {
                       type="radio"
                       name="update-channel"
                       checked={updateChannel === value}
-                      onChange={() => setUpdateChannel(value)}
+                      onChange={() => saveUpdateChannel(value)}
                     />
                     {label}
                   </label>
@@ -1822,7 +1859,9 @@ export default function AdminPage() {
                     updateJob?.status === "running" ||
                     (updateChannel === "release" && !updateInfo?.updateAvailable)
                   }
-                  onClick={() => startUpdate(updateChannel, updateInfo?.latest || undefined)}
+                  onClick={() =>
+                    startUpdate(updateChannel, updateChannel === "release" ? updateInfo?.latest || undefined : undefined)
+                  }
                 >
                   {updateJob?.status === "running"
                     ? "Updating…"

@@ -137,6 +137,25 @@ try {
   ok(rbOk.ok === true && (rbOk as any).backupId === "b9", "rollback allowed with a backup");
   ok(canRb(doneJob({ status: "failed", backupId: "b9" })).ok === true, "rollback allowed after failure");
 
+  // ---- prompt decision: what the panel says for each channel ----
+  const { decideUpdatePrompt } = await import("../lib/update.ts");
+  const SHA = "a".repeat(40);
+  const SRC = { channel: "develop", ref: "develop", sha: SHA, version: "develop@aaaaaaa", updatedAt: "" } as any;
+  let pr = decideUpdatePrompt({ channel: "release", source: null, headSha: null, latestRelease: "0.0.3", current: "0.0.2" });
+  ok(pr.available === true && pr.label === "0.0.3", "release prompt on newer");
+  pr = decideUpdatePrompt({ channel: "release", source: null, headSha: null, latestRelease: "0.0.2", current: "0.0.2" });
+  ok(pr.available === false && pr.label === null, "release silent when current");
+  pr = decideUpdatePrompt({ channel: "release", source: null, headSha: null, latestRelease: null, current: "0.0.2" });
+  ok(pr.available === false, "release silent when GitHub unreachable");
+  pr = decideUpdatePrompt({ channel: "develop", source: SRC, headSha: SHA, latestRelease: null, current: "0.0.2" });
+  ok(pr.available === false && pr.label === null, "branch silent on same sha");
+  pr = decideUpdatePrompt({ channel: "develop", source: SRC, headSha: "b".repeat(40), latestRelease: null, current: "0.0.2" });
+  ok(pr.available === true && pr.label === "develop@bbbbbbb", "branch prompts on new tip");
+  pr = decideUpdatePrompt({ channel: "develop", source: null, headSha: SHA, latestRelease: null, current: "0.0.2" });
+  ok(pr.available === true, "branch prompts with no source record (first install writes it)");
+  pr = decideUpdatePrompt({ channel: "main", source: null, headSha: null, latestRelease: null, current: "0.0.2" });
+  ok(pr.available === false, "branch silent when GitHub unreachable");
+
   // ---- tarball URL is always our repo, always a tag ----
   const url = update.releaseTarballUrl("0.0.3");
   ok(

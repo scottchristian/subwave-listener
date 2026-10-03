@@ -130,6 +130,45 @@ export async function writeSource(appDir: string, source: Omit<UpdateSource, "up
   await fs.rename(tmp, sourcePath(appDir));
 }
 
+/** Setting key holding the operator's chosen update channel. */
+export const UPDATE_CHANNEL_KEY = "updateChannel";
+
+export type UpdatePromptInput = {
+  channel: UpdateChannel;
+  /** Installed source record, if the station has ever updated in-app. */
+  source: UpdateSource | null;
+  /** Branch HEAD sha, when the channel is a branch and GitHub answered. */
+  headSha: string | null;
+  /** Latest stable version, when the channel is release and GitHub answered. */
+  latestRelease: string | null;
+  current: string;
+};
+
+export type UpdatePrompt = {
+  available: boolean;
+  /** What the button installs: a version ("0.0.3") or a tip ("develop@abc1234"). */
+  label: string | null;
+};
+
+/**
+ * Should the panel prompt, and for what? Pure so the route and the tests agree.
+ * Releases compare versions; branches compare shas against the installed source
+ * record. No source record means never updated in-app — prompt, because there IS
+ * a tip and installing it writes the record that silences the next check.
+ */
+export function decideUpdatePrompt(input: UpdatePromptInput): UpdatePrompt {
+  if (input.channel === "release") {
+    if (!input.latestRelease) return { available: false, label: null };
+    const newer = isNewerVersion(input.latestRelease, input.current);
+    return { available: newer, label: newer ? input.latestRelease : null };
+  }
+  if (!input.headSha) return { available: false, label: null };
+  if (isSameSource(input.source, input.channel, input.headSha)) {
+    return { available: false, label: null };
+  }
+  return { available: true, label: `${input.channel}@${input.headSha.slice(0, 7)}` };
+}
+
 /**
  * Refuse to install the branch tip the station already runs. Tags do not need
  * this — version comparison covers them — but two polls of the same branch can
