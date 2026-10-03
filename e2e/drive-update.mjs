@@ -174,8 +174,10 @@ await waitFor(
       const { json: j } = await api("GET", "/api/admin/update");
       return j && j.job && j.job.status === "done" ? j.job : null;
     },
+    // Budget ~30 min wall: a lockfile change triggers npm ci inside the
+    // pipeline (minutes in a container) before the build even starts.
     "update reaches done",
-    260
+    360
   );
   if (job) {
     ok(/backup validated/.test(job.log.join("\n")), "second run also validated its backup");
