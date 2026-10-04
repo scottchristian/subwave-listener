@@ -119,6 +119,10 @@ export default function DatabasePanel() {
   const [kaSeconds, setKaSeconds] = useState("300");
   const [kaBusy, setKaBusy] = useState(false);
   const [kaMsg, setKaMsg] = useState("");
+  // Set on any hand edit, cleared on successful save. The 15s status poll
+  // must not touch the form while this is set — it used to flip the switch
+  // back on under the operator's finger before they reached Save.
+  const kaTouched = useRef(false);
 
   const onPostgres = status?.provider === "postgresql";
 
@@ -154,8 +158,10 @@ export default function DatabasePanel() {
         const d = await r.json();
         if (stop) return;
         setKa(d);
-        setKaOn(d.enabled);
-        setKaSeconds(String(d.seconds));
+        if (!kaTouched.current) {
+          setKaOn(d.enabled);
+          setKaSeconds(String(d.seconds));
+        }
       } catch {}
     };
     pull();
@@ -178,6 +184,9 @@ export default function DatabasePanel() {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "Could not save");
       setKa(d);
+      kaTouched.current = false;
+      setKaOn(d.enabled);
+      setKaSeconds(String(d.seconds));
       setKaMsg(
         d.enabled
           ? `Pinging every ${d.seconds}s. The station pings immediately on restart.`
@@ -541,7 +550,7 @@ export default function DatabasePanel() {
                 role="switch"
                 aria-checked={kaOn}
                 aria-labelledby="db-keepalive-label"
-                onClick={() => setKaOn((o) => !o)}
+                onClick={() => { kaTouched.current = true; setKaOn((o) => !o); }}
                 style={{
                   flexShrink: 0, width: "48px", height: "27px", borderRadius: "999px", border: "none", cursor: "pointer",
                   backgroundColor: kaOn ? "var(--color-accent)" : "rgba(255,255,255,0.18)",
@@ -566,14 +575,14 @@ export default function DatabasePanel() {
                 max={ka?.max ?? 3600}
                 value={kaSeconds}
                 disabled={!kaOn}
-                onChange={(e) => setKaSeconds(e.target.value)}
+                onChange={(e) => { kaTouched.current = true; setKaSeconds(e.target.value); }}
               />
               <button
                 id="db-keepalive-save"
                 className="primary-btn"
                 style={{ width: "auto", padding: "0.5rem 1rem" }}
                 onClick={saveKeepAlive}
-                disabled={kaBusy || !kaOn}
+                disabled={kaBusy}
               >
                 {kaBusy ? "Saving…" : "Save"}
               </button>

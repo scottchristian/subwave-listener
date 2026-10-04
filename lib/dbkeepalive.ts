@@ -175,6 +175,9 @@ export function reconfigure(enabled: boolean, seconds: number): void {
 }
 
 export function snapshot(): KeepAliveState {
+  // Live state wins over the boot env: reconfigure() changes the timer without
+  // touching process.env, so reading the env last would report the old value
+  // until the next restart — the panel would show ON right after saving OFF.
   const { timer, ...rest } = s();
-  return { ...rest, ...readConfig(), running: s().running };
+  return { ...readConfig(), ...rest, running: s().running };
 }
