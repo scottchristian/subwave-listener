@@ -2,7 +2,8 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../../auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
-import { AUTO_UPDATE_KEYS, parseTimeOfDay } from "@/lib/auto-update";
+import { AUTO_UPDATE_KEYS } from "@/lib/auto-update";
+import { parseTimeOfDay } from "@/lib/update-time";
 
 /**
  * The automatic-update window. Validated here, not just in the panel: a

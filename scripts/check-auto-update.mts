@@ -9,6 +9,7 @@ import path from "node:path";
 process.env.DATABASE_URL = process.env.DATABASE_URL || "file:/tmp/auto-update-test-unused.db";
 
 const auto = await import("../lib/auto-update.ts");
+const clockface = await import("../lib/update-time.ts");
 
 let passed = 0;
 let failed = 0;
@@ -37,26 +38,55 @@ const times: Array<[unknown, string | null, string]> = [
   ["02:00:00", null, "seconds rejected"],
 ];
 for (const [raw, want, why] of times) {
-  ok(auto.parseTimeOfDay(raw) === want, `parse ${JSON.stringify(raw)} (${why})`);
+  ok(clockface.parseTimeOfDay(raw) === want, `parse ${JSON.stringify(raw)} (${why})`);
+}
+
+// ---- time display helpers: stored HH:MM, shown either face ----
+{
+  ok(clockface.formatTimeOfDay("22:30", true) === "10:30 PM", "evening to 12h");
+  ok(clockface.formatTimeOfDay("22:30", false) === "22:30", "evening stays 24h");
+  ok(clockface.formatTimeOfDay("00:00", true) === "12:00 AM", "midnight is 12 AM");
+  ok(clockface.formatTimeOfDay("12:00", true) === "12:00 PM", "noon is 12 PM");
+  ok(clockface.formatTimeOfDay("09:05", true) === "9:05 AM", "morning");
+  ok(clockface.formatTimeOfDay("", true) === "", "empty formats empty");
+  ok(clockface.formatTimeOfDay("xx", false) === "", "garbage formats empty");
+  ok(clockface.joinTimeParts("10", "30", "PM") === "22:30", "PM joins");
+  ok(clockface.joinTimeParts("12", "00", "AM") === "00:00", "12 AM is midnight");
+  ok(clockface.joinTimeParts("12", "00", "PM") === "12:00", "12 PM is noon");
+  ok(clockface.joinTimeParts("22", "30", null) === "22:30", "24h joins");
+  ok(clockface.joinTimeParts("0", "00", null) === "00:00", "midnight 24h");
+  ok(clockface.joinTimeParts("", "30", "PM") === null, "missing hour is null");
+  ok(clockface.joinTimeParts("10", "", "PM") === null, "missing minute is null");
+  ok(clockface.joinTimeParts("13", "00", "PM") === null, "13 PM rejected");
+  ok(clockface.joinTimeParts("24", "00", null) === null, "hour 24 rejected");
+  // Round trip: storage -> face -> storage is the identity.
+  for (const t of ["00:00", "04:15", "12:00", "14:45", "23:59"]) {
+    const shown = clockface.formatTimeOfDay(t, true);
+    const m = /^(\d+):(\d+) (AM|PM)$/.exec(shown);
+    ok(m !== null, `face parses for ${t}`);
+    if (m) ok(clockface.joinTimeParts(m[1], m[2], m[3] as "AM" | "PM") === t, `round trip ${t}`);
+  }
+  ok(clockface.joinTimeParts("2", "30", "PM") === "14:30", "single-digit hour");
+  ok(typeof clockface.defaultHour12() === "boolean", "locale default is a boolean");
 }
 
 // ---- timezone math on fixed instants (runner-TZ independent) ----
 {
   // 2026-07-01T00:00Z: July is AEST (+10) in Hobart.
   const winter = new Date(Date.UTC(2026, 6, 1, 0, 0, 0));
-  ok(auto.minutesInZone(winter, "UTC") === 0, "UTC midnight");
-  ok(auto.minutesInZone(winter, "Australia/Hobart") === 600, "Hobart winter +10");
+  ok(clockface.minutesInZone(winter, "UTC") === 0, "UTC midnight");
+  ok(clockface.minutesInZone(winter, "Australia/Hobart") === 600, "Hobart winter +10");
   // 2026-12-01T00:00Z: December is AEDT (+11). (Early October is still AEST —
   // Tasmanian DST starts the first Sunday in October — so pin summer to December.)
   const summer = new Date(Date.UTC(2026, 11, 1, 0, 0, 0));
-  ok(auto.minutesInZone(summer, "Australia/Hobart") === 660, "Hobart summer +11");
-  ok(auto.minutesInZone(summer, "America/New_York") === 1140, "New York previous evening (19:00)");
-  ok(auto.minutesInZone(summer, "Not/AZone") === null, "unknown zone is null, not a throw");
+  ok(clockface.minutesInZone(summer, "Australia/Hobart") === 660, "Hobart summer +11");
+  ok(clockface.minutesInZone(summer, "America/New_York") === 1140, "New York previous evening (19:00)");
+  ok(clockface.minutesInZone(summer, "Not/AZone") === null, "unknown zone is null, not a throw");
 }
 
 // ---- window membership, including overnight wrap ----
 {
-  const W = auto.isInWindow;
+  const W = clockface.isInWindow;
   ok(W(120, 120, 240) === true, "inclusive start");
   ok(W(239, 120, 240) === true, "inside");
   ok(W(240, 120, 240) === false, "exclusive end");

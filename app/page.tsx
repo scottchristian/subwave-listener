@@ -10,7 +10,7 @@ import SkillsPanel from "@/app/components/SkillsPanel";
 import { STATION } from "@/lib/station";
 import { plog, setVerbose } from "@/lib/log";
 import { canSkipAsListener, parseSkipVisibility, type SkipVisibility } from "@/lib/skipvisibility";
-import { APP_VERSION, REPO_URL } from "@/lib/version";
+import { APP_VERSION, REPO_URL, SUBWAVE_URL } from "@/lib/version";
 import { resolveTrackDuration, isDurationDiscredited } from "@/lib/trackduration";
 // The request ladder: what we tell a listener while the booth has not answered.
 import {
@@ -2603,19 +2603,42 @@ export default function Home() {
           tagged with (lib/version.ts), so it cannot drift from either — an operator
           reading this knows exactly what is running. The link is what makes a
           release useful: it is where the notes and the upgrade instructions are. */}
-      <footer id="app-footer" style={{ marginTop: "3rem", paddingTop: "1.25rem", borderTop: "1px solid rgba(255,255,255,0.10)", display: "flex", justifyContent: "center", alignItems: "center", gap: "0.5rem", flexWrap: "wrap", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+      <footer id="app-footer" style={{ marginTop: "3rem", display: "flex", justifyContent: "center" }}>
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: "0.5rem", flexWrap: "wrap", fontSize: "0.8rem", color: "var(--color-text-dim)", background: "rgba(0,0,0,0.45)", borderRadius: "999px", padding: "0.4rem 1rem", textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}>
         <a
           id="footer-version"
           href={`${REPO_URL}/releases`}
           target="_blank"
           rel="noreferrer"
           title={`${APP_NAME} ${APP_VERSION} — check for updates`}
-          style={{ color: "inherit", textDecoration: "none", borderBottom: "1px dotted rgba(255,255,255,0.28)", paddingBottom: "1px" }}
+          style={{ color: "inherit", textDecoration: "none", borderBottom: "1px dotted rgba(255,255,255,0.5)", paddingBottom: "1px" }}
         >
           {APP_NAME} {APP_VERSION}
         </a>
         <span aria-hidden="true">&middot;</span>
-        <span>unofficial companion software</span>
+        <span>
+          unofficial companion to{" "}
+          <a
+            href={SUBWAVE_URL}
+            target="_blank"
+            rel="noreferrer"
+            title="Subwave — the upstream project (not affiliated)"
+            style={{ color: "inherit", textDecoration: "none", borderBottom: "1px dotted rgba(255,255,255,0.5)", paddingBottom: "1px" }}
+          >
+            Subwave
+          </a>
+        </span>
+        <span aria-hidden="true">&middot;</span>
+        <a
+          href={REPO_URL}
+          target="_blank"
+          rel="noreferrer"
+          title={`${APP_NAME} source on GitHub`}
+          style={{ color: "inherit", textDecoration: "none", borderBottom: "1px dotted rgba(255,255,255,0.5)", paddingBottom: "1px" }}
+        >
+          source
+        </a>
+        </div>
       </footer>
 
     </main>

@@ -10,6 +10,8 @@ import type { UpdateJob } from "@/lib/update";
 import DatabasePanel from "./DatabasePanel";
 import CollapsibleSection from "./CollapsibleSection";
 import HeaderToggle from "./HeaderToggle";
+import TimeSelect from "./TimeSelect";
+import { formatTimeOfDay, defaultHour12 } from "@/lib/update-time";
 import {
   SKIP_VISIBILITY_OPTIONS,
   parseSkipVisibility,
@@ -517,6 +519,24 @@ export default function AdminPage() {
   const [autoEnd, setAutoEnd] = useState("");
   const [autoMsg, setAutoMsg] = useState("");
   const [autoBusy, setAutoBusy] = useState(false);
+  const [hour12, setHour12] = useState<boolean>(() => {
+    try {
+      const saved = typeof window !== "undefined" ? window.localStorage.getItem("subwave-clock-hour12") : null;
+      if (saved === "12") return true;
+      if (saved === "24") return false;
+    } catch {
+      // private mode etc. — fall through to locale
+    }
+    return defaultHour12();
+  });
+  const setClockFace = (v: boolean) => {
+    setHour12(v);
+    try {
+      window.localStorage.setItem("subwave-clock-hour12", v ? "12" : "24");
+    } catch {
+      // display preference only — never blocks saving the window itself
+    }
+  };
 
   const refreshUpdate = async () => {
     try {
@@ -1870,9 +1890,9 @@ export default function AdminPage() {
                 {([
                   // updateInfo.latest belongs to the SAVED channel, so it is only a
                   // version number on release — on a branch it reads develop@abc1234.
-                  ["release", updateInfo?.channel === "release" && updateInfo?.latest ? `Stable v${updateInfo.latest}` : "Stable"],
-                  ["main", "Main branch"],
-                  ["develop", "Developer branch"],
+                  ["release", updateInfo?.channel === "release" && updateInfo?.latest ? `Stable v${updateInfo.latest}` : "Stable (tested releases)"],
+                  ["main", "Main branch (latest, may be unreleased)"],
+                  ["develop", "Developer branch (in progress)"],
                 ] as const).map(([value, label]) => (
                   <label key={value} className="check" style={{ fontSize: "0.85rem" }}>
                     <input
@@ -1907,75 +1927,92 @@ export default function AdminPage() {
                   />
                   Update automatically when no one is listening
                 </label>
-                <div
-                  style={{
-                    marginTop: "0.6rem", display: "flex", alignItems: "center",
-                    gap: "0.75rem", flexWrap: "wrap",
-                  }}
-                >
-                  <label style={{ fontSize: "0.85rem" }}>
-                    From{" "}
-                    <input
-                      id="input-auto-start"
-                      type="time"
-                      value={autoStart}
-                      onChange={(e) => setAutoStart(e.target.value)}
+                {autoUpdateOn ? (
+                  <>
+                    <div
                       style={{
-                        background: "transparent", color: "var(--color-text)",
-                        border: "1px solid var(--color-border)", borderRadius: "8px",
-                        padding: "0.4rem 0.6rem", fontSize: "0.875rem",
+                        marginTop: "0.6rem", display: "flex", alignItems: "flex-end",
+                        gap: "0.75rem", flexWrap: "wrap",
+                        opacity: 1, transform: "translateY(0)",
+                        transition: "opacity 180ms ease, transform 180ms ease",
                       }}
-                    />
-                  </label>
-                  <label style={{ fontSize: "0.85rem" }}>
-                    to{" "}
-                    <input
-                      id="input-auto-end"
-                      type="time"
-                      value={autoEnd}
-                      onChange={(e) => setAutoEnd(e.target.value)}
-                      style={{
-                        background: "transparent", color: "var(--color-text)",
-                        border: "1px solid var(--color-border)", borderRadius: "8px",
-                        padding: "0.4rem 0.6rem", fontSize: "0.875rem",
-                      }}
-                    />
-                  </label>
-                  <button
-                    id="btn-save-auto-update"
-                    className="seg-btn"
-                    disabled={autoBusy}
-                    onClick={saveAutoUpdate}
-                  >
-                    {autoBusy ? "Saving…" : "Save window"}
-                  </button>
-                </div>
-                <div style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)" }}>
-                  Station time{stationTimezone ? ` (${stationTimezone})` : ""}. Overnight
-                  windows are fine — 22:00 to 04:00 means exactly that. The station
-                  updates itself the first minute inside the window that it finds an
-                  update waiting and the room empty; a failed automatic update is not
-                  retried for a day.
-                  {stationTimezone ? (
-                    <>
-                      {" "}It is now{" "}
-                      {(() => {
-                        try {
-                          return new Intl.DateTimeFormat("en-GB", {
-                            timeZone: stationTimezone,
-                            hour: "2-digit",
-                            minute: "2-digit",
-                          }).format(new Date());
-                        } catch {
-                          return "";
-                        }
-                      })()}{" "}
-                      at the station.
-                    </>
-                  ) : null}
-                </div>
+                    >
+                      <span role="group" aria-label="Clock format" style={{ display: "inline-flex", borderRadius: "8px", overflow: "hidden", border: "1px solid var(--color-border)", alignSelf: "flex-end" }}>
+                        {([["12-hour", true], ["24-hour", false]] as const).map(([label, v]) => (
+                          <button
+                            key={label}
+                            type="button"
+                            aria-pressed={hour12 === v}
+                            onClick={() => setClockFace(v)}
+                            style={{
+                              padding: "0.55rem 0.8rem",
+                              fontSize: "0.85rem",
+                              fontWeight: 700,
+                              border: "none",
+                              cursor: "pointer",
+                              background: hour12 === v ? "var(--color-accent)" : "transparent",
+                              color: hour12 === v ? "#fff" : "var(--color-muted)",
+                            }}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </span>
+                      <TimeSelect id="input-auto-start" label="Start time" value={autoStart} onChange={setAutoStart} hour12={hour12} />
+                      <TimeSelect id="input-auto-end" label="End time" value={autoEnd} onChange={setAutoEnd} hour12={hour12} />
+                      <button
+                        id="btn-save-auto-update"
+                        className="primary-btn"
+                        style={{ width: "auto", padding: "0.55rem 1.1rem", alignSelf: "flex-end" }}
+                        disabled={autoBusy}
+                        onClick={saveAutoUpdate}
+                      >
+                        {autoBusy ? "Saving…" : "Save window"}
+                      </button>
+                    </div>
+                    <div style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                      {autoStart && autoEnd ? (
+                        <>Updates between <strong>{formatTimeOfDay(autoStart, hour12)}</strong> and{" "}
+                        <strong>{formatTimeOfDay(autoEnd, hour12)}</strong> station time{stationTimezone ? ` (${stationTimezone})` : ""}. </>
+                      ) : (
+                        <>Pick a start and an end time{stationTimezone ? ` (station time, ${stationTimezone})` : ""}. </>
+                      )}
+                      Overnight windows wrap — {formatTimeOfDay("22:00", hour12)} to {formatTimeOfDay("04:00", hour12)} means
+                      exactly that. The station updates itself the first minute inside the window that it finds an
+                      update waiting and the room empty; a failed automatic update is not retried for a day.
+                      {stationTimezone ? (
+                        <>
+                          {" "}It is now{" "}
+                          {(() => {
+                            try {
+                              return new Intl.DateTimeFormat("en-GB", {
+                                timeZone: stationTimezone,
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              }).format(new Date());
+                            } catch {
+                              return "";
+                            }
+                          })()}{" "}
+                          at the station.
+                        </>
+                      ) : null}
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)",
+                    opacity: 1, transform: "translateY(0)",
+                    transition: "opacity 180ms ease, transform 180ms ease",
+                  }}>
+                    Tick the box to set a nightly window. Times are station time
+                    {stationTimezone ? ` (${stationTimezone})` : ""}.
+                  </div>
+                )}
                 {autoMsg ? (
-                  <div id="auto-update-msg" style={{ marginTop: "0.5rem", fontSize: "0.875rem", color: "var(--color-accent)" }}>
+                  <div id="auto-update-msg" style={{ marginTop: "0.5rem", fontSize: "0.875rem", color: "var(--color-accent)",
+                    opacity: 1, transform: "translateY(0)",
+                    transition: "opacity 180ms ease, transform 180ms ease",
+                  }}>
                     {autoMsg}
                   </div>
                 ) : null}
@@ -1989,7 +2026,8 @@ export default function AdminPage() {
                   disabled={
                     updateBusy ||
                     updateJob?.status === "running" ||
-                    (updateChannel === "release" && !updateInfo?.updateAvailable)
+                    !updateInfo ||
+                    !updateInfo.updateAvailable
                   }
                   onClick={() =>
                     startUpdate(updateChannel, updateChannel === "release" ? updateInfo?.latest || undefined : undefined)
@@ -1999,9 +2037,13 @@ export default function AdminPage() {
                     ? "Updating…"
                     : updateBusy
                       ? "Starting…"
-                      : updateChannel === "release"
-                        ? `Update to v${updateInfo?.latest}`
-                        : `Update to latest ${updateChannel}`}
+                      : !updateInfo
+                        ? "Checking…"
+                        : updateInfo.updateAvailable
+                          ? updateChannel === "release"
+                            ? `Update to v${updateInfo.latest}`
+                            : `Update to latest ${updateChannel}`
+                          : `Up to date${updateChannel === "release" ? "" : ` on ${updateChannel}`}`}
                 </button>
                 {updateNeedsListenerConfirm ? (
                   <label className="check" style={{ fontSize: "0.85rem" }}>
@@ -2015,7 +2057,10 @@ export default function AdminPage() {
                 ) : null}
               </div>
               {updateJob?.status === "running" ? (
-                <div id="update-progress" style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "var(--color-muted)" }}>
+                <div id="update-progress" style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "var(--color-muted)",
+                  opacity: 1, transform: "translateY(0)",
+                  transition: "opacity 180ms ease, transform 180ms ease",
+                }}>
                   {(updateJob.log.slice(-3).join(" · ")) || "Starting…"}
                 </div>
               ) : null}
@@ -2023,7 +2068,10 @@ export default function AdminPage() {
           </div>
 
           {updateMsg ? (
-            <div id="software-update-msg" style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-accent)" }}>
+            <div id="software-update-msg" style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-accent)",
+              opacity: 1, transform: "translateY(0)",
+              transition: "opacity 180ms ease, transform 180ms ease",
+            }}>
               {updateMsg}
             </div>
           ) : null}
@@ -2034,6 +2082,8 @@ export default function AdminPage() {
               style={{
                 marginTop: "1rem", padding: "0.85rem 1rem", borderRadius: "8px",
                 border: "1px solid var(--color-border)", fontSize: "0.875rem",
+                opacity: 1, transform: "translateY(0)",
+                transition: "opacity 180ms ease, transform 180ms ease",
               }}
             >
               <div>
@@ -2099,9 +2149,15 @@ export default function AdminPage() {
 
           <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
             {backups === null ? (
-              <div style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>Loading backups…</div>
+              <div style={{ fontSize: "0.875rem", color: "var(--color-muted)",
+                opacity: 1, transform: "translateY(0)",
+                transition: "opacity 180ms ease, transform 180ms ease",
+              }}>Loading backups…</div>
             ) : backups.length === 0 ? (
-              <div id="backups-empty" style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>
+              <div id="backups-empty" style={{ fontSize: "0.875rem", color: "var(--color-muted)",
+                opacity: 1, transform: "translateY(0)",
+                transition: "opacity 180ms ease, transform 180ms ease",
+              }}>
                 No backups yet. Take one before changing anything you cannot easily undo.
               </div>
             ) : (
@@ -2351,11 +2407,20 @@ export default function AdminPage() {
           </div>
           <div style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
             {streamMode === "relay" ? (
-              <span>One upstream connection feeds every listener. Backend counts relay sockets (all proxy addresses); per-listener identity lives here in Signed In.</span>
+              <span style={{
+                opacity: 1, transform: "translateY(0)",
+                transition: "opacity 180ms ease, transform 180ms ease",
+              }}>One upstream connection feeds every listener. Backend counts relay sockets (all proxy addresses); per-listener identity lives here in Signed In.</span>
             ) : (
               <>
-                <span>Each player connects straight to the master — the backend sees true counts and real IPs natively.</span>
-                <span>Costs: backend upload scales per listener, and the station password ships in page JS (approved eyes only — rotate it if shared).</span>
+                <span style={{
+                  opacity: 1, transform: "translateY(0)",
+                  transition: "opacity 180ms ease, transform 180ms ease",
+                }}>Each player connects straight to the master — the backend sees true counts and real IPs natively.</span>
+                <span style={{
+                  opacity: 1, transform: "translateY(0)",
+                  transition: "opacity 180ms ease, transform 180ms ease",
+                }}>Costs: backend upload scales per listener, and the station password ships in page JS (approved eyes only — rotate it if shared).</span>
               </>
             )}
             <span>Applies on next Play; current listeners keep their path until they re-tune.</span>

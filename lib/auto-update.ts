@@ -12,6 +12,7 @@ import {
   type UpdateJob,
   type UpdateChannel,
 } from "@/lib/update";
+import { parseTimeOfDay, isInWindow, minutesInZone, toMinutes } from "./update-time";
 import { pushToAdmins } from "@/lib/push";
 import { getUpdateStatus } from "@/lib/update-check";
 import { fetchRelease, fetchBranchHead, listenerCount, runUpdatePipeline, type UpdatePlan } from "@/lib/update-run";
@@ -40,48 +41,6 @@ export type AutoUpdateSettings = {
   start: string;
   end: string;
 };
-
-export function parseTimeOfDay(raw: unknown): string | null {
-  const m = /^(\d{1,2}):(\d{2})$/.exec(String(raw || "").trim());
-  if (!m) return null;
-  const h = Number(m[1]);
-  const min = Number(m[2]);
-  if (h > 23 || min > 59) return null;
-  return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
-}
-
-function toMinutes(t: string): number {
-  const [h, m] = t.split(":").map(Number);
-  return h * 60 + m;
-}
-
-/**
- * Minutes since midnight in the given IANA zone. Intl is the whole timezone
- * database here — no dependency for something the runtime already knows.
- */
-export function minutesInZone(date: Date, timeZone: string): number | null {
-  try {
-    const parts = new Intl.DateTimeFormat("en-GB", {
-      timeZone,
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    }).formatToParts(date);
-    const h = Number(parts.find((p) => p.type === "hour")?.value);
-    const m = Number(parts.find((p) => p.type === "minute")?.value);
-    if (!Number.isFinite(h) || !Number.isFinite(m)) return null;
-    return (h % 24) * 60 + m;
-  } catch {
-    return null; // unknown zone — caller falls back, never crashes the tick
-  }
-}
-
-/** Is minute-of-day `now` inside [start, end)? Wraps past midnight. */
-export function isInWindow(nowMin: number, startMin: number, endMin: number): boolean {
-  if (startMin === endMin) return false; // zero-length window updates never
-  if (startMin < endMin) return nowMin >= startMin && nowMin < endMin;
-  return nowMin >= startMin || nowMin < endMin;
-}
 
 export type AutoTickInput = {
   settings: AutoUpdateSettings;
