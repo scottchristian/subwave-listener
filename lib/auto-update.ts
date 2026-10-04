@@ -13,7 +13,7 @@ import {
   type UpdateChannel,
 } from "@/lib/update";
 import { parseTimeOfDay, isInWindow, minutesInZone, toMinutes } from "./update-time";
-import { pushToAdmins } from "@/lib/push";
+import { pushUpdateToOptedIn } from "@/lib/push";
 import { getUpdateStatus } from "@/lib/update-check";
 import { fetchRelease, fetchBranchHead, listenerCount, runUpdatePipeline, type UpdatePlan } from "@/lib/update-run";
 import { APP_VERSION } from "@/lib/version";
@@ -256,7 +256,7 @@ export async function notifyOnce(appDir: string, channel: UpdateChannel, label: 
 
   const title =
     channel === "release" ? `Update available: v${ref}` : `Developer update available (${channel}@${ref.slice(0, 7)})`;
-  await pushToAdmins(title, "Downloaded and verified — tap to review and install in Admin → System → Software.", "/admin");
+  await pushUpdateToOptedIn(title, "Downloaded and verified — tap to review and install in Admin → System → Software.", "/admin");
   await prisma.setting.upsert({
     where: { key: UPDATE_NOTIFIED_KEY },
     update: { value: notifiedRefFor(channel, ref) },

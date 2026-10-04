@@ -384,8 +384,8 @@ export async function runUpdatePipeline(appDir: string, plan: UpdatePlan): Promi
     if (job.trigger === "auto") {
       const label = plan.channel === "release" ? `v${plan.version}` : plan.version;
       try {
-        const { pushToAdmins } = await import("@/lib/push");
-        await pushToAdmins(
+        const { pushUpdateToOptedIn } = await import("@/lib/push");
+        await pushUpdateToOptedIn(
           `Updating to ${label} now`,
           "Settings are backed up and verified. Check the station over once it is done — Admin → System → Software.",
           "/admin"

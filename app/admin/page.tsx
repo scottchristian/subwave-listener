@@ -218,6 +218,10 @@ export default function AdminPage() {
       .then((d) => { if (!cancelled && d) setBackups(d.backups || []); })
       .catch(() => {});
     loadUpdateStatus(false);
+    fetch("/api/admin/update/notify", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setUpdateNotify(d.enabled === true); })
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [status, session]);
 
@@ -539,6 +543,10 @@ export default function AdminPage() {
   const [autoEnd, setAutoEnd] = useState("");
   const [autoMsg, setAutoMsg] = useState("");
   const [autoBusy, setAutoBusy] = useState(false);
+  // Update-news push opt-in. Per admin, loaded once, saved on every toggle —
+  // same pattern as the channel radio: a preference, not a form.
+  const [updateNotify, setUpdateNotify] = useState(false);
+  const [updateNotifyMsg, setUpdateNotifyMsg] = useState("");
   const [hour12, setHour12] = useState<boolean>(() => {
     try {
       const saved = typeof window !== "undefined" ? window.localStorage.getItem("subwave-clock-hour12") : null;
@@ -608,6 +616,24 @@ export default function AdminPage() {
    * preference, not a per-click choice. The next check (and the prompt it may
    * produce) follows the saved channel.
    */
+  const saveUpdateNotify = async (enabled: boolean) => {
+    setUpdateNotify(enabled);
+    setUpdateNotifyMsg("");
+    try {
+      const res = await fetch("/api/admin/update/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "could not save");
+      setUpdateNotifyMsg(enabled ? "Saved — update news on." : "Saved — update news off.");
+    } catch (e) {
+      setUpdateNotify(!enabled);
+      setUpdateNotifyMsg(`Could not save: ${(e as Error)?.message || "unknown error"}`);
+    }
+  };
+
   const saveUpdateChannel = async (channel: "release" | "main" | "develop") => {
     setUpdateChannel(channel);
     try {
@@ -2050,6 +2076,32 @@ export default function AdminPage() {
                     transition: "opacity 180ms ease, transform 180ms ease",
                   }}>
                     {autoMsg}
+                  </div>
+                ) : null}
+              </div>
+
+              <div
+                id="software-update-notify"
+                style={{
+                  marginTop: "0.75rem", padding: "0.85rem 1rem", borderRadius: "8px",
+                  border: "1px solid var(--color-border)", fontSize: "0.9rem",
+                }}
+              >
+                <label className="check" style={{ fontSize: "0.9rem", fontWeight: 600 }}>
+                  <input
+                    id="input-update-notify"
+                    type="checkbox"
+                    checked={updateNotify}
+                    onChange={(e) => saveUpdateNotify(e.target.checked)}
+                  />
+                  Notify me when a new version is found
+                </label>
+                <div style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                  A push to your devices when an update lands. Needs push enabled on this device first — Services → Push Notifications.
+                </div>
+                {updateNotifyMsg ? (
+                  <div id="update-notify-msg" style={{ marginTop: "0.5rem", fontSize: "0.875rem", color: "var(--color-accent)" }}>
+                    {updateNotifyMsg}
                   </div>
                 ) : null}
               </div>
