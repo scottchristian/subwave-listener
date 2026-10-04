@@ -169,16 +169,23 @@ await waitFor(
 {
   const { status, json } = await api("POST", "/api/admin/update", { channel: "main", confirmListeners: true });
   ok(status === 200 && json.started === true, "update to main started");
-  const job = await waitFor(
-    async () => {
-      const { json: j } = await api("GET", "/api/admin/update");
-      return j && j.job && j.job.status === "done" ? j.job : null;
-    },
-    // Budget ~30 min wall: a lockfile change triggers npm ci inside the
-    // pipeline (minutes in a container) before the build even starts.
-    "update reaches done",
-    360
-  );
+  // Poll the job FILE, not the route: after the restart the new tree may not
+  // have updater routes at all (a downgrade proves the swap exactly by 404ing
+  // them), so waiting on HTTP here can never succeed by construction.
+  // Budget ~30 min wall: a lockfile change triggers npm ci inside the
+  // pipeline (minutes in a container) before the build even starts.
+  let job = null;
+  for (let i = 0; i < 360 && !job; i++) {
+    try {
+      const raw = await exec("cat", ["/app/data/update-job.json"]);
+      const j = JSON.parse(raw);
+      if (j.status !== "running") job = j;
+    } catch {
+      // restarting — keep polling
+    }
+    if (!job) await new Promise((r) => setTimeout(r, 5000));
+  }
+  ok(job !== null && job.status === "done", "update reaches done", job ? job.status : "no job file");
   if (job) {
     ok(/backup validated/.test(job.log.join("\n")), "second run also validated its backup");
     ok(job.to.startsWith("main@"), "job records branch + sha", job.to);
