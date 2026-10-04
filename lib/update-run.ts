@@ -441,7 +441,19 @@ export async function runUpdatePipeline(appDir: string, plan: UpdatePlan): Promi
     if (envProvider === "postgresql") {
       await runStep(prismaCmd, ["db", "push", "--skip-generate", "--accept-data-loss"], appDir, 5 * 60 * 1000);
     } else {
-      await runStep(prismaCmd, ["migrate", "deploy", ...schemaArgs], appDir, 5 * 60 * 1000);
+      try {
+        await runStep(prismaCmd, ["migrate", "deploy", ...schemaArgs], appDir, 5 * 60 * 1000);
+      } catch (e) {
+        // P3005: the database has tables but no migration history — born from
+        // `db push` rather than `migrate deploy` (older setups, hand-built
+        // stations). Refusing here would strand those stations on every future
+        // update, so sync from the datamodel instead, exactly like Postgres.
+        // Anything else rethrows: a genuinely broken migration must not be
+        // papered over by a push.
+        if (!/P3005/.test((e as Error)?.message || "")) throw e;
+        await log("no migration history — syncing from the datamodel instead");
+        await runStep(prismaCmd, ["db", "push", "--skip-generate", ...schemaArgs, "--accept-data-loss"], appDir, 5 * 60 * 1000);
+      }
     }
     await runStep(prismaCmd, ["generate", ...schemaArgs], appDir, 5 * 60 * 1000);
 
