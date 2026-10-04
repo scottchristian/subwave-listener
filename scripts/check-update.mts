@@ -201,6 +201,59 @@ try {
     ok((await fs.readFile(path.join(live, p), "utf8")) === want, `protected ${p} untouched`);
   }
 
+  // ---- notify-once: each ref prompts exactly once ----
+  {
+    const { shouldNotifyForRef, notifiedRefFor, stagedTarballPath } = await import("../lib/update.ts");
+    ok(shouldNotifyForRef(null, "release", "0.0.3") === true, "first sighting notifies");
+    ok(shouldNotifyForRef("release:0.0.3", "release", "0.0.3") === false, "same release never re-notifies");
+    ok(shouldNotifyForRef("release:0.0.3", "release", "0.0.4") === true, "newer release notifies again");
+    ok(shouldNotifyForRef("release:0.0.4", "develop", "a".repeat(40)) === true, "other channel notifies");
+    ok(shouldNotifyForRef("develop:" + "a".repeat(40), "develop", "a".repeat(40)) === false, "same tip never re-notifies");
+    ok(shouldNotifyForRef("develop:" + "a".repeat(40), "develop", "b".repeat(40)) === true, "new tip notifies");
+    ok(notifiedRefFor("release", "0.0.3") === "release:0.0.3", "ref format release");
+    ok(notifiedRefFor("develop", "abc") === "develop:abc", "ref format branch");
+    ok(
+      stagedTarballPath(tmp, "release", "0.0.3").endsWith("release-0.0.3.tar.gz"),
+      "staged filename release"
+    );
+    ok(
+      stagedTarballPath(tmp, "develop", "a".repeat(40)).endsWith(`develop-${"a".repeat(40)}.tar.gz`),
+      "staged filename branch"
+    );
+    let threw = false;
+    try {
+      stagedTarballPath(tmp, "release", "../../evil");
+    } catch {
+      threw = true;
+    }
+    ok(threw, "traversal ref rejected");
+  }
+
+  // ---- staged reuse: a verified file is never re-downloaded ----
+  {
+    const { ensureStagedTarball } = await import("../lib/update-run.ts");
+    const { stagedTarballPath } = await import("../lib/update.ts");
+    const appDir = path.join(tmp, "stageapp");
+    await fs.mkdir(path.join(appDir, "data", "update-staged"), { recursive: true });
+    // A real (tiny) tarball at the expected path, plus a stale sibling.
+    await runLocal("python3", ["-c", [
+      "import tarfile, io",
+      `t = tarfile.open(${JSON.stringify(path.join(appDir, "data", "update-staged", "develop-" + "a".repeat(40) + ".tar.gz"))}, "w:gz")`,
+      `b = b"x"`,
+      `i = tarfile.TarInfo("pkg/f.txt"); i.size = len(b)`,
+      "t.addfile(i, io.BytesIO(b))",
+      "t.close()",
+    ].join("; ")]);
+    await fs.writeFile(path.join(appDir, "data", "update-staged", "develop-stale.tar.gz"), "stale");
+    // Unroutable URL: returning at all proves no download was attempted.
+    const got = await ensureStagedTarball(appDir, "develop", "a".repeat(40), "http://127.0.0.1:9/nope.tar.gz");
+    ok(got === stagedTarballPath(appDir, "develop", "a".repeat(40)), "verified staged file reused");
+    ok(
+      !(await fs.stat(path.join(appDir, "data", "update-staged", "develop-stale.tar.gz")).catch(() => null)),
+      "stale sibling pruned"
+    );
+  }
+
   // ---- source snapshot is an archive, and restores byte-faithfully ----
   {
     const live2 = path.join(tmp, "live2");

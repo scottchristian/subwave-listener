@@ -6,9 +6,13 @@ import {
   jobRunning,
   readSource,
   isSameSource,
+  shouldNotifyForRef,
+  notifiedRefFor,
+  UPDATE_NOTIFIED_KEY,
   type UpdateJob,
   type UpdateChannel,
 } from "@/lib/update";
+import { pushToAdmins } from "@/lib/push";
 import { getUpdateStatus } from "@/lib/update-check";
 import { fetchRelease, fetchBranchHead, listenerCount, runUpdatePipeline, type UpdatePlan } from "@/lib/update-run";
 import { APP_VERSION } from "@/lib/version";
@@ -191,19 +195,33 @@ export async function runAutoUpdateTick(appDir: string): Promise<AutoTickDecisio
     readJob(appDir),
   ]);
 
+  const channel = status?.channel || "release";
   const decision = decideAutoTick({
     settings,
     timeZone: tz,
     serverNow: new Date(),
     updateAvailable: status?.updateAvailable === true,
     latestLabel: status?.latest || null,
-    channel: status?.channel || "release",
+    channel,
     listeners,
     job,
   });
+
+  // A detected update is announced once per ref — but never before its tarball
+  // is downloaded and verified. A notification is a promise that the update is
+  // installable; without the file on disk it would be a guess. This runs even
+  // when the room is occupied (no quiet room needed to TELL someone), and the
+  // staged file is what the pipeline itself installs from.
+  if (status?.updateAvailable && status.latest) {
+    try {
+      await notifyOnce(appDir, channel, status.latest);
+    } catch (e) {
+      console.warn("[auto-update] notify failed:", e instanceof Error ? e.message.slice(0, 150) : String(e).slice(0, 150));
+    }
+  }
+
   if (!decision.start) return decision;
 
-  const channel = status?.channel || "release";
   let plan: UpdatePlan;
   try {
     if (channel === "release") {
@@ -249,6 +267,42 @@ export async function runAutoUpdateTick(appDir: string): Promise<AutoTickDecisio
   });
 
   return { start: true, reason: decision.reason };
+}
+
+/**
+ * Tell the admins about a ref once — after its tarball is downloaded and
+ * verified, never before. Returns silently when there is nothing new to say.
+ * Staging failures mean "cannot prove it installs": no notification, and the
+ * caller (the tick) treats the update as not actionable this minute.
+ */
+export async function notifyOnce(appDir: string, channel: UpdateChannel, label: string): Promise<void> {
+  // The label is display text ("0.0.3" or "develop@abc1234"); the ref behind it
+  // is what identifies the update exactly.
+  let ref: string;
+  if (channel === "release") {
+    ref = label;
+  } else {
+    const { fetchBranchHead } = await import("@/lib/update-run");
+    ref = (await fetchBranchHead(channel)).sha;
+  }
+  const row = await prisma.setting
+    .findUnique({ where: { key: UPDATE_NOTIFIED_KEY } })
+    .catch(() => null);
+  if (!shouldNotifyForRef(row?.value || null, channel, ref)) return;
+
+  const { ensureStagedTarball } = await import("@/lib/update-run");
+  const { releaseTarballUrl, channelTarballUrl } = await import("@/lib/update");
+  const url = channel === "release" ? releaseTarballUrl(ref) : channelTarballUrl(channel);
+  await ensureStagedTarball(appDir, channel, ref, url);
+
+  const title =
+    channel === "release" ? `Update available: v${ref}` : `Developer update available (${channel}@${ref.slice(0, 7)})`;
+  await pushToAdmins(title, "Downloaded and verified — tap to review and install in Admin → System → Software.", "/admin");
+  await prisma.setting.upsert({
+    where: { key: UPDATE_NOTIFIED_KEY },
+    update: { value: notifiedRefFor(channel, ref) },
+    create: { key: UPDATE_NOTIFIED_KEY, value: notifiedRefFor(channel, ref) },
+  });
 }
 
 let timer: ReturnType<typeof setInterval> | null = null;

@@ -179,6 +179,19 @@ try {
       source !== null && source.channel === "develop" && typeof source.sha === "string",
       "source record written"
     );
+    // Notification dedup: no push infra here, so pushToAdmins is a no-op — but
+    // the ref record proves the exactly-once path ran, and the staged tarball
+    // proves the notification (had there been a device) promised something real.
+    if (source !== null && typeof source.sha === "string") {
+      const { notifiedRefFor } = await import("../lib/update.ts");
+      const notified = await prisma.setting.findUnique({ where: { key: "updateNotifiedRef" } }).catch(() => null);
+      ok(notified !== null && notified.value === notifiedRefFor("develop", source.sha), "notified-once ref recorded");
+      const staged = await fs.readdir(path.join(scratch, "data", "update-staged")).catch(() => []);
+      ok(staged.some((f) => f === `develop-${source.sha}.tar.gz`), "verified tarball staged");
+    } else {
+      ok(false, "notified-once ref recorded", "no source record");
+      ok(false, "verified tarball staged", "no source record");
+    }
     const snap = await fs.stat(path.join(scratch, "data", "update-source-snapshot.tar.gz")).catch(() => null);
     ok(snap !== null && snap.size > 1024, "source snapshot retained");
   }

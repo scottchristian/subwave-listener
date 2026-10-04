@@ -15,6 +15,8 @@ import {
   readJob,
   writeJob,
   jobRunning,
+  stagedTarballPath,
+  UPDATE_STAGED_DIR,
   MIN_DISK_BYTES,
   WARN_DISK_BYTES,
   MAX_TARBALL_BYTES,
@@ -199,6 +201,42 @@ export async function preflight(appDir: string): Promise<Preflight> {
   };
 }
 
+/**
+ * Download once, install many times. Fetches the tarball for a ref unless a
+ * verified copy is already staged, validates it, and prunes other staged files
+ * for the same channel — a stale tarball must never be mistaken for the
+ * current one. Returns the staged path. This is what makes "downloaded and
+ * verified before anyone is notified" true: the notifier and the pipeline call
+ * the same function, so a notification implies an installable file on disk.
+ */
+export async function ensureStagedTarball(
+  appDir: string,
+  channel: "release" | "main" | "develop",
+  ref: string,
+  url: string
+): Promise<string> {
+  const stagedDir = path.join(appDir, "data", UPDATE_STAGED_DIR);
+  await fs.mkdir(stagedDir, { recursive: true });
+  const dest = stagedTarballPath(appDir, channel, ref);
+  try {
+    await fs.access(dest);
+    await validateTarball(dest);
+  } catch {
+    // absent or corrupt — fetch it fresh below
+    await downloadTarball(url, dest);
+    await validateTarball(dest);
+  }
+  // Prune other staged files for this channel on every path, so only the
+  // current ref remains — including when the wanted file was already there.
+  const entries = await fs.readdir(stagedDir).catch(() => [] as string[]);
+  for (const e of entries) {
+    if (e.startsWith(`${channel}-`) && path.join(stagedDir, e) !== dest) {
+      await fs.rm(path.join(stagedDir, e), { force: true }).catch(() => {});
+    }
+  }
+  return dest;
+}
+
 /** Stream the tarball to disk with a size cap. Throws past the cap. */
 export async function downloadTarball(url: string, dest: string): Promise<number> {
   const res = await fetch(url, {
@@ -303,6 +341,16 @@ export async function runUpdatePipeline(appDir: string, plan: UpdatePlan): Promi
     if (pre.diskWarn) await log("warning: free disk under 1GB");
     await log("preflight passed");
 
+    // Order is the confidence chain, and it matters: download and verify the
+    // release FIRST (a corrupt download aborts before anything is touched),
+    // then snapshot source, then back up settings and prove the backup. Only
+    // after all three does the live tree change. The staged tarball is reused
+    // when the notifier already fetched it — same file, re-validated.
+    const planRef = plan.channel === "release" ? plan.version : (plan.sha as string);
+    const staged = await ensureStagedTarball(appDir, plan.channel, planRef, plan.tarballUrl);
+    const stagedBytes = (await fs.stat(staged)).size;
+    await log(`release downloaded and verified (${(stagedBytes / 1048576).toFixed(1)} MB)`);
+
     // Snapshot source BEFORE the backup, so a failure between the two still
     // leaves the previous tree recoverable. node_modules excluded (reinstalled
     // from the lockfile when it changes).
@@ -329,12 +377,31 @@ export async function runUpdatePipeline(appDir: string, plan: UpdatePlan): Promi
         `${validation.envKeys} settings, ${validation.brandFiles} artwork files)`
     );
 
+    // Everything is proven: the release is on disk and verified, the previous
+    // source is snapshotted, the settings are backed up and validated. For an
+    // automatic update this is the point of no return, so tell the admins now —
+    // they asked to check it over once it is done.
+    if (job.trigger === "auto") {
+      const label = plan.channel === "release" ? `v${plan.version}` : plan.version;
+      try {
+        const { pushToAdmins } = await import("@/lib/push");
+        await pushToAdmins(
+          `Updating to ${label} now`,
+          "Settings are backed up and verified. Check the station over once it is done — Admin → System → Software.",
+          "/admin"
+        );
+        await log("admins notified that the update is starting");
+      } catch (e) {
+        // A failed notification must not abort a proven update.
+        await log(`could not notify admins: ${(e as Error)?.message || "unknown"}`);
+      }
+    }
+
     const stageDir = path.join(appDir, "data", UPDATE_STAGE_DIR);
     await fs.rm(stageDir, { recursive: true, force: true });
     await fs.mkdir(stageDir, { recursive: true });
     const archive = path.join(stageDir, "release.tar.gz");
-    const bytes = await downloadTarball(plan.tarballUrl, archive);
-    await log(`downloaded ${(bytes / 1048576).toFixed(1)} MB`);
+    await fs.copyFile(staged, archive);
     await validateTarball(archive);
     await run("tar", ["-xzf", archive, "--strip-components=1", "-C", stageDir], { timeout: 120000 });
     await log("release staged and verified");

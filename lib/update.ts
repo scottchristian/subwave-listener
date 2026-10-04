@@ -248,6 +248,41 @@ export function canRollback(job: UpdateJob | null): { ok: true; backupId: string
   return { ok: true, backupId: job.backupId };
 }
 
+/**
+ * Setting holding the update ref admins were last notified about, so each
+ * update prompts exactly once. Format "release:0.0.3" or "develop:<full-sha>".
+ */
+export const UPDATE_NOTIFIED_KEY = "updateNotifiedRef";
+
+/** Directory holding verified release tarballs awaiting install. */
+export const UPDATE_STAGED_DIR = "update-staged";
+
+/**
+ * Should admins be notified about this ref? Yes the first time a ref is seen,
+ * never again for the same one. A new ref (newer release, new branch tip)
+ * notifies once more. Pure — trivial, but the exactly-once promise is the
+ * whole point, so it is pinned by tests rather than left to inspection.
+ */
+export function shouldNotifyForRef(notifiedRef: string | null, channel: UpdateChannel, ref: string): boolean {
+  return notifiedRef !== `${channel}:${ref}`;
+}
+
+export function notifiedRefFor(channel: UpdateChannel, ref: string): string {
+  return `${channel}:${ref}`;
+}
+
+/**
+ * Where the verified tarball for a ref lives. Both parts are safe by
+ * construction: versions parse as semver, shas are hex, channels come from the
+ * allowlist — but the guard stays, because a filename built from network data
+ * without one is how path traversal happens.
+ */
+export function stagedTarballPath(appDir: string, channel: UpdateChannel, ref: string): string {
+  const safe = channel === "release" ? ref.replace(/^v/, "") : ref;
+  if (!/^[0-9A-Za-z][0-9A-Za-z.+-]*$/.test(safe)) throw new Error("unsafe ref for staging");
+  return path.join(appDir, "data", UPDATE_STAGED_DIR, `${channel}-${safe}.tar.gz`);
+}
+
 /** A job younger than this that still says "running" owns the updater. */
 export const JOB_STALE_MS = 2 * 60 * 60 * 1000;
 
