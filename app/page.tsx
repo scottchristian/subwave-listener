@@ -250,6 +250,11 @@ export default function Home() {
   // Skills open as an overlay for the same reason likes do — a route change
   // unmounts the <audio> element and the stream stops.
   const [showSkills, setShowSkills] = useState(false);
+  // Host/guest profile popup. Same overlay treatment as likes, for the same
+  // reason: the stream must keep playing. One popup, whoever is tapped — the
+  // data only ever carries one host plus guests, so "multiple hosts" means
+  // every face on air opens its own card.
+  const [showHost, setShowHost] = useState<{ name: string; avatar: string; role: string; tagline?: string } | null>(null);
   // Fixed viewport position for the menu, clamped on-screen at open time.
   const [userMenuPos, setUserMenuPos] = useState<{ top: number; left: number } | null>(null);
   const userMenuBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -1799,32 +1804,39 @@ export default function Home() {
     );
   }
 
+  // Resolve avatars via the /api proxy on the station's NextJS frontend
+  const getAvatarSrc = (avatarPath: string) => {
+    if (!avatarPath) return "";
+    if (avatarPath.startsWith("http")) return avatarPath;
+    // Ensure the path has /api prefix
+    const normalizedPath = avatarPath.startsWith("/api/")
+      ? avatarPath
+      : `/api${avatarPath.startsWith("/") ? "" : "/"}${avatarPath}`;
+    return `${STATION_API}${normalizedPath}`;
+  };
+
   // Helper for rendering avatars
   const renderAvatars = () => {
     const p = stationData?.activeShow?.persona || stationData?.dj;
     const guests = stationData?.activeShow?.guests || [];
-    
-    // Resolve avatars via the /api proxy on the station's NextJS frontend
-    const getAvatarSrc = (avatarPath: string) => {
-      if (!avatarPath) return "";
-      if (avatarPath.startsWith("http")) return avatarPath;
-      // Ensure the path has /api prefix
-      const normalizedPath = avatarPath.startsWith("/api/") 
-        ? avatarPath 
-        : `/api${avatarPath.startsWith("/") ? "" : "/"}${avatarPath}`;
-      return `${STATION_API}${normalizedPath}`;
-    };
 
     return (
       <div id="avatars-container" ref={el => { stepRefs.current[5] = el; }} className="avatars" style={{ marginTop: "1rem", display: "flex", gap: "1rem", alignItems: "center", position: tourStep === 5 ? "relative" : "static", zIndex: tourStep === 5 ? 1000 : 1 }}>
         {p ? (
-          <div id="avatar-host-container" style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+          <button
+            id="avatar-host-container"
+            type="button"
+            onClick={() => setShowHost({ name: p.name, avatar: getAvatarSrc(p.avatar), role: "Host", tagline: p.tagline })}
+            aria-label={`About ${p.name}`}
+            title={`About ${p.name}`}
+            style={{ display: "flex", alignItems: "center", gap: "1rem", background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", textAlign: "left" }}
+          >
             <img id="avatar-host-img" src={getAvatarSrc(p.avatar)} alt={p.name} className="avatar" title={p.name} style={{ width: "64px", height: "64px" }} />
             <div id="avatar-host-text-container">
               <strong id="avatar-host-name">{p.name}</strong>
               <div id="avatar-host-role" style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>Host</div>
             </div>
-          </div>
+          </button>
         ) : (
           <div id="avatar-autodj-container" style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
             <Image id="avatar-autodj-img" src={STATION.logo} alt="Auto DJ" className="avatar" title="Auto DJ" style={{ width: "64px", height: "64px", objectFit: "contain", background: "rgba(0,0,0,0.2)" }} width={64} height={64} />
@@ -1835,13 +1847,21 @@ export default function Home() {
           </div>
         )}
         {guests.map((g: any, index: number) => (
-          <div id={`avatar-guest-container-${index}`} key={g.id} style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
+          <button
+            id={`avatar-guest-container-${index}`}
+            key={g.id}
+            type="button"
+            onClick={() => setShowHost({ name: g.name, avatar: getAvatarSrc(g.avatar), role: "Guest", tagline: g.tagline })}
+            aria-label={`About ${g.name}`}
+            title={`About ${g.name}`}
+            style={{ display: "flex", alignItems: "center", gap: "1rem", background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", textAlign: "left" }}
+          >
             <img id={`avatar-guest-img-${index}`} src={getAvatarSrc(g.avatar)} alt={g.name} className="avatar" title={g.name} style={{ width: "64px", height: "64px" }} />
             <div id={`avatar-guest-text-container-${index}`}>
               <strong id={`avatar-guest-name-${index}`}>{g.name}</strong>
               <div id={`avatar-guest-role-${index}`} style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>Guest</div>
             </div>
-          </div>
+          </button>
         ))}
       </div>
     );
@@ -2580,6 +2600,29 @@ export default function Home() {
                 <button id="btn-close-likes" onClick={() => setShowLikes(false)} className="primary-btn" style={{ padding: "0.5rem 1rem", fontSize: "0.875rem", background: "rgba(255,255,255,0.1)", color: "#fff", width: "auto" }}>Close</button>
               </div>
               <LikedSongsPanel />
+            </div>
+          </div>
+        </div>
+      )}
+      {showHost && (
+        <div id="host-overlay-bg" onClick={() => setShowHost(null)} className="overlay-bg-enter" style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 2000, overflowY: "auto", padding: "2rem 1rem" }}>
+          <div id="host-overlay-card" onClick={(e) => e.stopPropagation()} className="overlay-card-enter" style={{ maxWidth: "480px", width: "100%", margin: "0 auto", minHeight: "auto", padding: "0 0.5rem", position: "relative", zIndex: 2001 }}>
+            <div className="card">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+                <h2 style={{ fontSize: "1.3rem", margin: 0 }}>{showHost.name}</h2>
+                <button id="btn-close-host" onClick={() => setShowHost(null)} className="primary-btn" style={{ padding: "0.5rem 1rem", fontSize: "0.875rem", background: "rgba(255,255,255,0.1)", color: "#fff", width: "auto" }}>Close</button>
+              </div>
+              <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start" }}>
+                {showHost.avatar ? (
+                  <img id="host-profile-img" src={showHost.avatar} alt={showHost.name} style={{ width: "160px", height: "160px", borderRadius: "12px", objectFit: "cover", flexShrink: 0 }} />
+                ) : null}
+                <div>
+                  <div id="host-profile-role" style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>{showHost.role}{showName ? ` on ${showName}` : ""}</div>
+                  {showHost.tagline ? (
+                    <p id="host-profile-tagline" style={{ marginTop: "0.5rem", marginBottom: 0 }}>{showHost.tagline}</p>
+                  ) : null}
+                </div>
+              </div>
             </div>
           </div>
         </div>
