@@ -504,6 +504,7 @@ export default function AdminPage() {
   // Set when the server refuses for listeners on air: the button stays, and a
   // checkbox appears for the operator to accept interrupting them.
   const [updateNeedsListenerConfirm, setUpdateNeedsListenerConfirm] = useState(false);
+  const [stationTimezone, setStationTimezone] = useState<string | null>(null);
   const [updateSource, setUpdateSource] = useState<{
     channel: string;
     ref: string;
@@ -511,6 +512,11 @@ export default function AdminPage() {
     version: string;
   } | null>(null);
   const [updateChannel, setUpdateChannel] = useState<"release" | "main" | "develop">("release");
+  const [autoUpdateOn, setAutoUpdateOn] = useState(false);
+  const [autoStart, setAutoStart] = useState("");
+  const [autoEnd, setAutoEnd] = useState("");
+  const [autoMsg, setAutoMsg] = useState("");
+  const [autoBusy, setAutoBusy] = useState(false);
 
   const refreshUpdate = async () => {
     try {
@@ -519,6 +525,14 @@ export default function AdminPage() {
         const d = await r.json();
         setUpdateJob(d.job || null);
         setUpdateSource(d.source || null);
+        if (typeof d.stationTimezone === "string" && d.stationTimezone) {
+          setStationTimezone(d.stationTimezone);
+        }
+        if (d.auto) {
+          setAutoUpdateOn(d.auto.enabled);
+          setAutoStart(d.auto.start);
+          setAutoEnd(d.auto.end);
+        }
       }
     } catch {
       // a station mid-restart answers nothing — the next poll gets it
@@ -550,6 +564,34 @@ export default function AdminPage() {
       });
     } catch {
       // cosmetic if it fails — the update itself still takes an explicit channel
+    }
+  };
+
+  /**
+   * Save the automatic window. Validated twice: here for fast feedback, and
+   * server-side where it counts — a hand-crafted request with "25:99" must not
+   * arm the scheduler.
+   */
+  const saveAutoUpdate = async () => {
+    setAutoBusy(true);
+    setAutoMsg("");
+    try {
+      const res = await fetch("/api/admin/update/auto", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: autoUpdateOn, start: autoStart, end: autoEnd }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "could not save");
+      setAutoMsg(
+        d.saved.enabled
+          ? `Automatic updates on, ${d.saved.start}–${d.saved.end} station time.`
+          : "Automatic updates off."
+      );
+    } catch (e) {
+      setAutoMsg(`Could not save: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setAutoBusy(false);
     }
   };
 
@@ -1849,6 +1891,96 @@ export default function AdminPage() {
                   {updateSource.sha ? ` @ ${updateSource.sha.slice(0, 7)}` : ` v${updateSource.version}`}.
                 </div>
               ) : null}
+              {/* Automatic updates: a nightly window, station time. */}
+              <div
+                id="software-auto-update"
+                style={{
+                  marginTop: "0.75rem", padding: "0.85rem 1rem", borderRadius: "8px",
+                  border: "1px solid var(--color-border)", fontSize: "0.9rem",
+                }}
+              >
+                <label className="check" style={{ fontSize: "0.9rem", fontWeight: 600 }}>
+                  <input
+                    type="checkbox"
+                    checked={autoUpdateOn}
+                    onChange={(e) => setAutoUpdateOn(e.target.checked)}
+                  />
+                  Update automatically when no one is listening
+                </label>
+                <div
+                  style={{
+                    marginTop: "0.6rem", display: "flex", alignItems: "center",
+                    gap: "0.75rem", flexWrap: "wrap",
+                  }}
+                >
+                  <label style={{ fontSize: "0.85rem" }}>
+                    From{" "}
+                    <input
+                      id="input-auto-start"
+                      type="time"
+                      value={autoStart}
+                      onChange={(e) => setAutoStart(e.target.value)}
+                      style={{
+                        background: "transparent", color: "var(--color-text)",
+                        border: "1px solid var(--color-border)", borderRadius: "8px",
+                        padding: "0.4rem 0.6rem", fontSize: "0.875rem",
+                      }}
+                    />
+                  </label>
+                  <label style={{ fontSize: "0.85rem" }}>
+                    to{" "}
+                    <input
+                      id="input-auto-end"
+                      type="time"
+                      value={autoEnd}
+                      onChange={(e) => setAutoEnd(e.target.value)}
+                      style={{
+                        background: "transparent", color: "var(--color-text)",
+                        border: "1px solid var(--color-border)", borderRadius: "8px",
+                        padding: "0.4rem 0.6rem", fontSize: "0.875rem",
+                      }}
+                    />
+                  </label>
+                  <button
+                    id="btn-save-auto-update"
+                    className="seg-btn"
+                    disabled={autoBusy}
+                    onClick={saveAutoUpdate}
+                  >
+                    {autoBusy ? "Saving…" : "Save window"}
+                  </button>
+                </div>
+                <div style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                  Station time{stationTimezone ? ` (${stationTimezone})` : ""}. Overnight
+                  windows are fine — 22:00 to 04:00 means exactly that. The station
+                  updates itself the first minute inside the window that it finds an
+                  update waiting and the room empty; a failed automatic update is not
+                  retried for a day.
+                  {stationTimezone ? (
+                    <>
+                      {" "}It is now{" "}
+                      {(() => {
+                        try {
+                          return new Intl.DateTimeFormat("en-GB", {
+                            timeZone: stationTimezone,
+                            hour: "2-digit",
+                            minute: "2-digit",
+                          }).format(new Date());
+                        } catch {
+                          return "";
+                        }
+                      })()}{" "}
+                      at the station.
+                    </>
+                  ) : null}
+                </div>
+                {autoMsg ? (
+                  <div id="auto-update-msg" style={{ marginTop: "0.5rem", fontSize: "0.875rem", color: "var(--color-accent)" }}>
+                    {autoMsg}
+                  </div>
+                ) : null}
+              </div>
+
               <div style={{ marginTop: "0.75rem", display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
                 <button
                   id="btn-start-update"
@@ -1906,7 +2038,7 @@ export default function AdminPage() {
             >
               <div>
                 {updateJob.status === "done" ? (
-                  <>Last update to <strong>v{updateJob.to}</strong> completed. Verify the station, then carry on.</>
+                  <>Last update{updateJob.trigger === "auto" ? " (automatic)" : ""} to <strong>v{updateJob.to}</strong> completed. Verify the station, then carry on.</>
                 ) : updateJob.status === "rolled-back" ? (
                   <>Last update to <strong>v{updateJob.to}</strong> was rolled back{updateJob.error ? `: ${updateJob.error}` : ""}.</>
                 ) : (

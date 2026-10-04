@@ -11,6 +11,7 @@ import {
   type UpdatePlan,
 } from "@/lib/update-run";
 import { readJob, writeJob, canStartUpdate, gateOnListeners, parseChannel, readSource, isSameSource } from "@/lib/update";
+import { readAutoUpdateSettings, resolveStationTimezone } from "@/lib/auto-update";
 import type { UpdateJob } from "@/lib/update";
 
 async function requireAdmin() {
@@ -24,11 +25,19 @@ async function requireAdmin() {
 // restart at the end, which the job file survives and the process does not.
 export async function GET() {
   if (!(await requireAdmin())) return new Response("Forbidden", { status: 403 });
-  const [job, pre, source] = await Promise.all([readJob(), preflight(process.cwd()), readSource()]);
+  const [job, pre, source, auto, stationTimezone] = await Promise.all([
+    readJob(),
+    preflight(process.cwd()),
+    readSource(),
+    readAutoUpdateSettings(),
+    resolveStationTimezone(),
+  ]);
   return NextResponse.json({
     current: APP_VERSION,
     job,
     source,
+    auto,
+    stationTimezone,
     preflight: {
       diskBytes: pre.diskBytes,
       diskOk: pre.diskOk,
@@ -117,6 +126,7 @@ export async function POST(req: Request) {
     backupId: null,
     startedAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
+    trigger: "manual",
     log: [`update to ${plan.channel === "release" ? `v${plan.version}` : plan.version} started`],
   };
   await writeJob(appDir, job);

@@ -53,6 +53,8 @@ export type UpdateJob = {
   /** Newest last. Kept short — a station does not need a build log forever. */
   log: string[];
   error?: string;
+  /** Who started it. Optional: job files written before this existed lack it. */
+  trigger?: "manual" | "auto";
 };
 
 /**

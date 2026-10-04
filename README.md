@@ -551,8 +551,21 @@ hand. Pick stable (a newer release), main, or develop; the station takes a
 settings backup first, validates it, then downloads, rebuilds and restarts —
 refusing while anyone is listening unless you accept interrupting them. If the
 build fails it rolls back to the backup automatically; if a booted version turns
-out bad, roll back from the same panel. Nothing updates itself on a schedule —
-every update is started by a person.
+out bad, roll back from the same panel.
+
+### Automatic updates
+
+The same panel offers automatic updates: pick a start and end time and the
+station updates itself the first minute inside that window that it finds an
+update waiting on your channel and nobody listening. Times are station time
+(the panel shows what time it is there now), and overnight windows wrap — 22:00
+to 04:00 means exactly that.
+
+Two deliberate limits: it never interrupts a listener (no one is watching to
+approve it, so an occupied or unreadable room just waits for the next minute),
+and a failed automatic update is not retried for a day — something is wrong,
+and rebuilding every minute will not fix it. A manual update from the panel is
+unaffected by either rule.
 
 ### Backups
 

@@ -118,9 +118,39 @@ export async function listenerCount(): Promise<number | null> {
   }
 }
 
-function prismaBin(appDir: string): string {
-  // Local install first (offline-safe), PATH fallback second.
-  return path.join(appDir, "node_modules", ".bin", "prisma");
+/**
+ * The prisma CLI, resolved the way npm would resolve it. .bin/prisma is a
+ * symlink into ../prisma/build, and the CLI locates its engine wasm relative
+ * to the unresolved invocation path — executing the symlink directly makes it
+ * look in .bin/ and die with ENOENT. npm exec resolves the link first, so we
+ * do too; PATH npx is the fallback.
+ */
+/**
+ * Resolve an installed binary the way npm would: through symlinks, not to
+ * them. .bin entries are links into ../pkg/build, and CLIs that locate engine
+ * files relative to their own path break when executed via the link — they
+ * look beside the link instead of beside the real file. Returns the original
+ * path when it is already real or cannot be read (caller falls back).
+ */
+export async function resolveInstalledBin(shimPath: string): Promise<string> {
+  try {
+    await fs.access(shimPath);
+    try {
+      return await fs.realpath(shimPath);
+    } catch {
+      return shimPath;
+    }
+  } catch {
+    throw new Error(`not installed: ${shimPath}`);
+  }
+}
+
+async function resolvePrisma(appDir: string): Promise<string> {
+  try {
+    return await resolveInstalledBin(path.join(appDir, "node_modules", ".bin", "prisma"));
+  } catch {
+    return "npx";
+  }
 }
 
 async function commandExists(cmd: string): Promise<boolean> {
@@ -155,10 +185,9 @@ export async function preflight(appDir: string): Promise<Preflight> {
   }
   let prisma = false;
   try {
-    await fs.access(prismaBin(appDir));
-    prisma = true;
+    prisma = ((await resolvePrisma(appDir)) === "npx" ? await commandExists("npx") : true);
   } catch {
-    prisma = await commandExists("npx");
+    prisma = false;
   }
   return {
     diskBytes,
@@ -328,10 +357,7 @@ export async function runUpdatePipeline(appDir: string, plan: UpdatePlan): Promi
 
     const { providerFromEnv } = await import("@/lib/db-provider");
     const envProvider = providerFromEnv();
-    const prismaCmd = await fs
-      .access(prismaBin(appDir))
-      .then(() => prismaBin(appDir))
-      .catch(() => "npx");
+    const prismaCmd = await resolvePrisma(appDir);
     // prisma/schema.prisma declares postgresql, and Prisma validates the URL
     // against the schema's own provider — so a file: URL is rejected before it
     // does anything. The swap above restored the canonical schema, which is

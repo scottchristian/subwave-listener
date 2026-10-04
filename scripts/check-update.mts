@@ -365,6 +365,33 @@ try {
     await new Promise<void>((r) => server.close(() => r()));
   }
 
+  // ---- installed binaries resolve through symlinks, like npm does ----
+  {
+    const { resolveInstalledBin } = await import("../lib/update-run.ts");
+    const binDir = path.join(tmp, "bin");
+    await fs.mkdir(binDir, { recursive: true });
+    await fs.writeFile(path.join(tmp, "real-tool"), "#!/bin/sh\n");
+    await fs.symlink(path.join(tmp, "real-tool"), path.join(binDir, "tool"));
+    // realpath on both sides: /tmp itself is a symlink on macOS, so string
+    // equality against the un-resolved tmp path would false-fail.
+    const canon = async (p: string) => fs.realpath(p);
+    ok(
+      (await resolveInstalledBin(path.join(binDir, "tool"))) === (await canon(path.join(tmp, "real-tool"))),
+      "symlinked bin resolves to the real file"
+    );
+    ok(
+      (await resolveInstalledBin(path.join(tmp, "real-tool"))) === (await canon(path.join(tmp, "real-tool"))),
+      "real file resolves to itself"
+    );
+    let threw = false;
+    try {
+      await resolveInstalledBin(path.join(tmp, "missing-tool"));
+    } catch {
+      threw = true;
+    }
+    ok(threw, "missing bin throws");
+  }
+
   // ---- step runner ----
   const out = await update.runStep(process.execPath, ["-e", "console.log('hi')"], tmp, 30000);
   ok(out.trim() === "hi", "runStep captures output");

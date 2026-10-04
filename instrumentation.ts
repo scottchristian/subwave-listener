@@ -39,6 +39,16 @@ export async function register() {
   } catch (err) {
     console.warn("[boot] skill worker not started:", message(err));
   }
+
+  try {
+    // One tick a minute: automatic updates inside the operator's window, and
+    // nothing else. Reads settings fresh each tick so a change applies without
+    // a restart; fails closed on anything unreadable.
+    const { startAutoUpdateScheduler } = await import("./lib/auto-update");
+    startAutoUpdateScheduler();
+  } catch (err) {
+    console.warn("[boot] auto-update scheduler not started:", message(err));
+  }
 }
 
 const message = (err: unknown) =>
