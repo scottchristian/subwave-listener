@@ -11,6 +11,7 @@ import DatabasePanel from "./DatabasePanel";
 import CollapsibleSection from "./CollapsibleSection";
 import HeaderToggle from "./HeaderToggle";
 import TimeSelect from "./TimeSelect";
+import UpdateModal from "./UpdateModal";
 import { formatTimeOfDay, defaultHour12 } from "@/lib/update-time";
 import {
   SKIP_VISIBILITY_OPTIONS,
@@ -186,6 +187,26 @@ export default function AdminPage() {
   // caches the answer for an hour anyway, and this is not something an operator
   // watches change. Failure leaves the panel saying nothing rather than showing an
   // error, because a station that cannot reach GitHub is not in trouble.
+  // Extracted so opening the System tab can re-ask with a live check.
+  const loadUpdateStatus = (refresh: boolean) => {
+    // no-store: the server keeps its own hourly cache (GitHub rate limits),
+    // but the browser must not serve a stale channel — the radio follows the
+    // saved preference, and a cached answer points it at the previous one.
+    // refresh=1 goes further and skips the server cache too, asking GitHub now.
+    fetch(refresh ? "/api/admin/update-check?refresh=1" : "/api/admin/update-check", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d) {
+          setUpdateInfo(d);
+          // The server owns the saved channel — the radio follows it rather
+          // than resetting to Stable on every visit.
+          if (d.channel === "release" || d.channel === "main" || d.channel === "develop") {
+            setUpdateChannel(d.channel);
+          }
+        }
+      })
+      .catch(() => {});
+  };
   useEffect(() => {
     if (status !== "authenticated" || !(session?.user as any)?.isAdmin) return;
     let cancelled = false;
@@ -196,24 +217,18 @@ export default function AdminPage() {
       .then((r) => (r.ok ? r.json() : null))
       .then((d) => { if (!cancelled && d) setBackups(d.backups || []); })
       .catch(() => {});
-    // no-store: the server keeps its own hourly cache (GitHub rate limits),
-    // but the browser must not serve a stale channel — the radio follows the
-    // saved preference, and a cached answer points it at the previous one.
-    fetch("/api/admin/update-check", { cache: "no-store" })
-      .then((r) => (r.ok ? r.json() : null))
-      .then((d) => {
-        if (!cancelled && d) {
-          setUpdateInfo(d);
-          // The server owns the saved channel — the radio follows it rather
-          // than resetting to Stable on every visit.
-          if (d.channel === "release" || d.channel === "main" || d.channel === "develop") {
-            setUpdateChannel(d.channel);
-          }
-        }
-      })
-      .catch(() => {});
+    loadUpdateStatus(false);
     return () => { cancelled = true; };
   }, [status, session]);
+
+  // A fresh answer every time the operator opens System: the button in front
+  // of them reflects what GitHub says now, not what the hourly cache said.
+  // Human-gated (one tab open per visit), so GitHub's 60 req/hr is not at risk.
+  useEffect(() => {
+    if (status !== "authenticated" || !(session?.user as any)?.isAdmin) return;
+    if (activeTab !== "system") return;
+    loadUpdateStatus(true);
+  }, [activeTab, status, session]);
 
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -501,6 +516,11 @@ export default function AdminPage() {
   // and the outcome is visible without anyone having watched it happen.
   const [updateJob, setUpdateJob] = useState<UpdateJob | null>(null);
   const [updateBusy, setUpdateBusy] = useState(false);
+  // The progress popup. Opened when an update or rollback starts; the operator
+  // may close it mid-run (the job continues server-side) and reopen it from
+  // the progress line. Never auto-closed on completion — "done" is the one
+  // thing they must not miss.
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
   const [updateMsg, setUpdateMsg] = useState("");
   const [updateConfirmListeners, setUpdateConfirmListeners] = useState(false);
   // Set when the server refuses for listeners on air: the button stays, and a
@@ -565,8 +585,22 @@ export default function AdminPage() {
 
   useEffect(() => {
     if (updateJob?.status !== "running") return;
-    const id = setInterval(refreshUpdate, 5000);
+    const id = setInterval(refreshUpdate, 2500);
     return () => clearInterval(id);
+  }, [updateJob?.status]);
+
+  // A finished job leaves the update-check cache (and the button it feeds)
+  // describing the world before the restart. Re-ask once the new process is
+  // up, so the button stops offering the version just installed. Fires once
+  // per terminal transition — the ref, not the render, remembers.
+  const lastTerminalStatus = useRef<string | null>(null);
+  useEffect(() => {
+    const st = updateJob?.status;
+    if (st !== "done" && st !== "failed" && st !== "rolled-back") return;
+    if (lastTerminalStatus.current === updateJob?.updatedAt) return;
+    lastTerminalStatus.current = updateJob?.updatedAt ?? null;
+    const t = setTimeout(() => loadUpdateStatus(true), 30000);
+    return () => clearTimeout(t);
   }, [updateJob?.status]);
 
   /**
@@ -634,6 +668,7 @@ export default function AdminPage() {
       if (!res.ok) throw new Error(d.error || "update failed to start");
       setUpdateMsg(`Updating to ${d.channel === "release" ? `v${d.to}` : d.to} — settings are backed up first, then the station rebuilds and restarts. Do not close this tab.`);
       await refreshUpdate();
+      setShowUpdateModal(true);
     } catch (e) {
       setUpdateMsg(`Update failed to start: ${(e as Error)?.message || "unknown error"}`);
     } finally {
@@ -654,6 +689,7 @@ export default function AdminPage() {
       if (!res.ok) throw new Error(d.error || "rollback failed to start");
       setUpdateMsg("Rolling back to the pre-update state — the station restarts when it is back in place.");
       await refreshUpdate();
+      setShowUpdateModal(true);
     } catch (e) {
       setUpdateMsg(`Rollback failed to start: ${(e as Error)?.message || "unknown error"}`);
     } finally {
@@ -2061,7 +2097,14 @@ export default function AdminPage() {
                   opacity: 1, transform: "translateY(0)",
                   transition: "opacity 180ms ease, transform 180ms ease",
                 }}>
-                  {(updateJob.log.slice(-3).join(" · ")) || "Starting…"}
+                  {(updateJob.log.slice(-3).join(" · ")) || "Starting…"}{" "}
+                  <button
+                    type="button"
+                    onClick={() => setShowUpdateModal(true)}
+                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: "inherit", color: "var(--color-accent)", textDecoration: "underline" }}
+                  >
+                    View progress
+                  </button>
                 </div>
               ) : null}
             </div>
@@ -2463,6 +2506,16 @@ export default function AdminPage() {
         </div>
       </div>
       </div>
+      {showUpdateModal && updateJob ? (
+        <UpdateModal
+          job={updateJob}
+          channel={updateChannel}
+          busy={updateBusy}
+          onClose={() => setShowUpdateModal(false)}
+          onReload={() => window.location.reload()}
+          onRollback={rollbackUpdate}
+        />
+      ) : null}
     </div>
   );
 }

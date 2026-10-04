@@ -52,11 +52,17 @@ export async function readUpdateChannel(): Promise<UpdateChannel> {
  * "Is there an update on the operator's channel?" Shared by the admin panel
  * (via the update-check route) and the automatic-update scheduler, so a human
  * and the timer can never disagree about what is available.
+ *
+ * `force` skips the hourly cache read (still writes it). The admin panel uses
+ * it when the operator opens the System tab, so the button in front of them
+ * reflects what GitHub says right now rather than what it said up to an hour
+ * ago. The scheduler and background callers stay on the cache — GitHub allows
+ * 60 unauthenticated requests an hour per IP and a station has one address.
  */
-export async function getUpdateStatus(): Promise<UpdateStatus> {
+export async function getUpdateStatus(opts?: { force?: boolean }): Promise<UpdateStatus> {
   const channel = await readUpdateChannel();
 
-  if (cached && cached.channel === channel && Date.now() - cached.at < CACHE_MS) {
+  if (!opts?.force && cached && cached.channel === channel && Date.now() - cached.at < CACHE_MS) {
     return cached.payload;
   }
 
