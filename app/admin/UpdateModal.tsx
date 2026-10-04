@@ -86,7 +86,7 @@ export default function UpdateModal({
   return (
     <div
       id="update-overlay-bg"
-      onClick={() => { if (!running) onClose(); }}
+      onClick={() => { if (!running && job.status !== "done") onClose(); }}
       className="overlay-bg-enter"
       style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 2000, overflowY: "auto", padding: "2rem 1rem" }}
     >
@@ -99,7 +99,7 @@ export default function UpdateModal({
         <div className="card">
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
             <h2 style={{ fontSize: "1.3rem", margin: 0 }}>{title}</h2>
-            {!running ? (
+            {job.status !== "done" && !running ? (
               <button id="btn-close-update" onClick={onClose} className="primary-btn" style={{ padding: "0.5rem 1rem", fontSize: "0.875rem", background: "rgba(255,255,255,0.1)", color: "#fff", width: "auto" }}>Close</button>
             ) : null}
           </div>
@@ -110,16 +110,9 @@ export default function UpdateModal({
                 The station restarted on <strong>{channel === "release" ? `v${job.to}` : job.to}</strong>.
                 Reload this page so what you see matches what is running.
               </p>
-              <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
-                <button id="btn-reload-after-update" className="primary-btn" style={{ width: "auto", padding: "0.55rem 1.25rem" }} onClick={onReload}>
-                  Reload this page
-                </button>
-                {job.backupId ? (
-                  <button className="seg-btn" disabled={busy} onClick={onRollback} style={{ padding: "0.55rem 1.25rem" }}>
-                    Roll back to v{job.from}
-                  </button>
-                ) : null}
-              </div>
+              <button id="btn-reload-after-update" className="primary-btn" style={{ width: "auto", padding: "0.55rem 1.25rem" }} onClick={onReload}>
+                Reload this page
+              </button>
             </div>
           ) : job.status === "failed" ? (
             <div>
