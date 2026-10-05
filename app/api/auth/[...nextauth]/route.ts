@@ -96,10 +96,14 @@ export const authOptions: NextAuthOptions = {
     strategy: "database", // Standard for PrismaAdapter
   },
   pages: {
-    // NextAuth's built-in error page ("try signing in with a different
-    // account") reads as a verdict. Ours says what is actually wrong: most
-    // sign-in failures here are the free-tier database asleep or paused, which
-    // fixes itself — the page says wait and retry rather than blaming the account.
+    // NextAuth's built-in pages ("try signing in with a different account")
+    // read as a verdict. Ours say what is actually wrong: most sign-in
+    // failures here are the free-tier database asleep or paused, which fixes
+    // itself — the pages retry on their own rather than blaming the account.
+    // Both doors are needed: NextAuth forces Callback-class errors onto the
+    // signin page and bypasses pages.error for them (see its error-route
+    // allowlist), so signin carries the same words as auth-error.
+    signIn: "/signin",
     error: "/auth-error",
   },
   secret: process.env.NEXTAUTH_SECRET,
