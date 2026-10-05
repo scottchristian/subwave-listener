@@ -19,7 +19,7 @@
     "check:backup": "TEST_PRISMA_CLIENT=\"$PWD/.test-client\" node --import ./scripts/test-register.mjs scripts/check-backup.mts",
     "check:update": "node --import ./scripts/test-register.mjs scripts/check-update.mts",
     "check:auto": "node --import ./scripts/test-register.mjs scripts/check-auto-update.mts",
-    "check:activity": "TEST_PRISMA_CLIENT=\"$PWD/.test-client\" node --import ./scripts/test-register.mjs scripts/check-activity.mts"
+    "check:activity": "node --import ./scripts/test-register.mjs scripts/check-activity.mts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",

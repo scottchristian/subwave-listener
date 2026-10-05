@@ -264,15 +264,39 @@ export async function notifyOnce(appDir: string, channel: UpdateChannel, label: 
   });
 }
 
-let timer: ReturnType<typeof setInterval> | null = null;
+let timer: ReturnType<typeof setTimeout> | null = null;
 
-/** Every minute, forever. Defensive throughout: a tick must never throw, or
- * the interval dies with it and the station silently stops checking. */
+/** Someone with the app open: check every minute, as always. */
+const ACTIVE_TICK_MS = 60 * 1000;
+
+/**
+ * Nobody here: check every 20 minutes. The database sleeps after 15 quiet
+ * minutes, so a 60s tick would hold it awake around the clock — which is
+ * exactly what the free plan forbids. 20 minutes clears the sleep window with
+ * margin, so an idle station dozes between ticks; an install starting up to
+ * 20 minutes into its window is the price, and windows are hours long.
+ */
+const IDLE_TICK_MS = 20 * 60 * 1000;
+
+/** Ticking forever, at whatever cadence the station's activity earns. Defensive
+ * throughout: a tick must never throw, or the chain dies with it and the
+ * station silently stops checking. */
 export function startAutoUpdateScheduler(): void {
   if (timer) return;
-  timer = setInterval(() => {
+  const tick = () => {
     runAutoUpdateTick(process.cwd()).catch((e) => {
       console.warn("[auto-update] tick failed:", e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200));
     });
-  }, 60 * 1000);
+    // Cadence for the NEXT tick, read live: an admin saving a window is
+    // active, so the faster cadence is already in force when it matters.
+    import("./activity").then(
+      ({ anyoneActive }) => {
+        timer = setTimeout(tick, anyoneActive() ? ACTIVE_TICK_MS : IDLE_TICK_MS);
+      },
+      () => {
+        timer = setTimeout(tick, ACTIVE_TICK_MS);
+      }
+    );
+  };
+  timer = setTimeout(tick, ACTIVE_TICK_MS);
 }

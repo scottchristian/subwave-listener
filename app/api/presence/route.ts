@@ -3,6 +3,7 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
 import { displayEmail, displayName } from "@/lib/pii";
+import { noteActivity } from "@/lib/activity";
 
 // Presence: who actually has the app open right now. Auth session rows live
 // for weeks after the tab closes, so they can't answer this — instead every
@@ -24,6 +25,9 @@ export async function GET() {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const now = new Date();
+  // Memory stamp for the background loops — they gate polling on this rather
+  // than asking the database, because the question would keep it awake.
+  noteActivity(now.getTime());
   await prisma.presenceHeartbeat.upsert({
     where: { userId: me.id },
     update: { lastSeen: now },

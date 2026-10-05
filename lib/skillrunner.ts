@@ -21,27 +21,33 @@ import { getSubwaveConfig, subwaveAdminAuth } from "@/lib/subwave";
 /** Ceiling on one run. Past this we stop waiting but cannot cancel upstream. */
 const RUN_TIMEOUT_MS = 200_000;
 
-/** How often the loop looks for work while idle. */
+/** How often the loop looks for work while someone has the app open. */
 const IDLE_POLL_MS = 2000;
 
 /**
  * How long the loop sleeps with an empty queue when nobody has the app open.
  * The queue is only ever filled by a signed-in user tapping a skill, and that
  * tap wakes the loop immediately (see nudgeSkillWorker) — so an empty station
- * has no reason to ask the database every 2 seconds. One check every few
- * minutes is the cost of noticing a restart-stranded row.
+ * makes no database queries at all until woken. The sleep still expires on its
+ * own as a backstop; the loop then re-checks activity from memory (free) and
+ * only claims when someone is actually here.
  */
 const IDLE_EMPTY_MS = 5 * 60 * 1000;
 
 // Survive dev hot-reload: without a global handle a module reload would start a
 // second loop and two workers would race for the same row.
 const STATE = Symbol.for("subwave.skillWorker");
-type WorkerState = { started: boolean; processing: boolean; wake: (() => void) | null };
+type WorkerState = { started: boolean; processing: boolean; wake: (() => void) | null; nudged: boolean };
 const g = globalThis as unknown as Record<symbol, WorkerState | undefined>;
-const state: WorkerState = g[STATE] ?? (g[STATE] = { started: false, processing: false, wake: null });
+const state: WorkerState = g[STATE] ?? (g[STATE] = { started: false, processing: false, wake: null, nudged: false });
 
-/** Wake the loop early instead of waiting out the idle poll. */
+/**
+ * Wake the loop early instead of waiting out the idle sleep. Sets a flag the
+ * loop consumes, so a nudge that lands mid-run is not lost — the claim after
+ * this run still happens.
+ */
 export function nudgeSkillWorker() {
+  state.nudged = true;
   state.wake?.();
 }
 
@@ -161,16 +167,19 @@ async function loop() {
     if (state.processing) break;
     state.processing = true;
     try {
-      const job = await claimNext();
+      // A nudge means someone just tapped a skill — look regardless of what
+      // activity says, because their heartbeat may not have landed yet. The
+      // tap itself proves a user is present.
+      const nudged = state.nudged;
+      state.nudged = false;
+      const { anyoneActive } = await import("./activity");
+      const active = anyoneActive();
+      // Idle and unwoken: ask nothing. The activity answer is process memory,
+      // so this branch costs zero database queries — the sleep expiry below
+      // re-checks the same free answer as its backstop.
+      const job = nudged || active ? await claimNext() : null;
       if (job) await executeRun(job);
-      else {
-        // Nobody here, nothing queued: sleep long. A nudge (someone just
-        // enqueued) cuts any sleep short and the claim above runs regardless
-        // of the activity answer — the tap itself proves a user is present,
-        // even if their heartbeat has not landed yet.
-        const { anyoneActive } = await import("./activity");
-        await sleep((await anyoneActive()) ? IDLE_POLL_MS : IDLE_EMPTY_MS);
-      }
+      else await sleep(active ? IDLE_POLL_MS : IDLE_EMPTY_MS);
       if (failures > 0) {
         failures = 0;
         if (reported) console.log("[skills] database reachable again");
