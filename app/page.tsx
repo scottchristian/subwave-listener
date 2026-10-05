@@ -7,6 +7,7 @@ import LoadingDots from "@/app/components/LoadingDots";
 import LikeButton from "@/app/components/LikeButton";
 import LikedSongsPanel from "@/app/components/LikedSongsPanel";
 import SkillsPanel from "@/app/components/SkillsPanel";
+import SchedulePanel from "@/app/components/SchedulePanel";
 import { STATION } from "@/lib/station";
 import { plog, setVerbose } from "@/lib/log";
 import { canSkipAsListener, parseSkipVisibility, type SkipVisibility } from "@/lib/skipvisibility";
@@ -286,6 +287,9 @@ export default function Home() {
   // Likes open as an overlay so the <audio> element stays mounted and the
   // stream keeps playing. (Navigating to /likes unmounts the player.)
   const [showLikes, setShowLikes] = useState(false);
+  // Schedule popup from the account menu. Mounts fresh each open, so the
+  // day always starts on today.
+  const [showSchedule, setShowSchedule] = useState(false);
   // Header account menu + self nickname.
   const [userMenuOpen, setUserMenuOpen] = useState(false);
 
@@ -2113,6 +2117,9 @@ export default function Home() {
           >
             <UserIcon />
             Account
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "transform 0.2s ease", transform: userMenuOpen ? "rotate(180deg)" : "none" }}>
+              <path d="M6 9l6 6 6-6" />
+            </svg>
           </button>
           {userMenuOpen && (
             <>
@@ -2136,6 +2143,7 @@ export default function Home() {
                   <button id="btn-save-my-nickname" onClick={saveMyNickname} className="primary-btn" style={{ width: "auto", padding: "0.5rem 0.75rem", fontSize: "0.8rem" }}>Save</button>
                 </div>
                 <button id="btn-liked-songs" ref={el => { stepRefs.current[8] = el; }} onClick={() => { setUserMenuOpen(false); setShowLikes(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer", position: tourStep === 8 ? "relative" : "static", zIndex: tourStep === 8 ? 1000 : 1 }}>Liked Songs</button>
+                <button id="btn-shows" onClick={() => { setUserMenuOpen(false); setShowSchedule(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>Shows</button>
                 {/* Only rendered when the grant exists. Without it the entry is
                     absent from the DOM entirely — a hidden control rather than a
                     disabled one, so the feature is unknown to other listeners.
@@ -2807,6 +2815,16 @@ export default function Home() {
               )}
             </div>
           </div>
+        </div>
+      )}
+      {showSchedule && (
+        <div id="schedule-overlay-bg" onClick={() => setShowSchedule(false)} className="overlay-bg-enter" style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 2000, overflowY: "auto", padding: "2rem 1rem" }}>
+          <SchedulePanel
+            scheduleData={scheduleData}
+            resolveAvatar={getAvatarSrc}
+            onHost={(pick) => { setShowSchedule(false); setShowHost(pick); }}
+            onClose={() => setShowSchedule(false)}
+          />
         </div>
       )}
       {showSkills && (
