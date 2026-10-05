@@ -179,7 +179,22 @@ async function loop() {
       // re-checks the same free answer as its backstop.
       const job = nudged || active ? await claimNext() : null;
       if (job) await executeRun(job);
-      else await sleep(active ? IDLE_POLL_MS : IDLE_EMPTY_MS);
+      else {
+        if (!active) {
+          // Going quiet for minutes: hang up first, or the pool's idle
+          // sockets hold the database awake on their own. Closing sockets is
+          // not a query, so this costs the sleep window nothing. Never under
+          // a running job: that is a manual update/rollback mid-pipeline,
+          // and its backup queries need the pool.
+          const { readJob } = await import("./update");
+          const job = await readJob(process.cwd()).catch(() => null);
+          if (job?.status !== "running") {
+            const { disconnectDb } = await import("./prisma");
+            await disconnectDb().catch(() => {});
+          }
+        }
+        await sleep(active ? IDLE_POLL_MS : IDLE_EMPTY_MS);
+      }
       if (failures > 0) {
         failures = 0;
         if (reported) console.log("[skills] database reachable again");

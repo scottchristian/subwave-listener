@@ -145,8 +145,29 @@ export async function readAutoUpdateSettings(): Promise<AutoUpdateSettings> {
  * scratch station). Returns what it decided; starts the pipeline without
  * awaiting when the answer is yes.
  */
+// Last seen auto-update switch, so an idle station with the feature off costs
+// zero queries instead of one settings read per tick. Only the admin panel
+// flips the switch, and opening it is activity — so by the time anyone could
+// have changed it, the fast cadence is already reading fresh again.
+let lastKnownAutoEnabled: boolean | null = null;
+
 export async function runAutoUpdateTick(appDir: string): Promise<AutoTickDecision> {
+  const { anyoneActive } = await import("./activity");
+  const active = anyoneActive();
+  if (!active && lastKnownAutoEnabled === false) {
+    // Off and nobody here: ask nothing, and hang up the pool — lingering
+    // sockets count as "in use" and hold the database awake on their own.
+    // Never under a running job (manual update/rollback mid-pipeline).
+    const { readJob } = await import("./update");
+    const job = await readJob(appDir).catch(() => null);
+    if (job?.status !== "running") {
+      const { disconnectDb } = await import("./prisma");
+      await disconnectDb();
+    }
+    return { start: false, reason: "idle and auto-update off" };
+  }
   const settings = await readAutoUpdateSettings();
+  lastKnownAutoEnabled = settings.enabled;
   const [tz, status, listeners, job] = await Promise.all([
     resolveStationTimezone(),
     getUpdateStatus().catch(() => null),
@@ -284,9 +305,32 @@ const IDLE_TICK_MS = 20 * 60 * 1000;
 export function startAutoUpdateScheduler(): void {
   if (timer) return;
   const tick = () => {
-    runAutoUpdateTick(process.cwd()).catch((e) => {
-      console.warn("[auto-update] tick failed:", e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200));
-    });
+    runAutoUpdateTick(process.cwd())
+      .then(async (decision) => {
+        // The tick just queried: hang up unless someone is here. Without
+        // this the pool's idle sockets alone hold the database awake.
+        // Two hands-off cases: a pipeline just launched (it is using the
+        // pool right now — disconnecting under it would fail its backup),
+        // and a job already running (a manual update/rollback whose operator
+        // may have closed the tab mid-flight).
+        if (decision.start) return;
+        try {
+          const [{ anyoneActive }, { readJob }, { disconnectDb }] = await Promise.all([
+            import("./activity"),
+            import("./update"),
+            import("./prisma"),
+          ]);
+          if (anyoneActive()) return;
+          const job = await readJob(process.cwd()).catch(() => null);
+          if (job?.status === "running") return;
+          await disconnectDb();
+        } catch {
+          // Housekeeping must never break the chain below.
+        }
+      })
+      .catch((e) => {
+        console.warn("[auto-update] tick failed:", e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200));
+      });
     // Cadence for the NEXT tick, read live: an admin saving a window is
     // active, so the faster cadence is already in force when it matters.
     import("./activity").then(
