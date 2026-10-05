@@ -106,6 +106,7 @@ async function hasSession(req: NextRequest): Promise<boolean> {
   const now = Date.now();
   const hit = sessionCache.get(token);
   if (hit && now - hit.at < (hit.ok ? SESSION_CACHE_MS : SESSION_NEGATIVE_MS)) {
+    if (hit.ok) noteDbSuccess();
     return hit.ok;
   }
   const remember = (ok: boolean) => {
@@ -117,16 +118,46 @@ async function hasSession(req: NextRequest): Promise<boolean> {
   };
 
   const { default: prisma } = await import("@/lib/prisma");
-  const session = await prisma.session
-    .findUnique({ where: { sessionToken: token }, select: { expires: true } })
-    .catch(() => null);
+  let session;
+  try {
+    session = await prisma.session.findUnique({ where: { sessionToken: token }, select: { expires: true } });
+  } catch {
+    // The database itself is unreachable (asleep, paused, gone) — not "no
+    // session". Start the wake loop so this visit helps bring it back, and
+    // count it: enough consecutive failures means the unavailable page.
+    const { wakeDbInBackground } = await import("@/lib/dbwake");
+    wakeDbInBackground();
+    noteDbFailure();
+    remember(false);
+    return false;
+  }
   if (!session) {
     remember(false);
     return false;
   }
+  noteDbSuccess();
   const ok = session.expires.getTime() > Date.now();
   remember(ok);
   return ok;
+}
+
+/**
+ * Consecutive session-lookup database failures, across requests. A handful in
+ * a row means the database is down rather than one query hiccuping — past
+ * that point, bouncing logged-in users to the sign-in prompt lies (sign-in
+ * cannot work either), so they get the unavailable page instead. Anonymous
+ * visitors (no cookie at all) never count: nothing is wrong for them yet.
+ */
+let dbFailStreak = 0;
+const DB_DEAD_AFTER = 5;
+function noteDbFailure(): void {
+  dbFailStreak++;
+}
+function noteDbSuccess(): void {
+  dbFailStreak = 0;
+}
+function dbLooksDead(): boolean {
+  return dbFailStreak >= DB_DEAD_AFTER;
 }
 
 export async function proxy(req: NextRequest) {
@@ -152,6 +183,19 @@ export async function proxy(req: NextRequest) {
   // treats 401 as "not signed in" everywhere it matters.
   if (pathname.startsWith("/api/")) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  // The database itself is down (not merely "no session"): the sign-in prompt
+  // would be a lie, because signing in cannot work either. The unavailable
+  // page explains, retries on its own, and sends them back when it lifts.
+  // Only for callers who presented a session cookie — anonymous visitors keep
+  // the normal front page, which needs no database to ask them to sign in.
+  const presentedToken = COOKIE_NAMES.some((name) => req.cookies.get(name)?.value);
+  if (presentedToken && dbLooksDead()) {
+    const url = req.nextUrl.clone();
+    url.pathname = "/unavailable";
+    url.search = "";
+    return NextResponse.redirect(url);
   }
 
   // A page: send them to the front page, which carries the sign-in button.

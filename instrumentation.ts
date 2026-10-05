@@ -31,6 +31,16 @@ export async function register() {
     console.warn("[boot] database keep-alive not started:", message(err));
   }
 
+  // A hibernated database wakes on traffic, slowly. Start knocking now so a
+  // station rebooted against a sleeping database is already awake by the
+  // time the first listener arrives — fire-and-forget, never blocks boot.
+  try {
+    const { wakeDbInBackground } = await import("./lib/dbwake");
+    wakeDbInBackground();
+  } catch (err) {
+    console.warn("[boot] database wake loop not started:", message(err));
+  }
+
   try {
     // Same reasoning: a skill run outlives the request that asked for it, so the
     // executor has to live somewhere longer-lived than a route handler.
