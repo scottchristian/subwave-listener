@@ -4,6 +4,7 @@ import { authOptions } from "../auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
 import { STATION } from "@/lib/station";
 import { parseSkipVisibility } from "@/lib/skipvisibility";
+import { parseStillListening, STILL_LISTENING_KEYS } from "@/lib/still-listening";
 
 export async function GET() {
   try {
@@ -15,6 +16,7 @@ export async function GET() {
             "stationPassword", "maintenanceMode", "maintenanceMessage",
             "verboseLogging", "explicitSuffix", "skipVisibility",
             "headerListeners", "headerWeather", "headerVibe",
+            STILL_LISTENING_KEYS.enabled, STILL_LISTENING_KEYS.minutes, STILL_LISTENING_KEYS.reminder,
           ],
         },
       },
@@ -48,6 +50,11 @@ export async function GET() {
       headerListeners: (get("headerListeners") ?? "true") !== "false",
       headerWeather: (get("headerWeather") ?? "true") !== "false",
       headerVibe: (get("headerVibe") ?? "true") !== "false",
+      stillListening: parseStillListening({
+        enabled: get(STILL_LISTENING_KEYS.enabled),
+        minutes: get(STILL_LISTENING_KEYS.minutes),
+        reminderMinutes: get(STILL_LISTENING_KEYS.reminder),
+      }),
       ...(stationPassword ? { stationPassword } : {}),
     });
   } catch (error) {

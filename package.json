@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "check": "npm run check:pii && npm run check:refs && npm run check:links && npm run check:setup && npm run check:version && npm run check:address && npm run check:request && npm run check:duration && npm run check:backup && npm run check:update && npm run check:auto && npm run check:activity",
+    "check": "npm run check:pii && npm run check:refs && npm run check:links && npm run check:setup && npm run check:version && npm run check:address && npm run check:request && npm run check:duration && npm run check:backup && npm run check:update && npm run check:auto && npm run check:activity && npm run check:still-listening",
     "check:pii": "node scripts/check-pii.mjs",
     "check:refs": "node scripts/check-station-refs.mjs",
     "check:links": "node scripts/check-links.mjs",
@@ -19,7 +19,8 @@
     "check:backup": "TEST_PRISMA_CLIENT=\"$PWD/.test-client\" node --import ./scripts/test-register.mjs scripts/check-backup.mts",
     "check:update": "node --import ./scripts/test-register.mjs scripts/check-update.mts",
     "check:auto": "node --import ./scripts/test-register.mjs scripts/check-auto-update.mts",
-    "check:activity": "node --import ./scripts/test-register.mjs scripts/check-activity.mts"
+    "check:activity": "node --import ./scripts/test-register.mjs scripts/check-activity.mts",
+    "check:still-listening": "node --import ./scripts/test-register.mjs scripts/check-still-listening.mts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",

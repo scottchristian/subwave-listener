@@ -10,6 +10,14 @@ import SkillsPanel from "@/app/components/SkillsPanel";
 import { STATION } from "@/lib/station";
 import { plog, setVerbose } from "@/lib/log";
 import { canSkipAsListener, parseSkipVisibility, type SkipVisibility } from "@/lib/skipvisibility";
+import {
+  parseStillListening,
+  stillListeningPhase,
+  stopAtFrom,
+  extendStop,
+  STILL_LISTENING_DEFAULTS,
+  type StillListeningConfig,
+} from "@/lib/still-listening";
 import { APP_VERSION, REPO_URL, SUBWAVE_URL } from "@/lib/version";
 import { resolveTrackDuration, isDurationDiscredited } from "@/lib/trackduration";
 // The request ladder: what we tell a listener while the booth has not answered.
@@ -23,6 +31,31 @@ import {
 // renaming their station should not rename the project, and the version footer is
 // where the two would otherwise get confused.
 const APP_NAME = "Subwave Listener";
+
+function playReminderChime(): void {
+  try {
+    const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx: AudioContext = new Ctx();
+    const t0 = ctx.currentTime;
+    [523.25, 523.25, 659.25].forEach((freq, i) => {
+      const t = t0 + i * 0.35;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.25, t + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+      osc.start(t);
+      osc.stop(t + 0.32);
+    });
+    setTimeout(() => ctx.close().catch(() => {}), 1500);
+  } catch {
+    // Silence is acceptable — the popup carries the message either way.
+  }
+}
 
 // Minimal icons
 const PlayIcon = () => (
@@ -146,6 +179,14 @@ const SongCountdown = ({ nowPlaying, bufferSeconds, duration }: { nowPlaying: an
 export default function Home() {
   const { data: session, status } = useSession();
   const [isPlaying, setIsPlaying] = useState(false);
+  // "Are you still listening?" Armed when play starts: the stop lands one
+  // window out, the reminder one offset before it. Confirming pushes the stop
+  // out by a whole window (never restarts the clock from the press).
+  const [slCfg, setSlCfg] = useState<StillListeningConfig>(STILL_LISTENING_DEFAULTS);
+  const slStopAt = useRef<number | null>(null);
+  const slReminded = useRef(false);
+  const slAutoStopped = useRef(false);
+  const [slPopup, setSlPopup] = useState<null | "remind" | "stopped">(null);
   const [isLoading, setIsLoading] = useState(false);
   const [stationData, setStationData] = useState<any>(null);
   const [appStateData, setAppStateData] = useState<any>(null);
@@ -506,6 +547,7 @@ export default function Home() {
        if (typeof d.verboseLogging === "boolean") setVerbose(d.verboseLogging);
        if (typeof d.explicitSuffix === "boolean") setExplicitSuffix(d.explicitSuffix);
          if (d.skipVisibility) setSkipVisibility(parseSkipVisibility(d.skipVisibility));
+         if (d.stillListening) setSlCfg(parseStillListening(d.stillListening));
          if (typeof d.headerListeners === "boolean") setHeaderListeners(d.headerListeners);
          if (typeof d.headerWeather === "boolean") setHeaderWeather(d.headerWeather);
          if (typeof d.headerVibe === "boolean") setHeaderVibe(d.headerVibe);
@@ -534,7 +576,64 @@ export default function Home() {
     const id = setInterval(load, 15000);
     return () => clearInterval(id);
   }, [status]);
-  
+
+  // Arm the idle cutoff on play, disarm on manual stop. An automatic stop
+  // sets slAutoStopped first so this does not sweep the "stopped" popup away.
+  const slPrevPlaying = useRef(false);
+  useEffect(() => {
+    if (isPlaying && !slPrevPlaying.current) {
+      slPrevPlaying.current = true;
+      if (slCfg.enabled && slStopAt.current === null) {
+        slStopAt.current = stopAtFrom(Date.now(), slCfg.minutes);
+        slReminded.current = false;
+        slAutoStopped.current = false;
+        setSlPopup(null);
+      }
+    } else if (!isPlaying && slPrevPlaying.current) {
+      slPrevPlaying.current = false;
+      if (!slAutoStopped.current) {
+        slStopAt.current = null;
+        slReminded.current = false;
+        setSlPopup(null);
+      }
+      slAutoStopped.current = false;
+    }
+  }, [isPlaying, slCfg.enabled, slCfg.minutes]);
+
+  // One-second watch while playing: chime + popup at the reminder, stop at
+  // the end. Wall-clock on purpose — a stream left running in a buried tab is
+  // exactly what this is for.
+  useEffect(() => {
+    if (!isPlaying || !slCfg.enabled || slStopAt.current === null) return;
+    const id = setInterval(() => {
+      const stopAt = slStopAt.current;
+      if (stopAt === null) return;
+      const phase = stillListeningPhase(Date.now(), stopAt, slCfg.reminderMinutes * 60 * 1000);
+      if (phase === "remind" && !slReminded.current) {
+        slReminded.current = true;
+        playReminderChime();
+        setSlPopup("remind");
+      } else if (phase === "stop") {
+        slAutoStopped.current = true;
+        slStopAt.current = null;
+        slReminded.current = false;
+        setSlPopup("stopped");
+        if (intendedPlayRef.current) togglePlay();
+      }
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isPlaying, slCfg.enabled, slCfg.minutes, slCfg.reminderMinutes]);
+
+  const slConfirm = () => {
+    // Push the stop out by a whole window from the STOP, not the press: a
+    // 9:00 start on a 60-minute window, confirmed at 9:50, now stops at
+    // 11:00. The reminder re-arms ahead of the new stop on its own.
+    if (slStopAt.current === null) return;
+    slStopAt.current = extendStop(slStopAt.current, slCfg.minutes);
+    slReminded.current = false;
+    setSlPopup(null);
+  };
+
   const [tourStep, setTourStep] = useState(-1);
   const [tooltipStyle, setTooltipStyle] = useState<{ top?: string; bottom?: string; left?: string; right?: string; width?: string; transform?: string; opacity: number }>({ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', opacity: 0 });
   // Spotlight frame geometry around the tour target. One fixed frame glides
@@ -2623,6 +2722,44 @@ export default function Home() {
                   ) : null}
                 </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {slPopup && (
+        <div id="still-listening-overlay-bg" className="overlay-bg-enter" style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 2000, overflowY: "auto", padding: "2rem 1rem" }}>
+          <div id="still-listening-overlay-card" className="overlay-card-enter" style={{ maxWidth: "480px", width: "100%", margin: "0 auto", minHeight: "auto", padding: "0 0.5rem", position: "relative", zIndex: 2001 }}>
+            <div className="card">
+              {slPopup === "remind" ? (
+                <>
+                  <h2 style={{ fontSize: "1.3rem", margin: "0 0 0.75rem" }}>Still listening?</h2>
+                  <p style={{ fontSize: "0.95rem", marginBottom: "1rem" }}>
+                    The stream stops in about {slCfg.reminderMinutes} minute{slCfg.reminderMinutes === 1 ? "" : "s"}. One tap keeps it going for another {slCfg.minutes} minutes.
+                  </p>
+                  <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                    <button id="btn-still-listening-yes" className="primary-btn" style={{ width: "auto", padding: "0.55rem 1.25rem" }} onClick={slConfirm}>
+                      Yes, I&apos;m still listening
+                    </button>
+                    <button
+                      className="primary-btn"
+                      style={{ width: "auto", padding: "0.55rem 1.25rem", background: "rgba(255,255,255,0.1)", color: "#fff" }}
+                      onClick={() => { slAutoStopped.current = true; slStopAt.current = null; slReminded.current = false; setSlPopup("stopped"); if (intendedPlayRef.current) togglePlay(); }}
+                    >
+                      Stop now
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h2 style={{ fontSize: "1.3rem", margin: "0 0 0.75rem" }}>Stream stopped</h2>
+                  <p style={{ fontSize: "0.95rem", marginBottom: "1rem" }}>
+                    You were away, so the stream stopped to save the station bandwidth. Press play whenever you&apos;re back.
+                  </p>
+                  <button id="btn-still-listening-replay" className="primary-btn" style={{ width: "auto", padding: "0.55rem 1.25rem" }} onClick={() => { if (!intendedPlayRef.current) togglePlay(); }}>
+                    Play again
+                  </button>
+                </>
+              )}
             </div>
           </div>
         </div>

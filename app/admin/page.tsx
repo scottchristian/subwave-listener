@@ -18,6 +18,7 @@ import {
   parseSkipVisibility,
   type SkipVisibility,
 } from "@/lib/skipvisibility";
+import { parseStillListening, validateStillListening, STILL_LISTENING_KEYS } from "@/lib/still-listening";
 
 export default function AdminPage() {
   const { data: session, status } = useSession();
@@ -88,6 +89,13 @@ export default function AdminPage() {
   const [streamMode, setStreamMode] = useState<"relay" | "direct">("relay");
     // Who listeners get the Skip button. Admins always see it regardless.
     const [skipVisibility, setSkipVisibility] = useState<SkipVisibility>("solo");
+  // "Are you still listening?" Idle streams stop instead of playing to an
+  // empty room. Loaded with the rest of the settings, saved by the section.
+  const [slEnabled, setSlEnabled] = useState(false);
+  const [slMinutes, setSlMinutes] = useState("60");
+  const [slReminder, setSlReminder] = useState("10");
+  const [slMsg, setSlMsg] = useState("");
+  const [slBusy, setSlBusy] = useState(false);
   const [backendListeners, setBackendListeners] = useState<number | null>(null);
   const [backendBuffer, setBackendBuffer] = useState<number | null>(null);
   const [googleClientId, setGoogleClientId] = useState("");
@@ -324,6 +332,14 @@ export default function AdminPage() {
         if (sm) setStreamMode(sm.value === "direct" ? "direct" : "relay");
           const sv = settings.find((s: any) => s.key === "skipVisibility");
           if (sv) setSkipVisibility(parseSkipVisibility(sv.value));
+          const sl = parseStillListening({
+            enabled: settings.find((s: any) => s.key === STILL_LISTENING_KEYS.enabled)?.value,
+            minutes: settings.find((s: any) => s.key === STILL_LISTENING_KEYS.minutes)?.value,
+            reminderMinutes: settings.find((s: any) => s.key === STILL_LISTENING_KEYS.reminder)?.value,
+          });
+          setSlEnabled(sl.enabled);
+          setSlMinutes(String(sl.minutes));
+          setSlReminder(String(sl.reminderMinutes));
         if (STATION.backendUrl) {
           fetch(`${STATION.backendUrl}/api/now-playing`)
             .then(r => r.json())
@@ -720,6 +736,39 @@ export default function AdminPage() {
       setUpdateMsg(`Rollback failed to start: ${(e as Error)?.message || "unknown error"}`);
     } finally {
       setUpdateBusy(false);
+    }
+  };
+
+  const saveStillListening = async () => {
+    const v = validateStillListening(slMinutes, slReminder);
+    if (!v.ok) {
+      setSlMsg(v.error);
+      return;
+    }
+    setSlBusy(true);
+    setSlMsg("");
+    try {
+      for (const [key, value] of [
+        [STILL_LISTENING_KEYS.enabled, slEnabled ? "true" : "false"],
+        [STILL_LISTENING_KEYS.minutes, String(v.minutes)],
+        [STILL_LISTENING_KEYS.reminder, String(v.reminderMinutes)],
+      ] as const) {
+        const res = await fetch("/api/admin/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key, value }),
+        });
+        if (!res.ok) throw new Error(`could not save ${key}`);
+      }
+      setSlMsg(
+        slEnabled
+          ? `On — streams stop after ${v.minutes} minutes idle, with a reminder ${v.reminderMinutes} minutes before.`
+          : "Off."
+      );
+    } catch (e) {
+      setSlMsg(`Could not save: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setSlBusy(false);
     }
   };
 
@@ -2553,6 +2602,72 @@ export default function AdminPage() {
           <div style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
             <span>{SKIP_VISIBILITY_OPTIONS.find((o) => o.value === skipVisibility)?.blurb}</span>
             <span>Admins always see Skip — this only governs listeners. Takes effect on their next page load.</span>
+          </div>
+        </CollapsibleSection>
+
+        {/* Idle listening cutoff. The player stops itself after the window and
+            offers one tap to extend it — a stream nobody is hearing stops
+            costing the station bandwidth. */}
+        <CollapsibleSection
+          id="section-still-listening"
+          title={<>Are You Still Listening</>}
+          summary={<>Stop streams left playing to an empty room. Listeners get a reminder first, and one tap adds a full window.</>}
+          hidden={activeTab !== "station"}
+        >
+          <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <label className="check" style={{ fontSize: "0.9rem", fontWeight: 600 }}>
+              <input
+                id="input-still-listening-enabled"
+                type="checkbox"
+                checked={slEnabled}
+                onChange={(e) => setSlEnabled(e.target.checked)}
+              />
+              Stop idle streams
+            </label>
+            <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+              <div>
+                <label htmlFor="input-still-listening-minutes" style={{ display: "block", marginBottom: "0.5rem" }}>Listening time (minutes)</label>
+                <input
+                  id="input-still-listening-minutes"
+                  type="number"
+                  inputMode="numeric"
+                  min={5}
+                  max={720}
+                  value={slMinutes}
+                  onChange={(e) => setSlMinutes(e.target.value)}
+                  className="input-field"
+                  style={{ width: "140px" }}
+                />
+              </div>
+              <div>
+                <label htmlFor="input-still-listening-reminder" style={{ display: "block", marginBottom: "0.5rem" }}>Remind me before (minutes)</label>
+                <input
+                  id="input-still-listening-reminder"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  value={slReminder}
+                  onChange={(e) => setSlReminder(e.target.value)}
+                  className="input-field"
+                  style={{ width: "140px" }}
+                />
+              </div>
+            </div>
+            <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>
+              A stream left running stops on its own when the time runs out. The reminder chimes first, and one tap pushes the stop out by a full window.
+            </div>
+            <div>
+              <button
+                id="btn-save-still-listening"
+                className="primary-btn"
+                style={{ width: "150px", padding: "0.5rem" }}
+                onClick={saveStillListening}
+                disabled={slBusy}
+              >
+                {slBusy ? "Saving…" : "Save"}
+              </button>
+            </div>
+            {slMsg && <div id="still-listening-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{slMsg}</div>}
           </div>
         </CollapsibleSection>
         </div>
