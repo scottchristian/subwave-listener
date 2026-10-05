@@ -1,4 +1,6 @@
 import { PrismaClient } from "@prisma/client";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 import { providerFromEnv } from "./db-provider";
 
 const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
@@ -20,15 +22,87 @@ if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
  */
 const IDLE_HANGUP_MS = 15 * 60 * 1000;
 const SWEEP_MS = 5 * 60 * 1000;
-type Sweepable = { __lastQueryAt?: number; __sweeperStarted?: boolean };
+type Sweepable = {
+  __lastQueryAt?: number;
+  __sweeperStarted?: boolean;
+  __queryCounts?: Record<string, { count: number; lastAt: number }>;
+};
 const sweepable = prisma as unknown as Sweepable;
 // Note: $use does not see $queryRaw — only the keepalive ping uses raw, and
 // it is off unless the operator arms it (in which case sleeping is not the
 // goal anyway).
 prisma.$use(async (params, next) => {
   sweepable.__lastQueryAt = Date.now();
+  // Per-table tally for the activity endpoint: when the dashboard says
+  // Running but nobody is here, this names the exact query that did it.
+  // Counts only — no args, no rows, nothing personal.
+  const key = `${(params as any).model || "raw"}.${(params as any).action || "query"}`;
+  const tally = (sweepable.__queryCounts ??= {});
+  const slot = (tally[key] ??= { count: 0, lastAt: 0 });
+  slot.count++;
+  slot.lastAt = Date.now();
+  // ...and one line in the shared audit file, because module graphs differ
+  // per runtime (proxy, routes, instrumentation each hold their own client)
+  // while the filesystem is the same for all of them. Local append only —
+  // never the database. Trimmed on read, not on write.
+  try {
+    appendFileSync(auditPath(), `${Date.now()} ${key}\n`);
+  } catch {
+    // Observability must never break the query it observes.
+  }
   return next(params);
 });
+
+/** Shared query audit all runtimes append to. Local disk, never the database. */
+export function auditPath(): string {
+  return path.join(process.cwd(), "data", "query-audit.log");
+}
+
+const AUDIT_KEEP_LINES = 300;
+
+/** Most recent queries across every runtime, newest last. Trims the file. */
+export function readQueryAudit(): { at: string; query: string }[] {
+  let lines: string[] = [];
+  try {
+    lines = readFileSync(auditPath(), "utf8").split("\n").filter(Boolean);
+  } catch {
+    return [];
+  }
+  if (lines.length > AUDIT_KEEP_LINES * 2) {
+    try {
+      writeFileSync(auditPath(), lines.slice(-AUDIT_KEEP_LINES).join("\n") + "\n");
+    } catch {}
+    lines = lines.slice(-AUDIT_KEEP_LINES);
+  }
+  return lines.slice(-AUDIT_KEEP_LINES).map((l) => {
+    const sp = l.indexOf(" ");
+    return {
+      at: new Date(Number(l.slice(0, sp))).toISOString(),
+      query: l.slice(sp + 1),
+    };
+  });
+}
+
+/**
+ * What has this process asked the database, since boot. Served to admins at
+ * /api/admin/database/activity — the answer to "who is keeping it awake".
+ */
+export function dbQueryStats(): {
+  tables: Record<string, { count: number; lastAt: string | null }>;
+  totalQueries: number;
+  lastQueryAt: string | null;
+} {
+  const tally = sweepable.__queryCounts ?? {};
+  const tables: Record<string, { count: number; lastAt: string | null }> = {};
+  let totalQueries = 0;
+  let last = 0;
+  for (const [k, v] of Object.entries(tally)) {
+    tables[k] = { count: v.count, lastAt: v.lastAt ? new Date(v.lastAt).toISOString() : null };
+    totalQueries += v.count;
+    if (v.lastAt > last) last = v.lastAt;
+  }
+  return { tables, totalQueries, lastQueryAt: last ? new Date(last).toISOString() : null };
+}
 if (!sweepable.__sweeperStarted) {
   sweepable.__sweeperStarted = true;
   const sweep = setInterval(() => {
