@@ -24,6 +24,15 @@ const RUN_TIMEOUT_MS = 200_000;
 /** How often the loop looks for work while idle. */
 const IDLE_POLL_MS = 2000;
 
+/**
+ * How long the loop sleeps with an empty queue when nobody has the app open.
+ * The queue is only ever filled by a signed-in user tapping a skill, and that
+ * tap wakes the loop immediately (see nudgeSkillWorker) — so an empty station
+ * has no reason to ask the database every 2 seconds. One check every few
+ * minutes is the cost of noticing a restart-stranded row.
+ */
+const IDLE_EMPTY_MS = 5 * 60 * 1000;
+
 // Survive dev hot-reload: without a global handle a module reload would start a
 // second loop and two workers would race for the same row.
 const STATE = Symbol.for("subwave.skillWorker");
@@ -154,7 +163,14 @@ async function loop() {
     try {
       const job = await claimNext();
       if (job) await executeRun(job);
-      else await sleep(IDLE_POLL_MS);
+      else {
+        // Nobody here, nothing queued: sleep long. A nudge (someone just
+        // enqueued) cuts any sleep short and the claim above runs regardless
+        // of the activity answer — the tap itself proves a user is present,
+        // even if their heartbeat has not landed yet.
+        const { anyoneActive } = await import("./activity");
+        await sleep((await anyoneActive()) ? IDLE_POLL_MS : IDLE_EMPTY_MS);
+      }
       if (failures > 0) {
         failures = 0;
         if (reported) console.log("[skills] database reachable again");
