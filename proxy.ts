@@ -79,7 +79,19 @@ const COOKIE_NAMES = ["__Secure-next-auth.session-token", "next-auth.session-tok
  * user, which locked the admin dashboard while looking correctly closed to
  * anonymous callers. So the cookie value is looked up the way the app itself
  * looks it up: as a sessionToken row.
+ *
+ * The answer is cached in memory (60s per token) because this gate runs on
+ * EVERY page and API request — without it, a single open tab costs a session
+ * lookup every 15s around the clock, which is exactly the idle database
+ * traffic the free plan forbids. The trade is a ≤60s delay on revocation:
+ * routes re-verify via getServerSession themselves, so a revoked caller that
+ * slips the gate still gets a 401 where it matters. Signing out clears the
+ * entry (see below), so that path is immediate.
  */
+const sessionCache = new Map<string, { ok: boolean; at: number }>();
+const SESSION_CACHE_MS = 60_000;
+const SESSION_NEGATIVE_MS = 5_000;
+const SESSION_CACHE_MAX = 1000;
 async function hasSession(req: NextRequest): Promise<boolean> {
   let token: string | undefined;
   for (const name of COOKIE_NAMES) {
@@ -91,17 +103,46 @@ async function hasSession(req: NextRequest): Promise<boolean> {
   }
   if (!token) return false;
 
+  const now = Date.now();
+  const hit = sessionCache.get(token);
+  if (hit && now - hit.at < (hit.ok ? SESSION_CACHE_MS : SESSION_NEGATIVE_MS)) {
+    return hit.ok;
+  }
+  const remember = (ok: boolean) => {
+    if (sessionCache.size >= SESSION_CACHE_MAX) {
+      const oldest = sessionCache.keys().next();
+      if (!oldest.done) sessionCache.delete(oldest.value);
+    }
+    sessionCache.set(token, { ok, at: Date.now() });
+  };
+
   const { default: prisma } = await import("@/lib/prisma");
   const session = await prisma.session
     .findUnique({ where: { sessionToken: token }, select: { expires: true } })
     .catch(() => null);
-  if (!session) return false;
-  return session.expires.getTime() > Date.now();
+  if (!session) {
+    remember(false);
+    return false;
+  }
+  const ok = session.expires.getTime() > Date.now();
+  remember(ok);
+  return ok;
 }
 
 export async function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;
-  if (isPublic(pathname)) return NextResponse.next();
+  if (isPublic(pathname)) {
+    // Auth routes mutate sessions (sign-out deletes the row): drop any cached
+    // answer for the presented token so the gate never contradicts what just
+    // happened. Runs rarely — only the login flow comes here.
+    if (pathname.startsWith("/api/auth")) {
+      for (const name of COOKIE_NAMES) {
+        const v = req.cookies.get(name)?.value;
+        if (v) sessionCache.delete(v);
+      }
+    }
+    return NextResponse.next();
+  }
 
   if (await isSetupOpen(pathname)) return NextResponse.next();
 

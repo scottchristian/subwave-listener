@@ -10,6 +10,7 @@ import type { UpdateJob } from "@/lib/update";
 import DatabasePanel from "./DatabasePanel";
 import CollapsibleSection from "./CollapsibleSection";
 import HeaderToggle from "./HeaderToggle";
+import { shouldHeartbeat } from "@/lib/heartbeat";
 import TimeSelect from "./TimeSelect";
 import UpdateModal from "./UpdateModal";
 import { formatTimeOfDay, defaultHour12 } from "@/lib/update-time";
@@ -29,6 +30,9 @@ export default function AdminPage() {
   const [signedInUsers, setSignedInUsers] = useState<any[]>([]);
   const [streamingUsers, setStreamingUsers] = useState<any[]>([]);
   const loadPresence = () => {
+    // Same rule as the player: a buried, untouched admin tab is not using
+    // anything, so it sends no heartbeat and the database can sleep.
+    if (!shouldHeartbeat(false)) return;
     fetch("/api/presence")
       .then(r => r.json())
       .then(d => {

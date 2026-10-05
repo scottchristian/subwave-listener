@@ -10,6 +10,7 @@ import SkillsPanel from "@/app/components/SkillsPanel";
 import { STATION } from "@/lib/station";
 import { plog, setVerbose } from "@/lib/log";
 import { canSkipAsListener, parseSkipVisibility, type SkipVisibility } from "@/lib/skipvisibility";
+import { shouldHeartbeat } from "@/lib/heartbeat";
 import {
   parseStillListening,
   stillListeningPhase,
@@ -567,6 +568,10 @@ export default function Home() {
   useEffect(() => {
     if (status !== "authenticated") return;
     const load = () => {
+      // No heartbeat from a buried, silent, untouched tab — that write every
+      // 15s is what keeps the database awake all night. Playing audio always
+      // counts, even hidden: listening from a pocket is using.
+      if (!shouldHeartbeat(isPlaying)) return;
       fetch("/api/presence")
         .then(r => r.json())
         .then(d => { if (typeof d.signedIn === "number") setSignedInCount(d.signedIn); })
@@ -575,7 +580,7 @@ export default function Home() {
     load();
     const id = setInterval(load, 15000);
     return () => clearInterval(id);
-  }, [status]);
+  }, [status, isPlaying]);
 
   // Arm the idle cutoff on play, disarm on manual stop. An automatic stop
   // sets slAutoStopped first so this does not sweep the "stopped" popup away.
