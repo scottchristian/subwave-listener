@@ -7,7 +7,7 @@
     "build": "next build",
     "start": "next start",
     "typecheck": "tsc --noEmit",
-    "check": "npm run check:pii && npm run check:refs && npm run check:links && npm run check:setup && npm run check:version && npm run check:address && npm run check:request && npm run check:duration && npm run check:backup && npm run check:update && npm run check:auto && npm run check:activity && npm run check:still-listening && npm run check:heartbeat && npm run check:presence-live && npm run check:schedule-run",
+    "check": "npm run check:pii && npm run check:refs && npm run check:links && npm run check:setup && npm run check:version && npm run check:address && npm run check:request && npm run check:duration && npm run check:backup && npm run check:update && npm run check:auto && npm run check:activity && npm run check:still-listening && npm run check:heartbeat && npm run check:presence-live && npm run check:schedule-run && npm run check:session-cache",
     "check:pii": "node scripts/check-pii.mjs",
     "check:refs": "node scripts/check-station-refs.mjs",
     "check:links": "node scripts/check-links.mjs",
@@ -23,7 +23,8 @@
     "check:still-listening": "node --import ./scripts/test-register.mjs scripts/check-still-listening.mts",
     "check:heartbeat": "node --import ./scripts/test-register.mjs scripts/check-heartbeat.mts",
     "check:presence-live": "node --import ./scripts/test-register.mjs scripts/check-presence-live.mts",
-    "check:schedule-run": "node --import ./scripts/test-register.mjs scripts/check-schedule-run.mts"
+    "check:schedule-run": "node --import ./scripts/test-register.mjs scripts/check-schedule-run.mts",
+    "check:session-cache": "node --import ./scripts/test-register.mjs scripts/check-session-cache.mts"
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",

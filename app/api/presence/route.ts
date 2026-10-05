@@ -1,10 +1,8 @@
-import { NextResponse } from "next/server";
-import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/app/api/auth/[...nextauth]/route";
-import prisma from "@/lib/prisma";
+import { NextRequest, NextResponse } from "next/server";
 import { displayEmail, displayName } from "@/lib/pii";
 import { notePresence, freshPresence, liveStreams, toLivePerson, PRESENCE_WINDOW_MS } from "@/lib/presence-live";
 import { noteActivity } from "@/lib/activity";
+import { cachedSession, sessionTokenFromCookies } from "@/lib/session-cache";
 
 // Presence: who actually has the app open right now. Auth session rows live
 // for weeks after the tab closes, so they can't answer this — instead every
@@ -13,13 +11,14 @@ import { noteActivity } from "@/lib/activity";
 // out). No database reads or writes on this path at all: a heartbeat every
 // 15s per tab is exactly the idle traffic the free plan forbids.
 
-export async function GET() {
-  const session = await getServerSession(authOptions);
-  if (!session?.user?.email) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-  }
-  const me = await prisma.user.findUnique({ where: { email: session.user.email } });
-  if (!me?.isApproved) {
+export async function GET(req: NextRequest) {
+  // Session + approval from the memory cache — this route fires every 15s
+  // per open tab, and getServerSession plus an approval lookup per poll is
+  // exactly the recurring database cost the free plan forbids. Revocation
+  // lands within a minute, approval changes within five; admin routes keep
+  // verifying directly.
+  const me = await cachedSession(sessionTokenFromCookies(req));
+  if (!me || !me.isApproved) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const now = new Date();
@@ -28,10 +27,10 @@ export async function GET() {
   noteActivity(now.getTime());
   // ...and the presence answer itself, same reason. The approval lookup above
   // is the only database touch on this path.
-  notePresence(toLivePerson(me), now.getTime());
+  notePresence(toLivePerson({ ...me, id: me.userId }), now.getTime());
   const fresh = freshPresence(now.getTime());
   const out: any = { signedIn: fresh.length, windowMs: PRESENCE_WINDOW_MS };
-  if ((session.user as any)?.isAdmin && me.isAdmin) {
+  if (me.isAdmin) {
     out.users = fresh.map((h) => ({
       userId: h.userId,
       name: displayName(h.person),
