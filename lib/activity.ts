@@ -16,8 +16,8 @@
  * importing it here would make the gate cost what it saves.
  */
 
-/** A stamp this fresh means its tab is still open. Matches the presence route. */
-export const ACTIVE_WINDOW_MS = 5 * 60 * 1000;
+/** A stamp this fresh means its tab is still open. Matches the presence route (2 min). */
+export const ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 
 let lastSeenAt = 0;
 

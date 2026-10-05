@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
+import { noteStreamStart, noteStreamEnd, toLivePerson } from "@/lib/presence-live";
 import { STATION } from "@/lib/station";
 import { getSubwaveConfig } from "@/lib/subwave";
 import http from "http";
@@ -49,6 +50,9 @@ export async function GET(req: NextRequest) {
       startTime: new Date(),
     }
   });
+  // Live "who is streaming" for the presence route — memory, not a read.
+  // The row above still writes: per-user history needs it.
+  noteStreamStart(toLivePerson(user));
 
   const targetUrl = new URL(streamUrl);
   targetUrl.searchParams.set("auth", stationPassword);
@@ -83,6 +87,7 @@ export async function GET(req: NextRequest) {
     const onDisconnect = async () => {
       // Prevent double-logging
       if ((streamSession as any).endTime) return;
+      noteStreamEnd(user.id);
       
       const endTime = new Date();
       (streamSession as any).endTime = endTime; // mark locally

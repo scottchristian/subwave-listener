@@ -19,7 +19,7 @@ function ok(cond: boolean, name: string) {
 }
 
 const T0 = 1_800_000_000_000; // fixed point, no wall-clock flake
-ok(ACTIVE_WINDOW_MS === 5 * 60 * 1000, "window matches the presence route (5 min)");
+ok(ACTIVE_WINDOW_MS === 2 * 60 * 1000, "window matches the presence route (2 min)");
 
 // Fresh boot knows nobody.
 ok(anyoneActive(T0) === false, "no stamp -> inactive");
@@ -27,10 +27,10 @@ ok(anyoneActive(T0) === false, "no stamp -> inactive");
 // A heartbeat means someone here.
 noteActivity(T0);
 ok(anyoneActive(T0) === true, "fresh stamp -> active");
-ok(anyoneActive(T0 + 4 * 60 * 1000) === true, "4-minute stamp -> active");
+ok(anyoneActive(T0 + 60 * 1000) === true, "1-minute stamp -> active");
 
 // Aged out: gone.
-ok(anyoneActive(T0 + 6 * 60 * 1000) === false, "6-minute stamp -> inactive");
+ok(anyoneActive(T0 + 3 * 60 * 1000) === false, "3-minute stamp -> inactive");
 
 // A new heartbeat re-arms after silence.
 noteActivity(T0 + 10 * 60 * 1000);

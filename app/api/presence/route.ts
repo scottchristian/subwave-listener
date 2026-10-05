@@ -3,17 +3,15 @@ import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
 import { displayEmail, displayName } from "@/lib/pii";
+import { notePresence, freshPresence, liveStreams, toLivePerson, PRESENCE_WINDOW_MS } from "@/lib/presence-live";
 import { noteActivity } from "@/lib/activity";
 
 // Presence: who actually has the app open right now. Auth session rows live
 // for weeks after the tab closes, so they can't answer this — instead every
-// poll writes a heartbeat and we count heartbeats fresher than 5 minutes
-// (the player polls every 15s; closed tabs go quiet and age out).
-const FRESH_MS = 5 * 60 * 1000;
-// Streaming: an open StreamSession (no endTime) started recently. Restarts and
-// dead sockets orphan rows, so only fresh opens count — a playing socket is
-// always young. Dedupe by user (Safari opens ~2 rows per Play press).
-const STREAMING_MS = 10 * 60 * 1000;
+// poll stamps process memory (lib/presence-live) and we count stamps fresher
+// than 2 minutes (the player polls every 15s; closed tabs go quiet and age
+// out). No database reads or writes on this path at all: a heartbeat every
+// 15s per tab is exactly the idle traffic the free plan forbids.
 
 export async function GET() {
   const session = await getServerSession(authOptions);
@@ -28,41 +26,24 @@ export async function GET() {
   // Memory stamp for the background loops — they gate polling on this rather
   // than asking the database, because the question would keep it awake.
   noteActivity(now.getTime());
-  await prisma.presenceHeartbeat.upsert({
-    where: { userId: me.id },
-    update: { lastSeen: now },
-    create: { userId: me.id, lastSeen: now },
-  });
-  const fresh = await prisma.presenceHeartbeat.findMany({
-    where: { lastSeen: { gte: new Date(now.getTime() - FRESH_MS) } },
-    include: { user: { select: { id: true, name: true, nickname: true, email: true, emailEnc: true } } },
-    orderBy: { lastSeen: "desc" },
-  });
-  const out: any = { signedIn: fresh.length };
+  // ...and the presence answer itself, same reason. The approval lookup above
+  // is the only database touch on this path.
+  notePresence(toLivePerson(me), now.getTime());
+  const fresh = freshPresence(now.getTime());
+  const out: any = { signedIn: fresh.length, windowMs: PRESENCE_WINDOW_MS };
   if ((session.user as any)?.isAdmin && me.isAdmin) {
     out.users = fresh.map((h) => ({
       userId: h.userId,
-      name: displayName(h.user),
-      email: displayEmail(h.user),
+      name: displayName(h.person),
+      email: displayEmail(h.person),
       lastSeen: h.lastSeen,
     }));
-    const open = await prisma.streamSession.findMany({
-      where: { endTime: null, startTime: { gte: new Date(now.getTime() - STREAMING_MS) } },
-      include: { user: { select: { id: true, name: true, nickname: true, email: true, emailEnc: true } } },
-      orderBy: { startTime: "asc" },
-    });
-    const seen = new Set<string>();
-    out.streaming = [];
-    for (const s of open) {
-      if (seen.has(s.userId)) continue;
-      seen.add(s.userId);
-      out.streaming.push({
-        userId: s.userId,
-        name: displayName(s.user),
-        email: displayEmail(s.user),
-        since: s.startTime,
-      });
-    }
+    out.streaming = liveStreams(now.getTime()).map((st) => ({
+      userId: st.userId,
+      name: displayName(st.person),
+      email: displayEmail(st.person),
+      since: st.since,
+    }));
   }
   return NextResponse.json(out);
 }
