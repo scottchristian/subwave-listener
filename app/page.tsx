@@ -296,7 +296,7 @@ export default function Home() {
   // reason: the stream must keep playing. One popup, whoever is tapped — the
   // data only ever carries one host plus guests, so "multiple hosts" means
   // every face on air opens its own card.
-  const [showHost, setShowHost] = useState<{ name: string; avatar: string; role: string; tagline?: string } | null>(null);
+  const [showHost, setShowHost] = useState<{ name: string; avatar: string; role: string; tagline?: string; context?: string } | null>(null);
   // Fixed viewport position for the menu, clamped on-screen at open time.
   const [userMenuPos, setUserMenuPos] = useState<{ top: number; left: number } | null>(null);
   const userMenuBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -2033,14 +2033,15 @@ export default function Home() {
       const leftMin = Math.max(endMin - nowMin, 1);
       const showById = (id: string) => (shows as any[]).find((s: any) => s.id === id);
       const nextShowObj = idAt(d, h) ? showById(idAt(d, h)) : null;
-      const nextHost = nextShowObj
-        ? (personas as any[])?.find((p: any) => p.id === nextShowObj.personaId)?.name || null
+      const nextPersona = nextShowObj
+        ? (personas as any[])?.find((p: any) => p.id === nextShowObj.personaId) || null
         : null;
       return {
         endMs: Date.now() + leftMin * 60000,
         leftMin,
         nextName: nextShowObj?.name || null,
-        nextHost,
+        nextHost: nextPersona?.name || null,
+        nextPersona,
         tz,
       };
     } catch {
@@ -2373,7 +2374,31 @@ export default function Home() {
             {showRunway?.nextName && (
               <div id="on-air-next-up" style={{ marginTop: "0.5rem", color: "var(--color-muted)", fontSize: "0.9rem", background: "rgba(255,255,255,0.05)", padding: "8px 12px", borderRadius: "6px" }}>
                 Next: <span style={{ color: "var(--color-text)", fontWeight: 600 }}>{showRunway.nextName}</span>
-                {showRunway.nextHost && <span> with <span style={{ color: "#ff4d4d" }}>{showRunway.nextHost}</span></span>}
+                {showRunway.nextHost && (
+                  <span>
+                    {" "}with{" "}
+                    {showRunway.nextPersona ? (
+                      <button
+                        id="btn-next-host"
+                        type="button"
+                        onClick={() => setShowHost({
+                          name: showRunway.nextPersona.name,
+                          avatar: getAvatarSrc(showRunway.nextPersona.avatar),
+                          role: "Host",
+                          tagline: showRunway.nextPersona.tagline,
+                          context: showRunway.nextName ? `up next on ${showRunway.nextName}` : undefined,
+                        })}
+                        aria-label={`About ${showRunway.nextHost}`}
+                        title={`About ${showRunway.nextHost}`}
+                        style={{ background: "none", border: "none", padding: 0, cursor: "pointer", font: "inherit", color: "#ff4d4d" }}
+                      >
+                        {showRunway.nextHost}
+                      </button>
+                    ) : (
+                      <span style={{ color: "#ff4d4d" }}>{showRunway.nextHost}</span>
+                    )}
+                  </span>
+                )}
                 <span> at {fmtClock(showRunway.endMs, showRunway.tz)}</span>
               </div>
             )}
@@ -2736,7 +2761,7 @@ export default function Home() {
                   <img id="host-profile-img" src={showHost.avatar} alt={showHost.name} style={{ width: "160px", height: "160px", borderRadius: "12px", objectFit: "cover", flexShrink: 0 }} />
                 ) : null}
                 <div>
-                  <div id="host-profile-role" style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>{showHost.role}{showName ? ` on ${showName}` : ""}</div>
+                  <div id="host-profile-role" style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>{showHost.role}{showHost.context ? ` ${showHost.context}` : showName ? ` on ${showName}` : ""}</div>
                   {showHost.tagline ? (
                     <p id="host-profile-tagline" style={{ marginTop: "0.5rem", marginBottom: 0 }}>{showHost.tagline}</p>
                   ) : null}
