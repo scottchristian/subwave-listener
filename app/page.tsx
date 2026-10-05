@@ -21,6 +21,7 @@ import {
   type StillListeningConfig,
 } from "@/lib/still-listening";
 import { APP_VERSION, REPO_URL, SUBWAVE_URL } from "@/lib/version";
+import { defaultHour12 } from "@/lib/update-time";
 import { resolveTrackDuration, isDurationDiscredited } from "@/lib/trackduration";
 // The request ladder: what we tell a listener while the booth has not answered.
 import {
@@ -290,6 +291,21 @@ export default function Home() {
   // Schedule popup from the account menu. Mounts fresh each open, so the
   // day always starts on today.
   const [showSchedule, setShowSchedule] = useState(false);
+  // Clock face for every time in the app. Account-wide (saved to the server),
+  // falling back to the device locale until the user chooses.
+  const [hour12, setHour12] = useState<boolean>(() => defaultHour12());
+  const saveHour12 = async (v: boolean) => {
+    setHour12(v);
+    try {
+      await fetch("/api/profile/clock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hour12: v }),
+      });
+    } catch {
+      // Display-only: the face changes regardless; the server catches up.
+    }
+  };
   // Header account menu + self nickname.
   const [userMenuOpen, setUserMenuOpen] = useState(false);
 
@@ -552,6 +568,7 @@ export default function Home() {
        if (typeof d.verboseLogging === "boolean") setVerbose(d.verboseLogging);
        if (typeof d.explicitSuffix === "boolean") setExplicitSuffix(d.explicitSuffix);
          if (d.skipVisibility) setSkipVisibility(parseSkipVisibility(d.skipVisibility));
+         if (typeof d.clockHour12 === "boolean") setHour12(d.clockHour12);
          if (d.stillListening) setSlCfg(parseStillListening(d.stillListening));
          if (typeof d.headerListeners === "boolean") setHeaderListeners(d.headerListeners);
          if (typeof d.headerWeather === "boolean") setHeaderWeather(d.headerWeather);
@@ -2060,7 +2077,7 @@ export default function Home() {
   };
   const fmtClock = (ms: number, tz: string) => {
     try {
-      return new Intl.DateTimeFormat("en-AU", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: false }).format(new Date(ms));
+      return new Intl.DateTimeFormat("en-AU", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12 }).format(new Date(ms));
     } catch {
       return "";
     }
@@ -2144,6 +2161,31 @@ export default function Home() {
                 </div>
                 <button id="btn-liked-songs" ref={el => { stepRefs.current[8] = el; }} onClick={() => { setUserMenuOpen(false); setShowLikes(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer", position: tourStep === 8 ? "relative" : "static", zIndex: tourStep === 8 ? 1000 : 1 }}>Liked Songs</button>
                 <button id="btn-shows" onClick={() => { setUserMenuOpen(false); setShowSchedule(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>Shows</button>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.75rem", padding: "0.6rem 0.75rem" }}>
+                  <span style={{ fontSize: "0.95rem", color: "var(--color-text)" }}>Time format</span>
+                  <span role="group" aria-label="Time format" style={{ display: "inline-flex", borderRadius: "8px", overflow: "hidden", border: "1px solid var(--color-border)" }}>
+                    {([["12-hour", true], ["24-hour", false]] as const).map(([label, v]) => (
+                      <button
+                        key={label}
+                        id={`btn-clock-${v ? "12" : "24"}`}
+                        type="button"
+                        aria-pressed={hour12 === v}
+                        onClick={() => saveHour12(v)}
+                        style={{
+                          padding: "0.4rem 0.7rem",
+                          fontSize: "0.8rem",
+                          fontWeight: 700,
+                          border: "none",
+                          cursor: "pointer",
+                          background: hour12 === v ? "var(--color-accent)" : "transparent",
+                          color: hour12 === v ? "#fff" : "var(--color-muted)",
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </span>
+                </div>
                 {/* Only rendered when the grant exists. Without it the entry is
                     absent from the DOM entirely — a hidden control rather than a
                     disabled one, so the feature is unknown to other listeners.
@@ -2821,6 +2863,7 @@ export default function Home() {
         <div id="schedule-overlay-bg" onClick={() => setShowSchedule(false)} className="overlay-bg-enter" style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 2000, overflowY: "auto", padding: "2rem 1rem" }}>
           <SchedulePanel
             scheduleData={scheduleData}
+            hour12={hour12}
             resolveAvatar={getAvatarSrc}
             onHost={(pick) => { setShowSchedule(false); setShowHost(pick); }}
             onClose={() => setShowSchedule(false)}

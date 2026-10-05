@@ -567,23 +567,27 @@ export default function AdminPage() {
   // same pattern as the channel radio: a preference, not a form.
   const [updateNotify, setUpdateNotify] = useState(false);
   const [updateNotifyMsg, setUpdateNotifyMsg] = useState("");
-  const [hour12, setHour12] = useState<boolean>(() => {
-    try {
-      const saved = typeof window !== "undefined" ? window.localStorage.getItem("subwave-clock-hour12") : null;
-      if (saved === "12") return true;
-      if (saved === "24") return false;
-    } catch {
-      // private mode etc. — fall through to locale
-    }
-    return defaultHour12();
-  });
+  // Clock face for every time in the app. Account-wide like the player's —
+  // the toggle below writes the same preference the top menu writes.
+  const [hour12, setHour12] = useState<boolean>(() => defaultHour12());
+  useEffect(() => {
+    if (status !== "authenticated" || !(session?.user as any)?.isAdmin) return;
+    fetch("/api/profile/clock", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && typeof d.hour12 === "boolean") setHour12(d.hour12);
+      })
+      .catch(() => {});
+  }, [status, session]);
   const setClockFace = (v: boolean) => {
     setHour12(v);
-    try {
-      window.localStorage.setItem("subwave-clock-hour12", v ? "12" : "24");
-    } catch {
+    fetch("/api/profile/clock", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hour12: v }),
+    }).catch(() => {
       // display preference only — never blocks saving the window itself
-    }
+    });
   };
 
   const refreshUpdate = async () => {
@@ -2104,6 +2108,7 @@ export default function AdminPage() {
                                 timeZone: stationTimezone,
                                 hour: "2-digit",
                                 minute: "2-digit",
+                                hour12,
                               }).format(new Date());
                             } catch {
                               return "";

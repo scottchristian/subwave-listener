@@ -25,11 +25,20 @@ export async function GET() {
     // Station password only rides along for approved sessions — direct mode
     // embeds it in the audio URL, and it must never leak to strangers.
     let stationPassword: string | undefined;
+    let clockHour12: boolean | null = null;
     try {
       const session = await getServerSession(authOptions);
       if (session?.user?.email) {
         const user = await prisma.user.findUnique({ where: { email: session.user.email } });
         if (user?.isApproved) stationPassword = get("stationPassword") || undefined;
+        const userId = (session?.user as any)?.id;
+        if (userId) {
+          try {
+            const clockRow = await prisma.setting.findUnique({ where: { key: `clockHour12:${userId}` } });
+            if (clockRow?.value === "true") clockHour12 = true;
+            else if (clockRow?.value === "false") clockHour12 = false;
+          } catch {}
+        }
       }
     } catch {}
     return NextResponse.json({
@@ -50,6 +59,7 @@ export async function GET() {
       headerListeners: (get("headerListeners") ?? "true") !== "false",
       headerWeather: (get("headerWeather") ?? "true") !== "false",
       headerVibe: (get("headerVibe") ?? "true") !== "false",
+      clockHour12,
       stillListening: parseStillListening({
         enabled: get(STILL_LISTENING_KEYS.enabled),
         minutes: get(STILL_LISTENING_KEYS.minutes),

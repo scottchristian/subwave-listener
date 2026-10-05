@@ -14,7 +14,15 @@ export type ScheduleHostPick = {
 const DAY_KEYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-const fmtHour = (h: number) => (h === 24 ? "24:00" : `${String(((h % 24) + 24) % 24).padStart(2, "0")}:00`);
+/** Slot hours in the operator's face: 19:00, or 7 PM. Midnight end reads 24:00 / 12 AM. */
+const fmtHour = (h: number, hour12: boolean) => {
+  if (!hour12) return h === 24 ? "24:00" : `${String(((h % 24) + 24) % 24).padStart(2, "0")}:00`;
+  const wrapped = ((h % 24) + 24) % 24;
+  if (h === 24) return "12 AM";
+  if (wrapped === 0) return "12 AM";
+  if (wrapped === 12) return "12 PM";
+  return wrapped < 12 ? `${wrapped} AM` : `${wrapped - 12} PM`;
+};
 
 /**
  * The week's schedule, one day — or one identical run of days — at a time.
@@ -26,11 +34,13 @@ const fmtHour = (h: number) => (h === 24 ? "24:00" : `${String(((h % 24) + 24) %
  */
 export default function SchedulePanel({
   scheduleData,
+  hour12,
   resolveAvatar,
   onHost,
   onClose,
 }: {
   scheduleData: any;
+  hour12: boolean;
   resolveAvatar: (path: string) => string;
   onHost: (pick: ScheduleHostPick) => void;
   onClose: () => void;
@@ -191,7 +201,7 @@ export default function SchedulePanel({
               return (
                 <div key={i} style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.6rem 0.75rem", borderRadius: "8px", background: "rgba(255,255,255,0.03)" }}>
                   <span style={{ fontSize: "0.85rem", color: "var(--color-muted)", minWidth: "6.5rem" }}>
-                    {fmtHour(slot.from)} – {fmtHour(slot.to)}
+                    {fmtHour(slot.from, hour12)} – {fmtHour(slot.to, hour12)}
                   </span>
                   <span style={{ fontSize: "0.95rem", color: "var(--color-muted)" }}>Auto DJ</span>
                 </div>
@@ -215,11 +225,11 @@ export default function SchedulePanel({
                   type="button"
                   onClick={() => setExpanded(open ? null : key)}
                   aria-expanded={open}
-                  aria-label={`${show.name}, ${fmtHour(slot.from)} to ${fmtHour(slot.to)}${live ? ", on air now" : ""}`}
+                  aria-label={`${show.name}, ${fmtHour(slot.from, hour12)} to ${fmtHour(slot.to, hour12)}${live ? ", on air now" : ""}`}
                   style={{ display: "flex", alignItems: "center", gap: "0.75rem", width: "100%", padding: "0.6rem 0.75rem", background: "none", border: "none", cursor: "pointer", color: "inherit", font: "inherit", textAlign: "left" }}
                 >
                   <span style={{ fontSize: "0.85rem", color: "var(--color-muted)", minWidth: "6.5rem" }}>
-                    {fmtHour(slot.from)} – {fmtHour(slot.to)}
+                    {fmtHour(slot.from, hour12)} – {fmtHour(slot.to, hour12)}
                   </span>
                   <span style={{ flex: 1, minWidth: 0 }}>
                     <span style={{ display: "block", fontSize: "0.95rem", fontWeight: 700 }}>
