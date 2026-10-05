@@ -119,6 +119,8 @@ export default function DatabasePanel() {
   const [kaSeconds, setKaSeconds] = useState("300");
   const [kaBusy, setKaBusy] = useState(false);
   const [kaMsg, setKaMsg] = useState("");
+  // Layerbase free-plan warning: shown after enabling, never blocks.
+  const [kaWarn, setKaWarn] = useState<string | null>(null);
   // Set on any hand edit, cleared on successful save. The 15s status poll
   // must not touch the form while this is set — it used to flip the switch
   // back on under the operator's finger before they reached Save.
@@ -184,6 +186,7 @@ export default function DatabasePanel() {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "Could not save");
       setKa(d);
+      setKaWarn(typeof d.layerbaseWarning === "string" && d.layerbaseWarning ? d.layerbaseWarning : null);
       kaTouched.current = false;
       setKaOn(d.enabled);
       setKaSeconds(String(d.seconds));
@@ -870,6 +873,19 @@ export default function DatabasePanel() {
         </div>
       )}
 
+      {kaWarn && (
+        <div id="keepalive-warn-bg" onClick={() => setKaWarn(null)} className="overlay-bg-enter" style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 2000, overflowY: "auto", padding: "2rem 1rem" }}>
+          <div id="keepalive-warn-card" onClick={(e) => e.stopPropagation()} className="overlay-card-enter" style={{ maxWidth: "480px", width: "100%", margin: "0 auto", minHeight: "auto", padding: "0 0.5rem", position: "relative", zIndex: 2001 }}>
+            <div className="card">
+              <h2 style={{ fontSize: "1.3rem", margin: "0 0 0.75rem" }}>Heads up: Layerbase free plan</h2>
+              <p style={{ fontSize: "0.95rem", marginBottom: "1rem" }}>{kaWarn}</p>
+              <button id="btn-keepalive-warn-ok" className="primary-btn" style={{ width: "auto", padding: "0.55rem 1.25rem" }} onClick={() => setKaWarn(null)}>
+                I understand — keep it on
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {(message || error) && (
         <p style={{ marginTop: "1.25rem", fontSize: "0.9rem", color: error ? "#e06a5c" : "var(--color-accent)" }}>
           {error || message}

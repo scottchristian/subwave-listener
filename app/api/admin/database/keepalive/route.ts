@@ -84,5 +84,13 @@ export async function POST(req: Request) {
   // without this the change would not take effect until the next deploy.
   reconfigure(enabled, seconds);
 
-  return NextResponse.json({ ok: true, ...readConfig(), ...snapshot() });
+  // Layerbase free databases must sleep, and this switch defeats the sleep.
+  // Warn, don't refuse: it is the operator's database and their TOS to keep.
+  const dbUrl = process.env.DATABASE_URL || "";
+  const layerbaseWarning =
+    enabled && /layerbase/i.test(dbUrl)
+      ? "This connection string is Layerbase, whose free plan requires the database to sleep. Pinging it on a timer counts as defeating the sleep window and can get the database paused. Leave it on only if you accept that risk."
+      : null;
+
+  return NextResponse.json({ ok: true, ...readConfig(), ...snapshot(), layerbaseWarning });
 }
