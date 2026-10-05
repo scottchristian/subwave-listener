@@ -31,7 +31,9 @@ const WAKING_DB = new Set([
  */
 export default function AuthFailure({ code }: { code: string }) {
   const denied = code === "AccessDenied";
-  const waking = !denied && (WAKING_DB.has(code) || code === "");
+  // No code means a plain visit (bookmarked /signin, or the error page with
+  // nothing to say) — a clean prompt, never failure copy and never auto-fire.
+  const waking = !denied && WAKING_DB.has(code);
 
   // A sleeping database wakes on its own, so retry without being asked.
   // Success leaves this page signed in; failure lands back here and the
