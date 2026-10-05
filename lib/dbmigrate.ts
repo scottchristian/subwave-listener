@@ -63,7 +63,7 @@ function generateFor(provider: DbProvider): string {
 export const MODEL_ORDER = [
   "user", "account", "session", "streamSession", "songRequest", "songLike",
   "pushSubscription", "presenceHeartbeat", "verificationToken",
-  "setting", "songLinkCache", "donation",
+  "setting", "songLinkCache", "donation", "skillRun",
 ] as const;
 
 export type TableReport = {

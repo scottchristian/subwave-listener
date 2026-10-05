@@ -60,6 +60,13 @@ export function parseUrl(url: string): {
  * it is a psql meta-command and errors in most hosted SQL consoles.
  */
 export function grantSql(role: string, database: string): string {
+  // Refuse here rather than interpolating and hoping the caller checked. The
+  // block is handed to the operator to paste into a superuser console, so a
+  // name like `x"; DROP DATABASE production; --` would otherwise be a live
+  // statement sitting under the heading "Run this as a database administrator".
+  // Empty means "there is nothing safe to show you", which the panel treats as
+  // no block at all.
+  if (!identOk(role) || !identOk(database)) return "";
   return [
     `-- Promote ${role} to a station app role.`,
     `-- Run as a superuser, connected to the "${database}" database.`,
@@ -123,13 +130,15 @@ export async function probePostgres(url: string): Promise<ProbeResult> {
     };
   }
   const { user: role, database } = parsed;
-  const sql = grantSql(role, database);
+  // Checked before the block is built, so the refusal path returns an empty
+  // `sql` and the panel offers the operator nothing to paste.
   if (!identOk(role) || !identOk(database)) {
     return {
-      ok: false, role, database, version: null, ssl: false, ready: false, checks: [], sql,
+      ok: false, role, database, version: null, ssl: false, ready: false, checks: [], sql: "",
       error: "Role or database name contains characters that cannot be used in SQL. Rename it to letters, digits and underscores.",
     };
   }
+  const sql = grantSql(role, database);
 
   const client = new Client({
     connectionString: url,
