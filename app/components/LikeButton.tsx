@@ -1,7 +1,8 @@
 "use client";
 import { useState, useEffect, useRef } from "react";
+import { shouldHeartbeat } from "@/lib/heartbeat";
 
-export default function LikeButton({ trackId, currentUserId, title, artist, album }: { trackId: string, currentUserId: string | null, title?: string, artist?: string, album?: string }) {
+export default function LikeButton({ trackId, currentUserId, title, artist, album, playing }: { trackId: string, currentUserId: string | null, title?: string, artist?: string, album?: string, playing?: boolean }) {
     const [likes, setLikes] = useState<any[]>([]);
     const [isLoading, setIsLoading] = useState(true);
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -27,7 +28,9 @@ export default function LikeButton({ trackId, currentUserId, title, artist, albu
         setIsLoading(true);
         load().finally(() => { if (!cancelled) setIsLoading(false); });
         const id = setInterval(() => {
-            if (document.visibilityState === "visible") void load();
+            // Same rule as presence heartbeats: a buried, silent, untouched
+            // tab is nobody using anything. Playing audio always counts.
+            if (document.visibilityState === "visible" && shouldHeartbeat(!!playing)) void load();
         }, 15000);
         const onVis = () => { if (document.visibilityState === "visible") void load(); };
         document.addEventListener("visibilitychange", onVis);

@@ -2354,7 +2354,7 @@ export default function Home() {
                     <AppleMusicIcon /> Apple Music
                   </a>
                 </div>
-                <LikeButton trackId={stationData?.nowPlaying?.subsonic_id || (stationData?.nowPlaying ? `${stationData.nowPlaying.artist} - ${stationData.nowPlaying.title}` : "")} currentUserId={(session.user as any)?.id} title={stationData?.nowPlaying?.title} artist={stationData?.nowPlaying?.artist} album={stationData?.nowPlaying?.album} />
+                <LikeButton trackId={stationData?.nowPlaying?.subsonic_id || (stationData?.nowPlaying ? `${stationData.nowPlaying.artist} - ${stationData.nowPlaying.title}` : "")} currentUserId={(session.user as any)?.id} title={stationData?.nowPlaying?.title} artist={stationData?.nowPlaying?.artist} album={stationData?.nowPlaying?.album} playing={isPlaying} />
                 </div>
               )}
             </div>

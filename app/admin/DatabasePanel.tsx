@@ -121,6 +121,13 @@ export default function DatabasePanel() {
   const [kaMsg, setKaMsg] = useState("");
   // Layerbase free-plan warning: shown after enabling, never blocks.
   const [kaWarn, setKaWarn] = useState<string | null>(null);
+  // Limited-communication mode: likes + link lookups served from SQLite,
+  // flushed to Postgres every N minutes. Shown only on Postgres.
+  const [liteOn, setLiteOn] = useState(false);
+  const [liteMinutes, setLiteMinutes] = useState("20");
+  const [liteBusy, setLiteBusy] = useState(false);
+  const [liteMsg, setLiteMsg] = useState("");
+  const liteTouched = useRef(false);
   // Set on any hand edit, cleared on successful save. The 15s status poll
   // must not touch the form while this is set — it used to flip the switch
   // back on under the operator's finger before they reached Save.
@@ -164,6 +171,19 @@ export default function DatabasePanel() {
           setKaOn(d.enabled);
           setKaSeconds(String(d.seconds));
         }
+        if (!liteTouched.current) {
+          try {
+            const sres = await fetch("/api/admin/settings");
+            if (sres.ok) {
+              const rows = await sres.json();
+              const get = (k: string) => rows.find((x: any) => x.key === k)?.value;
+              if (get("liteCacheEnabled") === "true") setLiteOn(true);
+              else if (get("liteCacheEnabled") === "false") setLiteOn(false);
+              const m = Math.floor(Number(get("liteFlushMinutes")));
+              if (Number.isFinite(m)) setLiteMinutes(String(m));
+            }
+          } catch {}
+        }
       } catch {}
     };
     pull();
@@ -200,6 +220,39 @@ export default function DatabasePanel() {
       setError(e.message || "Could not save");
     } finally {
       setKaBusy(false);
+    }
+  };
+
+  const saveLiteCache = async () => {
+    const minutes = Math.floor(Number(liteMinutes));
+    if (!Number.isInteger(minutes) || minutes < 5 || minutes > 240) {
+      setLiteMsg("Flush every 5–240 minutes.");
+      return;
+    }
+    setLiteBusy(true);
+    setLiteMsg("");
+    try {
+      for (const [key, value] of [
+        ["liteCacheEnabled", liteOn ? "true" : "false"],
+        ["liteFlushMinutes", String(minutes)],
+      ] as const) {
+        const r = await fetch("/api/admin/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key, value }),
+        });
+        if (!r.ok) throw new Error(`could not save ${key}`);
+      }
+      liteTouched.current = false;
+      setLiteMsg(
+        liteOn
+          ? `On — likes and link lookups serve from this server, Postgres catches up every ${minutes} minutes.`
+          : "Off — likes and links use Postgres directly."
+      );
+    } catch (e: any) {
+      setLiteMsg(`Could not save: ${e.message || "unknown error"}`);
+    } finally {
+      setLiteBusy(false);
     }
   };
 
@@ -607,6 +660,68 @@ export default function DatabasePanel() {
                 Most free tiers suspend after about five minutes idle. 300s is a safe default.
               </p>
             )}
+          </div>
+
+          {/* Limited communication: the SQLite write-back cache. Postgres-only —
+              a station already on SQLite has nothing to save. */}
+          <div style={{ marginTop: "1.5rem" }}>
+            <h3 style={{ fontSize: "1rem", marginBottom: "0.35rem" }}>Limit database chatter</h3>
+            <p style={{ color: "var(--color-muted)", fontSize: "0.875rem", marginTop: "0.35rem" }}>
+              Likes and song-link lookups are served from a small database on this server instead of Postgres,
+              and written back every few minutes. Day-to-day use then barely touches Postgres — enough to stay
+              inside a free tier&apos;s sleep allowance — while logins, settings and history still use Postgres
+              directly. Unliking applies everywhere instantly; everything else catches up at the next flush. If
+              this server were ever lost, at most one flush interval of likes could go missing; Postgres remains
+              the permanent record.
+            </p>
+            <div className="db-keepalive" style={{ marginTop: "0.75rem" }}>
+              <div className="db-keepalive-row">
+                <span id="db-lite-label" className="db-keepalive-label">Cache likes &amp; links locally</span>
+                <button
+                  id="db-lite-toggle"
+                  role="switch"
+                  aria-checked={liteOn}
+                  aria-labelledby="db-lite-label"
+                  onClick={() => { liteTouched.current = true; setLiteOn((o) => !o); }}
+                  style={{
+                    flexShrink: 0, width: "48px", height: "27px", borderRadius: "999px", border: "none", cursor: "pointer",
+                    backgroundColor: liteOn ? "var(--color-accent)" : "rgba(255,255,255,0.18)",
+                    position: "relative", transition: "background-color 0.2s ease", padding: 0,
+                  }}
+                >
+                  <span style={{
+                    position: "absolute", top: "2px", left: liteOn ? "23px" : "2px", width: "23px", height: "23px",
+                    borderRadius: "50%", backgroundColor: "#fff", transition: "left 0.2s ease",
+                  }} />
+                </button>
+              </div>
+              <div className="db-keepalive-row">
+                <label htmlFor="db-lite-minutes" className="db-keepalive-label">Flush every (minutes)</label>
+                <input
+                  id="db-lite-minutes"
+                  className="db-input db-narrow"
+                  type="number"
+                  inputMode="numeric"
+                  min={5}
+                  max={240}
+                  value={liteMinutes}
+                  disabled={!liteOn}
+                  onChange={(e) => { liteTouched.current = true; setLiteMinutes(e.target.value); }}
+                />
+                <button
+                  id="db-lite-save"
+                  className="primary-btn"
+                  style={{ width: "auto", padding: "0.5rem 1rem" }}
+                  onClick={saveLiteCache}
+                  disabled={liteBusy}
+                >
+                  {liteBusy ? "Saving…" : "Save"}
+                </button>
+              </div>
+              {liteMsg && (
+                <p style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{liteMsg}</p>
+              )}
+            </div>
           </div>
         </div>
       )}

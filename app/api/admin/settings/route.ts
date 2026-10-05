@@ -33,5 +33,15 @@ export async function POST(req: NextRequest) {
     create: { key, value }
   });
 
+  // The lite cache keeps its switch in memory (reading it per request would
+  // be the chatter it exists to avoid) — refresh on save so enabling applies
+  // within the minute with no restart.
+  if (key === "liteCacheEnabled" || key === "liteFlushMinutes") {
+    try {
+      const { refreshLiteConfig } = await import("@/lib/lite-cache");
+      await refreshLiteConfig();
+    } catch {}
+  }
+
   return NextResponse.json(setting);
 }

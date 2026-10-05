@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getSubwaveConfig } from "@/lib/subwave";
+import { liteEnabled, liteGetLink, litePutLink } from "@/lib/lite-cache";
 
 export async function GET(req: NextRequest) {
   try {
@@ -15,10 +16,25 @@ export async function GET(req: NextRequest) {
       return NextResponse.json({ error: "Missing parameters" }, { status: 400 });
     }
 
-    // 1. Check Cache (explicit null means an older row — re-resolve Spotify only)
-    const cached = await prisma.songLinkCache.findUnique({
-      where: { trackId }
-    });
+    // 1. Check Cache (explicit null means an older row — re-resolve Spotify only).
+    // Limited-communication mode reads the SQLite mirror first; a Postgres
+    // hit backfills it, so each track costs Postgres at most once ever.
+    const useLite = await liteEnabled();
+    let cached = useLite
+      ? await liteGetLink(trackId)
+      : await prisma.songLinkCache.findUnique({ where: { trackId } });
+    if (useLite && !cached) {
+      const pgRow = await prisma.songLinkCache.findUnique({ where: { trackId } }).catch(() => null);
+      if (pgRow) {
+        await litePutLink({
+          trackId: pgRow.trackId,
+          spotifyUrl: pgRow.spotifyUrl,
+          appleMusicUrl: pgRow.appleMusicUrl,
+          explicit: pgRow.explicit,
+        });
+        cached = pgRow;
+      }
+    }
 
     if (cached && cached.explicit !== null) {
       return NextResponse.json({
@@ -38,21 +54,32 @@ export async function GET(req: NextRequest) {
     const spotifyUrl = spotify?.url ?? null;
     const explicit = spotify?.explicit ?? null;
 
-    // 3. Cache the results (upsert — an older row may already hold the links)
-    await prisma.songLinkCache.upsert({
-      where: { trackId },
-      update: {
-        spotifyUrl: spotifyUrl ?? cached?.spotifyUrl ?? null,
-        appleMusicUrl: appleMusicUrl ?? cached?.appleMusicUrl ?? null,
-        explicit,
-      },
-      create: {
-        trackId,
-        spotifyUrl,
-        appleMusicUrl,
-        explicit,
-      }
-    });
+    // 3. Cache the results (upsert — an older row may already hold the links).
+    // Buffered to SQLite when caching; Postgres converges at the flush.
+    const saving = {
+      trackId,
+      spotifyUrl: spotifyUrl ?? cached?.spotifyUrl ?? null,
+      appleMusicUrl: appleMusicUrl ?? cached?.appleMusicUrl ?? null,
+      explicit,
+    };
+    if (useLite) {
+      await litePutLink(saving);
+    } else {
+      await prisma.songLinkCache.upsert({
+        where: { trackId },
+        update: {
+          spotifyUrl: saving.spotifyUrl,
+          appleMusicUrl: saving.appleMusicUrl,
+          explicit,
+        },
+        create: {
+          trackId,
+          spotifyUrl,
+          appleMusicUrl,
+          explicit,
+        }
+      });
+    }
 
     return NextResponse.json({ spotifyUrl, appleMusicUrl, explicit });
   } catch (error) {

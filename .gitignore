@@ -64,4 +64,6 @@ next-env.d.ts
 # The scripts remove these on exit; this covers interrupted runs.
 /.test-client
 /prisma/.gen-test.prisma
+/prisma/lite-client
+/prisma/.gen-cache.prisma
 /prisma/.gen-sqlite.prisma

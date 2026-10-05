@@ -59,6 +59,15 @@ export async function register() {
   } catch (err) {
     console.warn("[boot] auto-update scheduler not started:", message(err));
   }
+
+  try {
+    // Flush the SQLite write-back cache to Postgres when due. Nothing to do
+    // most ticks; failures stay in SQLite for the next attempt.
+    const { startLiteFlushScheduler } = await import("./lib/lite-cache");
+    startLiteFlushScheduler();
+  } catch (err) {
+    console.warn("[boot] lite-cache flush scheduler not started:", message(err));
+  }
 }
 
 const message = (err: unknown) =>
