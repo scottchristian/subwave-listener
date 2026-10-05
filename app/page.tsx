@@ -702,6 +702,18 @@ export default function Home() {
       }
     }
 
+    // Listeners only. The backend answers strangers too, but our page must
+    // not learn track metadata it has no right to act on: every downstream
+    // effect (links, likes) would fire it at session-gated routes, 401, and
+    // leave title/artist/album sitting in server logs. Clearing on logout
+    // matters as much as gating on load — a dead session must not keep
+    // polling with a stale lineup.
+    if (status !== "authenticated" || !(session?.user as any)?.isApproved) {
+      setStationData(null);
+      lastSubsonicRef.current = null;
+      return;
+    }
+
     let isCancelled = false;
 
       const fetchStation = async () => {
@@ -1005,8 +1017,11 @@ export default function Home() {
       }
     };
     
+    // Session-gated independently of the feed: even a populated lineup must
+    // not reach for links signed out.
+    if (status !== "authenticated" || !(session?.user as any)?.isApproved) return;
     fetchDirectLinks();
-  }, [stationData?.nowPlaying?.subsonic_id]);
+  }, [stationData?.nowPlaying?.subsonic_id, status, session]);
 
   useEffect(() => {
     const first = audioRef.current;
