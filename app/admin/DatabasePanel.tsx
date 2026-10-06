@@ -125,6 +125,7 @@ export default function DatabasePanel() {
   // flushed to Postgres every N minutes. Shown only on Postgres.
   const [liteOn, setLiteOn] = useState(false);
   const [liteMinutes, setLiteMinutes] = useState("20");
+  const [liteSessionMinutes, setLiteSessionMinutes] = useState("20");
   const [liteBusy, setLiteBusy] = useState(false);
   const [liteMsg, setLiteMsg] = useState("");
   const liteTouched = useRef(false);
@@ -181,6 +182,8 @@ export default function DatabasePanel() {
               else if (get("liteCacheEnabled") === "false") setLiteOn(false);
               const m = Math.floor(Number(get("liteFlushMinutes")));
               if (Number.isFinite(m)) setLiteMinutes(String(m));
+              const sm = Math.floor(Number(get("liteSessionMinutes")));
+              if (Number.isFinite(sm)) setLiteSessionMinutes(String(sm));
             }
           } catch {}
         }
@@ -229,12 +232,18 @@ export default function DatabasePanel() {
       setLiteMsg("Flush every 5–240 minutes.");
       return;
     }
+    const sessionMinutes = Math.floor(Number(liteSessionMinutes));
+    if (!Number.isInteger(sessionMinutes) || sessionMinutes < 5 || sessionMinutes > 240) {
+      setLiteMsg("Re-check every 5–240 minutes.");
+      return;
+    }
     setLiteBusy(true);
     setLiteMsg("");
     try {
       for (const [key, value] of [
         ["liteCacheEnabled", liteOn ? "true" : "false"],
         ["liteFlushMinutes", String(minutes)],
+        ["liteSessionMinutes", String(sessionMinutes)],
       ] as const) {
         const r = await fetch("/api/admin/settings", {
           method: "POST",
@@ -246,8 +255,8 @@ export default function DatabasePanel() {
       liteTouched.current = false;
       setLiteMsg(
         liteOn
-          ? `On — likes and link lookups serve from this server, Postgres catches up every ${minutes} minutes.`
-          : "Off — likes and links use Postgres directly."
+          ? `On — likes, link lookups and sign-in checks serve from this server. Postgres catches up every ${minutes} minutes; sign-in re-checks every ${sessionMinutes}.`
+          : "Off — likes, links and sign-in checks use Postgres directly."
       );
     } catch (e: any) {
       setLiteMsg(`Could not save: ${e.message || "unknown error"}`);
@@ -718,6 +727,27 @@ export default function DatabasePanel() {
                   {liteBusy ? "Saving…" : "Save"}
                 </button>
               </div>
+              <div className="db-keepalive-row">
+                <label htmlFor="db-lite-session-minutes" className="db-keepalive-label">Re-check sign-in every (minutes)</label>
+                <input
+                  id="db-lite-session-minutes"
+                  className="db-input db-narrow"
+                  type="number"
+                  inputMode="numeric"
+                  min={5}
+                  max={240}
+                  value={liteSessionMinutes}
+                  disabled={!liteOn}
+                  onChange={(e) => { liteTouched.current = true; setLiteSessionMinutes(e.target.value); }}
+                />
+              </div>
+              <p style={{ color: "var(--color-muted)", fontSize: "0.8rem", marginTop: "0.35rem" }}>
+                Sign-in and approval answers are cached on this server and re-checked with Postgres on this
+                interval, which is what removes the repeated lookup behind every request. Keep it above about
+                fifteen minutes or the database never gets to sleep. Signing out, approving and revoking all take
+                effect immediately regardless. This file is only a cache: deleting it costs one re-check, never an
+                outage.
+              </p>
               {liteMsg && (
                 <p style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{liteMsg}</p>
               )}

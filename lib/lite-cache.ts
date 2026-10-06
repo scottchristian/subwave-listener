@@ -26,11 +26,26 @@ import type { PrismaClient as LiteClient } from "../prisma/lite-client/index.js"
 export const LITE_KEYS = {
   enabled: "liteCacheEnabled",
   flushMinutes: "liteFlushMinutes",
+  sessionMinutes: "liteSessionMinutes",
 } as const;
 
 export const LITE_DEFAULT_MINUTES = 20;
 const LITE_MIN_MINUTES = 5;
 const LITE_MAX_MINUTES = 240;
+
+/**
+ * How long a cached session verdict is trusted before Postgres is asked again.
+ *
+ * Twenty minutes on purpose, and the reason is the free tier: the database
+ * sleeps after roughly fifteen idle minutes, so a shorter interval would mean a
+ * query before every sleep and the station would never rest. Every revocation
+ * the app knows about (sign-out, unapprove, session delete) drops the row
+ * immediately instead of waiting this out — the window only covers a revocation
+ * performed behind the app's back.
+ */
+export const LITE_DEFAULT_SESSION_MINUTES = 20;
+const LITE_SESSION_MIN_MINUTES = 5;
+const LITE_SESSION_MAX_MINUTES = 240;
 
 // Short memory cache for the track-likes list: it carries a user join that
 // cannot come from the SQLite mirror without duplicating PII there, so the
@@ -56,29 +71,46 @@ export type LikeUser = {
 // Operator config, read once and kept in memory: reading it from Postgres on
 // every request would be the very chatter this exists to avoid. Refreshed at
 // boot, by the admin save, and ahead of every flush.
-let memCfg: { enabled: boolean; minutes: number } | null = null;
+let memCfg: LiteConfig | null = null;
 
-export async function refreshLiteConfig(): Promise<{ enabled: boolean; minutes: number }> {
+export type LiteConfig = {
+  enabled: boolean;
+  minutes: number;
+  sessionMinutes: number;
+};
+
+const clamp = (v: number, lo: number, hi: number, dflt: number): number =>
+  Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt;
+
+export async function refreshLiteConfig(): Promise<LiteConfig> {
   let enabled = false;
   let minutes = LITE_DEFAULT_MINUTES;
+  let sessionMinutes = LITE_DEFAULT_SESSION_MINUTES;
   try {
     const rows = await prisma.setting.findMany({
-      where: { key: { in: [LITE_KEYS.enabled, LITE_KEYS.flushMinutes] } },
+      where: {
+        key: { in: [LITE_KEYS.enabled, LITE_KEYS.flushMinutes, LITE_KEYS.sessionMinutes] },
+      },
     });
     const get = (k: string) => rows.find((r) => r.key === k)?.value;
     enabled = get(LITE_KEYS.enabled) === "true";
-    const m = Math.floor(Number(get(LITE_KEYS.flushMinutes)));
-    if (Number.isFinite(m)) minutes = Math.min(LITE_MAX_MINUTES, Math.max(LITE_MIN_MINUTES, m));
+    minutes = clamp(Math.floor(Number(get(LITE_KEYS.flushMinutes))), LITE_MIN_MINUTES, LITE_MAX_MINUTES, LITE_DEFAULT_MINUTES);
+    sessionMinutes = clamp(
+      Math.floor(Number(get(LITE_KEYS.sessionMinutes))),
+      LITE_SESSION_MIN_MINUTES,
+      LITE_SESSION_MAX_MINUTES,
+      LITE_DEFAULT_SESSION_MINUTES
+    );
   } catch {
     // Unreadable database: keep the last known answer (or off).
   }
-  memCfg = { enabled, minutes };
+  memCfg = { enabled, minutes, sessionMinutes };
   writeLiteConfigFile(memCfg);
   return memCfg;
 }
 
-export function setLiteConfigLocal(enabled: boolean, minutes: number): void {
-  memCfg = { enabled, minutes };
+export function setLiteConfigLocal(enabled: boolean, minutes: number, sessionMinutes = LITE_DEFAULT_SESSION_MINUTES): void {
+  memCfg = { enabled, minutes, sessionMinutes };
 }
 
 function liteConfigPath(): string {
@@ -97,15 +129,22 @@ function writeLiteConfigFile(cfg: { enabled: boolean; minutes: number }): void {
   } catch {}
 }
 
-function readLiteConfigFile(): { enabled: boolean; minutes: number } | null {
+function readLiteConfigFile(): LiteConfig | null {
   try {
     if (!existsSync(liteConfigPath())) return null;
-    const d = JSON.parse(readFileSync(liteConfigPath(), "utf8")) as { enabled?: unknown; minutes?: unknown };
+    const d = JSON.parse(readFileSync(liteConfigPath(), "utf8")) as {
+      enabled?: unknown; minutes?: unknown; sessionMinutes?: unknown;
+    };
     if (typeof d.enabled !== "boolean") return null;
-    const m = Math.floor(Number(d.minutes));
     return {
       enabled: d.enabled,
-      minutes: Number.isFinite(m) ? Math.min(LITE_MAX_MINUTES, Math.max(LITE_MIN_MINUTES, m)) : LITE_DEFAULT_MINUTES,
+      minutes: clamp(Math.floor(Number(d.minutes)), LITE_MIN_MINUTES, LITE_MAX_MINUTES, LITE_DEFAULT_MINUTES),
+      sessionMinutes: clamp(
+        Math.floor(Number(d.sessionMinutes)),
+        LITE_SESSION_MIN_MINUTES,
+        LITE_SESSION_MAX_MINUTES,
+        LITE_DEFAULT_SESSION_MINUTES
+      ),
     };
   } catch {
     return null;
@@ -123,6 +162,10 @@ export function liteFlushMinutes(): number {
   return memCfg?.minutes ?? LITE_DEFAULT_MINUTES;
 }
 
+export function liteSessionMinutes(): number {
+  return memCfg?.sessionMinutes ?? LITE_DEFAULT_SESSION_MINUTES;
+}
+
 function cacheDbUrl(): string {
   const override = process.env.LITE_CACHE_DB_PATH;
   if (override) return override.startsWith("file:") ? override : `file:${override}`;
@@ -130,26 +173,115 @@ function cacheDbUrl(): string {
 }
 
 let lite: LiteClient | null = null;
-let liteFailed = false;
+
+/**
+ * When the next connection attempt is allowed.
+ *
+ * The cache is disposable by contract: Postgres is the real database, and if
+ * this file disappears or is corrupted the station must carry on by reading
+ * Postgres directly. So a failure never disables the cache permanently — that
+ * was the previous behaviour, and it meant one unlucky error kept the cache
+ * dark until the next restart. It now backs off and tries again, and an
+ * unrecoverable file is deleted and rebuilt rather than abandoned.
+ */
+let retryAfter = 0;
+/** Last repair attempt, so a permanently unavailable cache cannot thrash. */
+let lastRepairAt = 0;
+const RETRY_BACKOFF_MS = 30_000;
+
+/** Forget everything (tests, and the admin switch-off path keeps it simple). */
+export function resetLiteState(): void {
+  void lite?.$disconnect?.().catch?.(() => {});
+  lite = null;
+  retryAfter = 0;
+  lastRepairAt = 0;
+  trackCache.clear();
+  userCache.clear();
+}
 
 async function liteClient(): Promise<LiteClient | null> {
   if (lite) return lite;
-  if (liteFailed) return null;
+  if (Date.now() < retryAfter) return null;
   try {
     const mod = await import("../prisma/lite-client/index.js");
     const c = new mod.PrismaClient({ datasources: { db: { url: cacheDbUrl() } } });
     await ensureCacheTables(c as unknown as LiteClient);
     lite = c as unknown as LiteClient;
+    retryAfter = 0;
     return lite;
   } catch {
-    // No generated files, no data dir, locked disk — the caller falls back
-    // to direct Postgres. A broken cache must never break the feature.
-    liteFailed = true;
+    // No generated files, no data dir, locked disk — the caller falls back to
+    // direct Postgres. A broken cache must never break the feature.
+    retryAfter = Date.now() + RETRY_BACKOFF_MS;
     return null;
   }
 }
 
-/** Create the two mirror tables. Plain DDL matching the Prisma models. */
+/**
+ * Rebuild the cache file after it is deleted or corrupted.
+ *
+ * Called only from the failure path. A cache that cannot be opened is thrown
+ * away and recreated: it holds nothing that is not already in Postgres, so
+ * losing it costs one revalidation round and nothing else. Returns false if it
+ * still cannot be opened, in which case the caller reads Postgres.
+ */
+async function rebuildCache(): Promise<LiteClient | null> {
+  try {
+    await lite?.$disconnect?.().catch?.(() => {});
+    lite = null;
+    // Clear the backoff before retrying. The failed open that led here set it,
+    // and leaving it in place would make the repair attempt below give up
+    // immediately — which is how a deleted file stayed unusable for the whole
+    // backoff window instead of simply being rebuilt.
+    retryAfter = 0;
+    const { rmSync } = await import("node:fs");
+    const url = cacheDbUrl().replace(/^file:/, "");
+    // -wal and -shm too: a half-deleted set is what produces "database disk
+    // image is malformed" on the next open.
+    for (const suffix of ["", "-wal", "-shm"]) rmSync(`${url}${suffix}`, { force: true });
+    return await liteClient();
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Run a cache operation, healing the file once if it has gone bad.
+ *
+ * The whole safety contract lives here: any throw is swallowed and reported as
+ * a miss, so the caller falls back to Postgres. One repair attempt is made per
+ * operation, because a transient error (a locked file, a full disk) should not
+ * cost us the cache permanently.
+ */
+async function withCache<T>(op: (c: LiteClient) => Promise<T>): Promise<T | null> {
+  const c = await liteClient();
+  if (c) {
+    try {
+      return await op(c);
+    } catch {
+      // The file is bad. Fall through to the repair below.
+    }
+  }
+  // Repair whether the *open* failed or the *operation* did. Opening a corrupt
+  // file fails inside liteClient, so a version that only repaired on an
+  // operation error never rebuilt it at all — the cache stayed dead until the
+  // process restarted, which is the exact failure this contract forbids.
+  //
+  // Rate-limited: a cache that is unavailable for a reason no rebuild can fix
+  // (no generated client, no data directory) must not turn every request into a
+  // delete-and-retry.
+  if (Date.now() - lastRepairAt < RETRY_BACKOFF_MS) return null;
+  lastRepairAt = Date.now();
+  const healed = await rebuildCache();
+  if (!healed) return null;
+  try {
+    return await op(healed);
+  } catch {
+    return null;
+  }
+}
+
+/** Create the mirror tables. Plain DDL matching the Prisma models. */
 async function ensureCacheTables(c: LiteClient): Promise<void> {
   const raw = (c as unknown as { $executeRawUnsafe(q: string): Promise<unknown> }).$executeRawUnsafe;
   await raw.call(
@@ -164,14 +296,18 @@ async function ensureCacheTables(c: LiteClient): Promise<void> {
     c,
     `CREATE TABLE IF NOT EXISTS "SongLinkCache" ("trackId" TEXT NOT NULL PRIMARY KEY, "spotifyUrl" TEXT, "appleMusicUrl" TEXT, "explicit" INTEGER, "resolvedAt" DATETIME NOT NULL)`
   );
-}
-
-/** Forget everything (tests, and the admin switch-off path keeps it simple). */
-export function resetLiteState(): void {
-  lite = null;
-  liteFailed = false;
-  trackCache.clear();
-  userCache.clear();
+  // Session gate mirror. tokenHash is an HMAC of the session token, never the
+  // token itself, so this file holds no usable credential; the display fields
+  // are encrypted exactly as they are in Postgres. validUntil is when the row
+  // must be revalidated against Postgres.
+  // sessionExpires/validUntil are TEXT on purpose. They hold epoch milliseconds
+  // (~1.8e12), and Prisma's SQLite connector maps a declared INTEGER to a 32-bit
+  // int — reading one back fails with an opaque "raw query failed" and no
+  // column named. TEXT round-trips the value exactly; the reader parses it.
+  await raw.call(
+    c,
+    `CREATE TABLE IF NOT EXISTS "SessionCache" ("tokenHash" TEXT NOT NULL PRIMARY KEY, "userId" TEXT NOT NULL, "sessionExpires" TEXT NOT NULL, "validUntil" TEXT NOT NULL, "isApproved" INTEGER NOT NULL, "isAdmin" INTEGER NOT NULL, "nameEnc" TEXT, "nicknameEnc" TEXT, "emailEnc" TEXT, "email" TEXT)`
+  );
 }
 
 // ---- SongLinkCache: SQLite read-through, write-back ----
@@ -465,4 +601,160 @@ export function startLiteFlushScheduler(): void {
     }
   };
   loop();
+}
+
+// ---- SessionCache: the gate, mirrored so a request costs no database ----
+//
+// Everything here goes through withCache, so a missing, corrupt or unreadable
+// cache file is a miss rather than an error. The caller then asks Postgres,
+// which is the real database. That is the whole contract: this file is
+// disposable, and throwing it away must cost nothing but one revalidation.
+
+/** Stored shape of a cached session verdict. */
+export type SessionRow = {
+  userId: string;
+  sessionExpires: number;
+  isApproved: boolean;
+  isAdmin: boolean;
+  name: string | null;
+  nickname: string | null;
+  email: string | null;
+  emailEnc: string | null;
+};
+
+/**
+ * A SQL literal, escaped for SQLite.
+ *
+ * Tagged templates are the usual way to parameterise raw SQL, but Prisma does
+ * not support them on SQLite — they need the extended query protocol, so
+ * `$queryRaw`/`$executeRaw` fail there with an empty P2010. Hence
+ * `$queryRawUnsafe`, and hence the obligation to escape properly.
+ *
+ * Two mistakes are specifically avoided here. JSON.stringify is not a
+ * substitution for a SQL literal: SQLite reads "double quotes" as an
+ * *identifier*, so a WHERE clause quietly became a column comparison and every
+ * session read failed. And the quoting is SQL's, not JSON's — a single quote is
+ * doubled, which is the only escaping SQLite recognises inside a string.
+ *
+ * Callers pass values, never fragments, so this is the single place where a
+ * value can reach the statement text.
+ */
+const lit = (v: string | number | null | undefined): string => {
+  if (v === null || v === undefined) return "NULL";
+  if (typeof v === "number") return Number.isFinite(v) ? String(v) : "NULL";
+  return `'${String(v).replace(/'/g, "''")}'`;
+};
+
+const query = (c: LiteClient) =>
+  (c as unknown as { $queryRawUnsafe: (q: string) => Promise<unknown> }).$queryRawUnsafe.bind(c);
+const execute = (c: LiteClient) =>
+  (c as unknown as { $executeRawUnsafe: (q: string) => Promise<unknown> }).$executeRawUnsafe.bind(c);
+
+/**
+ * Hash a session token into a cache key.
+ *
+ * HMAC, not the token. The file is on local disk with ordinary permissions, and
+ * a session token is a bearer credential: anyone who could read this file would
+ * otherwise be able to impersonate every cached session. Postgres stores the
+ * token in plaintext, so this is strictly better than the record it mirrors.
+ *
+ * Returns null when no key is configured, which makes the cache unusable rather
+ * than unsafe — the caller falls back to Postgres.
+ */
+export async function sessionTokenHash(token: string): Promise<string | null> {
+  if (!token) return null;
+  try {
+    const crypto = await import("node:crypto");
+    const raw = process.env.PII_ENCRYPTION_KEY;
+    if (!raw) return null;
+    const key = /^[0-9a-f]{64}$/i.test(raw.trim())
+      ? Buffer.from(raw.trim(), "hex")
+      : Buffer.from(raw.trim(), "base64");
+    if (key.length !== 32) return null;
+    return crypto.createHmac("sha256", key).update(`session:${token}`).digest("hex");
+  } catch {
+    return null;
+  }
+}
+
+/** The cached verdict for a token, or null when absent or past its revalidation. */
+export async function liteGetSession(tokenHash: string, now = Date.now()): Promise<SessionRow | null> {
+  if (!tokenHash) return null;
+  return withCache(async (c) => {
+    const rows = (await query(c)(
+      `SELECT "userId","sessionExpires","validUntil","isApproved","isAdmin","nameEnc","nicknameEnc","emailEnc","email" ` +
+      `FROM "SessionCache" WHERE "tokenHash" = ${lit(tokenHash)}`
+    )) as any[];
+    const r = rows?.[0];
+    if (!r) return null;
+    // An expired session and a stale verdict are both misses, so the caller
+    // revalidates against Postgres rather than trusting this row.
+    if (Number(r.sessionExpires) <= now || Number(r.validUntil) <= now) return null;
+    const { dec } = await import("./pii");
+    return {
+      userId: String(r.userId),
+      sessionExpires: Number(r.sessionExpires),
+      isApproved: Number(r.isApproved) === 1,
+      isAdmin: Number(r.isAdmin) === 1,
+      name: dec(r.nameEnc),
+      nickname: dec(r.nicknameEnc),
+      email: r.email ?? null,
+      emailEnc: r.emailEnc ?? null,
+    } satisfies SessionRow;
+  });
+}
+
+/**
+ * Store a verdict. Best-effort by construction: a cache that cannot be written
+ * to must not fail the request that produced the answer.
+ */
+export async function litePutSession(
+  tokenHash: string,
+  row: Omit<SessionRow, "name" | "nickname" | "emailEnc"> & {
+    name?: string | null;
+    nickname?: string | null;
+    emailEnc?: string | null;
+  },
+  validUntil: number = Date.now() + liteSessionMinutes() * 60_000
+): Promise<boolean> {
+  if (!tokenHash) return false;
+  const wrote = await withCache(async (c) => {
+    const { enc } = await import("./pii");
+    // Only a verdict still inside the session's own lifetime is worth keeping;
+    // anything already expired would be handed back as live.
+    if (row.sessionExpires <= Date.now()) return false;
+    await execute(c)(
+      `INSERT INTO "SessionCache" ("tokenHash","userId","sessionExpires","validUntil","isApproved","isAdmin","nameEnc","nicknameEnc","emailEnc","email") ` +
+      `VALUES (${lit(tokenHash)}, ${lit(row.userId)}, ${lit(String(Number(row.sessionExpires)))}, ${lit(String(Number(validUntil)))}, ` +
+      `${row.isApproved ? 1 : 0}, ${row.isAdmin ? 1 : 0}, ${lit(enc(row.name ?? null))}, ${lit(enc(row.nickname ?? null))}, ` +
+      `${lit(row.emailEnc ?? null)}, ${lit(row.email ?? null)}) ` +
+      `ON CONFLICT("tokenHash") DO UPDATE SET ` +
+      `"userId"=excluded."userId","sessionExpires"=excluded."sessionExpires","validUntil"=excluded."validUntil",` +
+      `"isApproved"=excluded."isApproved","isAdmin"=excluded."isAdmin","nameEnc"=excluded."nameEnc",` +
+      `"nicknameEnc"=excluded."nicknameEnc","emailEnc"=excluded."emailEnc","email"=excluded."email"`
+    );
+    return true;
+  });
+  return wrote === true;
+}
+
+/** Forget one token, or every cached session when given no token. */
+export async function liteDropSession(tokenHash?: string): Promise<void> {
+  await withCache(async (c) => {
+    if (tokenHash) {
+      await execute(c)(`DELETE FROM "SessionCache" WHERE "tokenHash" = ${lit(tokenHash)}`);
+    } else {
+      await execute(c)(`DELETE FROM "SessionCache"`);
+    }
+    return true;
+  });
+}
+
+/** Drop every cached verdict for one user, whatever token they signed in with. */
+export async function liteDropSessionsForUser(userId: string): Promise<void> {
+  if (!userId) return;
+  await withCache(async (c) => {
+    await execute(c)(`DELETE FROM "SessionCache" WHERE "userId" = ${lit(userId)}`);
+    return true;
+  });
 }

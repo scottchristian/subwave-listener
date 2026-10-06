@@ -1,16 +1,28 @@
 import prisma from "@/lib/prisma";
 
 /**
- * Session + approval answers without the database, for hot routes.
+ * Session + approval answers without touching Postgres on most requests.
  *
- * The proxy already caches the gate for 60s, but every route then calls
- * getServerSession itself — another session read plus the approval lookup,
- * per request. On a 15s heartbeat that is ~3 reads a minute per open tab for
- * an answer that barely changes. So: one entry per token, session validity
- * trusted 60s, approval/admin/display fields trusted 5 minutes. Revocation
- * lands within a minute (same trade the proxy already makes); approval
- * changes within five. Admin-only routes keep calling getServerSession
- * directly — privilege changes there take effect immediately.
+ * Three tiers, cheapest first:
+ *
+ *   1. memory — this runtime only, ~60s. Next runs the proxy, route handlers
+ *      and server components as separate module graphs, each with its own Map,
+ *      so this alone is multiplied by the number of runtimes a request touches.
+ *   2. SQLite — one file on disk, shared by every runtime on the host, valid
+ *      for the operator's revalidation interval (20 minutes by default). This
+ *      is the tier that actually removes the recurring session read.
+ *   3. Postgres — the real database. Consulted whenever the tiers above miss,
+ *      and the only thing that makes the station's answers true.
+ *
+ * SQLite is a cache and nothing more. Every call into it swallows its own
+ * errors and reports a miss, so a deleted, corrupt or unwritable file costs one
+ * revalidation and never a request. Deleting the file is a supported operation,
+ * not an outage.
+ *
+ * Both cache tiers are bounded by the session's own expiry, so neither can
+ * report a session as live that Postgres would reject. Admin-only routes keep
+ * calling getServerSession directly, so a privilege change always lands
+ * immediately and no cache can hand back stale admin rights.
  *
  * SERVER-ONLY (prisma + memory maps): never import from a client component.
  * `load`/`now` are injectable so the TTL logic tests without a database.
@@ -97,24 +109,113 @@ export async function cachedSession(
       }
     }
   }
+  // Memory missed. The shared SQLite tier is next — this is the read that
+  // removes the per-runtime session lookup, because every runtime on the host
+  // sees the same file. Reached only on a memory miss, so it costs one local
+  // disk hit per runtime per TTL rather than one per request.
+  if (!opts?.load) {
+    const fromDisk = await cachedSessionFromDisk(token, now);
+    if (fromDisk) {
+      remember(token, fromDisk, now);
+      return fromDisk;
+    }
+  }
+
   let value: CachedSession | null = null;
   try {
     value = await load(token);
   } catch {
     return hit?.value ?? null;
   }
+  remember(token, value, now);
+  if (value && value.sessionExpires <= now) return null;
+  // Write through, so the next runtime to see this token does not have to ask
+  // Postgres either. Fire-and-forget: the answer is already in hand.
+  if (value && value.sessionExpires > now) void writeSessionToDisk(token, value);
+  return value;
+}
+
+function remember(token: string, value: CachedSession | null, now: number): void {
   if (cache.size >= MAX_ENTRIES) {
     const oldest = cache.keys().next();
     if (!oldest.done) cache.delete(oldest.value);
   }
   cache.set(token, { at: now, approvalAt: now, value });
-  if (value && value.sessionExpires <= now) return null;
-  return value;
 }
 
-/** Drop one token — call after anything that mutates sessions or approval. */
+/** The SQLite tier. Any failure is a miss — the caller then asks Postgres. */
+async function cachedSessionFromDisk(token: string, now: number): Promise<CachedSession | null> {
+  try {
+    const lite = await import("@/lib/lite-cache");
+    if (!(await lite.liteEnabled())) return null;
+    const hash = await lite.sessionTokenHash(token);
+    // No hash means no key configured. Caching sessions would then put live
+    // tokens on disk, so the tier is skipped rather than made unsafe.
+    if (!hash) return null;
+    const row = await lite.liteGetSession(hash, now);
+    if (!row) return null;
+    return {
+      userId: row.userId,
+      sessionExpires: row.sessionExpires,
+      isApproved: row.isApproved,
+      isAdmin: row.isAdmin,
+      name: row.name,
+      nickname: row.nickname,
+      email: row.email,
+      emailEnc: row.emailEnc,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/** Best-effort write-through. A cache that cannot be written is not an error. */
+async function writeSessionToDisk(token: string, value: CachedSession): Promise<void> {
+  try {
+    const lite = await import("@/lib/lite-cache");
+    if (!(await lite.liteEnabled())) return;
+    const hash = await lite.sessionTokenHash(token);
+    if (!hash) return;
+    await lite.litePutSession(hash, value);
+  } catch {
+    // Nothing to do: the answer was already served from Postgres.
+  }
+}
+
+/**
+ * Drop one token — call after anything that mutates sessions or approval.
+ *
+ * Both tiers, always. Dropping only the memory map would leave the SQLite row
+ * still serving a verdict the operator has already revoked, which is precisely
+ * the thing the cache must never do.
+ */
 export function dropSessionCache(token: string): void {
   cache.delete(token);
+  void (async () => {
+    try {
+      const lite = await import("@/lib/lite-cache");
+      const hash = await lite.sessionTokenHash(token);
+      if (hash) await lite.liteDropSession(hash);
+    } catch {
+      // A cache that cannot be dropped is stale at worst until its interval
+      // expires. The memory entry — what this runtime actually serves — is gone.
+    }
+  })();
+}
+
+/** Drop every cached verdict for a user — approval or a privilege changed. */
+export function dropSessionsForUser(userId: string): void {
+  for (const [token, entry] of cache) {
+    if (entry.value?.userId === userId) cache.delete(token);
+  }
+  void (async () => {
+    try {
+      const lite = await import("@/lib/lite-cache");
+      await lite.liteDropSessionsForUser(userId);
+    } catch {
+      // Same trade as above.
+    }
+  })();
 }
 
 const COOKIE_NAMES = ["__Secure-next-auth.session-token", "next-auth.session-token"];

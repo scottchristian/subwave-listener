@@ -5,6 +5,7 @@ import prisma from "@/lib/prisma";
 import { STATION } from "@/lib/station";
 import { pushToAdmins } from "@/lib/push";
 import { enc, dec, idx, displayName } from "@/lib/pii";
+import { dropSessionCache } from "@/lib/session-cache";
 
 
 // Prisma stores no plaintext address, so every adapter entry point that
@@ -71,24 +72,34 @@ export const authOptions: NextAuthOptions = {
       return true;
     },
     async session({ session, user }) {
-      // Fresh flags each session. session.user.email stays the blind index so
-      // the many `where: { email: session.user.email }` lookups keep working —
-      // it is opaque, so nothing here is PII. Name is decrypted for display.
-      const token = (session.user as any)?.email || (user as any)?.email;
-      if (token) {
-        const dbUser = await prisma.user.findUnique({ where: { email: token } });
-        if (dbUser) {
-          const su = session.user as any;
-          su.email = dbUser.email;
-          su.name = dec(dbUser.name);
-          su.isApproved = dbUser.isApproved;
-          su.isAdmin = dbUser.isAdmin;
-          su.canUseDj = dbUser.isAdmin || dbUser.canUseDj;
-          su.canApprove = dbUser.isAdmin || dbUser.canApprove;
-          su.canUseSkills = dbUser.isAdmin || dbUser.canUseSkills;
-          su.id = dbUser.id;
-        }
-      }
+      // The user row is already in hand — no query needed.
+      //
+      // The adapter reads it with `include: { user: true }` and passes it here
+      // as `user`, so every field below was already fetched. This callback used
+      // to re-read that same row by email, which made two database reads per
+      // authenticated request instead of one. The session cache alone could not
+      // have saved it: next-auth runs this callback before any route is
+      // reached, so it fires on paths the cache never sees.
+      //
+      // Two details carried over from that query:
+      //   - session.user.email stays the blind index, so the many
+      //     `where: { email: session.user.email }` lookups keep working. It is
+      //     opaque, so nothing here is PII.
+      //   - `user.name` arrives still ENCRYPTED, because getSessionAndUser
+      //     bypasses the decrypting getUserById wrapper above. Decrypt here.
+      if (!user) return session;
+      // AdapterUser is next-auth's own type and does not know this schema's
+      // extra columns, though the row plainly has them.
+      const u = user as any;
+      const su = session.user as any;
+      su.email = u.email;
+      su.name = dec(u.name);
+      su.isApproved = u.isApproved;
+      su.isAdmin = u.isAdmin;
+      su.canUseDj = u.isAdmin || u.canUseDj;
+      su.canApprove = u.isAdmin || u.canApprove;
+      su.canUseSkills = u.isAdmin || u.canUseSkills;
+      su.id = u.id;
       return session;
     },
   },
@@ -121,6 +132,23 @@ export const authOptions: NextAuthOptions = {
         }
       } catch (e) {
         console.error("Access-request push failed:", e);
+      }
+    },
+
+    // Signing out must also drop the cached verdict.
+    //
+    // Next-auth deletes the Session row, but a cached verdict is a copy of that
+    // row's meaning, and it would go on answering for a token the database no
+    // longer knows. The cookie is cleared by the browser, so the row is inert in
+    // practice — but "in practice" is doing the work in a security property, and
+    // the fix is three lines. This is the difference between signing out taking
+    // effect at once and taking effect when the revalidation interval expires.
+    async signOut({ token }) {
+      try {
+        const raw = (token as any)?.sessionToken ?? token;
+        if (typeof raw === "string" && raw) dropSessionCache(raw);
+      } catch (e) {
+        console.error("Sign-out cache drop failed:", e);
       }
     },
   },
