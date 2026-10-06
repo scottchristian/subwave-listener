@@ -98,6 +98,12 @@ try {
   const pg = new PrismaClient();
   await pg.$queryRawUnsafe("PRAGMA database_list");
 
+  // lib/prisma reuses a client left on globalThis, so hand it this one. The
+  // module and the test then share a single instance, which is what lets the
+  // failure-path assertions below stub an upsert the module will actually call
+  // (two clients over one file would make that stub a no-op).
+  (globalThis as any).prisma = pg;
+
   const lite = await import("../lib/lite-cache.ts");
   const user = await pg.user.create({ data: { email: "fan@example.com", name: "Fan" } as any });
 
@@ -134,6 +140,37 @@ try {
   ok(pgLikes.length === 1 && pgLikes[0].id === put?.id, "flush converges on the same id (no fork)");
   const merged2 = lite.mergeLikeRows(pgLikes, await lite.liteListMine(user.id));
   ok(merged2.length === 1, "post-flush merge has no duplicates");
+
+  // ---- The flush must DRAIN, or it re-pushes the same rows for ever ----
+  // A cache that never empties costs a query per row per interval and, on a
+  // free tier, keeps the database permanently awake on a timer.
+  ok((await lite.liteListMine(user.id)).length === 0, "confirmed likes leave the mirror");
+  ok((await lite.liteGetLink("t1")) === null, "confirmed links leave the mirror");
+  const idle = await lite.liteFlush();
+  ok(idle.likes === 0 && idle.links === 0 && idle.errors.length === 0, "a second flush over an empty cache does no work");
+  // Re-buffering after a drain still reaches Postgres.
+  await lite.litePutLike({ userId: user.id, trackId: "s1b", title: "After drain" });
+  const again2 = await lite.liteFlush();
+  ok(again2.likes === 1, "a row buffered after a drain still flushes");
+  ok((await pg.songLike.count({ where: { userId: user.id, trackId: "s1b" } })) === 1, "and lands in Postgres");
+  ok(!(await lite.liteListMine(user.id)).some((r) => r.trackId === "s1b"), "draining again empties the mirror");
+
+  // A row Postgres refuses must STAY in the mirror, or it is lost from both.
+  {
+    const stuck = await lite.litePutLike({ userId: user.id, trackId: "s1c", title: "Stuck" });
+    const realUpsert = pg.songLike.upsert.bind(pg.songLike);
+    (pg.songLike as any).upsert = async () => { throw new Error("simulated Postgres failure"); };
+    const failed = await lite.liteFlush();
+    (pg.songLike as any).upsert = realUpsert;
+    ok(failed.errors.length === 1 && failed.likes === 0, "a failed push is reported, not counted as flushed");
+    const still = await lite.liteListMine(user.id);
+    ok(still.some((r) => r.id === stuck?.id), "the failed row stays in the mirror for the next attempt");
+    ok((await pg.songLike.count({ where: { userId: user.id, trackId: "s1c" } })) === 0, "and is absent from Postgres, so nothing was lost");
+    const retried = await lite.liteFlush();
+    ok(retried.likes === 1 && retried.errors.length === 0, "the retry succeeds once Postgres is well");
+    ok(!(await lite.liteListMine(user.id)).some((r) => r.trackId === "s1c"), "and then the mirror drains");
+    await pg.songLike.deleteMany({ where: { userId: user.id } });
+  }
 
   // ---- Unlike of a never-flushed like: sqlite gone, Postgres P2025 ignored ----
   await lite.litePutLike({ userId: user.id, trackId: "s2" });

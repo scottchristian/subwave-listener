@@ -359,6 +359,11 @@ export async function liteFlush(): Promise<FlushResult> {
     out.errors.push("no cache database");
     return out;
   }
+  // Drained only after Postgres confirms the write, never before: a row removed
+  // from the cache and then lost to a failed upsert would be gone from both
+  // stores. Everything the loop cannot push stays put and is retried.
+  const settledLikes: { id: string }[] = [];
+  const settledLinks: string[] = [];
   let likes: LikeRow[] = [];
   let links: LinkRow[] = [];
   try {
@@ -386,6 +391,7 @@ export async function liteFlush(): Promise<FlushResult> {
           createdAt: r.createdAt,
         },
       });
+      settledLikes.push({ id: r.id });
       out.likes++;
     } catch (e) {
       out.errors.push(`like ${r.trackId}: ${(e as Error)?.message || "unknown"}`.slice(0, 160));
@@ -398,10 +404,26 @@ export async function liteFlush(): Promise<FlushResult> {
         update: { spotifyUrl: r.spotifyUrl, appleMusicUrl: r.appleMusicUrl, explicit: r.explicit },
         create: { trackId: r.trackId, spotifyUrl: r.spotifyUrl, appleMusicUrl: r.appleMusicUrl, explicit: r.explicit },
       });
+      settledLinks.push(r.trackId);
       out.links++;
     } catch (e) {
       out.errors.push(`link ${r.trackId}: ${(e as Error)?.message || "unknown"}`.slice(0, 160));
     }
+  }
+
+  // Postgres is canonical now, so the mirror drops what it confirmed. Without
+  // this the cache never empties and every flush re-pushes the same rows for
+  // ever — which costs a query per row per interval and, on a free tier, holds
+  // the database awake on a timer that never goes quiet.
+  if (settledLikes.length > 0) {
+    await c.songLike.deleteMany({ where: { id: { in: settledLikes.map((r) => r.id) } } }).catch((e) => {
+      out.errors.push(`drain likes: ${(e as Error)?.message || "unknown"}`.slice(0, 160));
+    });
+  }
+  if (settledLinks.length > 0) {
+    await c.songLinkCache.deleteMany({ where: { trackId: { in: settledLinks } } }).catch((e) => {
+      out.errors.push(`drain links: ${(e as Error)?.message || "unknown"}`.slice(0, 160));
+    });
   }
   return out;
 }
