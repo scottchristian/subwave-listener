@@ -68,6 +68,16 @@ export async function register() {
   } catch (err) {
     console.warn("[boot] lite-cache flush scheduler not started:", message(err));
   }
+
+  try {
+    // Reap stream sessions that were opened but never closed. Twice a day,
+    // which is far outside the free tier's idle window — this is not a
+    // heartbeat, and it must not become one.
+    const { startSessionPruneScheduler } = await import("./lib/session-prune");
+    startSessionPruneScheduler();
+  } catch (err) {
+    console.warn("[boot] session-prune scheduler not started:", message(err));
+  }
 }
 
 const message = (err: unknown) =>
