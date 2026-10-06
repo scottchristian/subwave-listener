@@ -100,6 +100,9 @@ const verdict = {
   sessionExpires: Date.now() + 3600_000,
   isApproved: true,
   isAdmin: false,
+  canUseDj: false,
+  canApprove: false,
+  canUseSkills: false,
   name: "Cassandra",
   nickname: null,
   email: "h1:deadbeef",
@@ -169,6 +172,79 @@ ok((await lite.liteGetSession((await lite.sessionTokenHash("never-seen"))!)) ===
   await lite.liteDropSession(h);
   const still = await lite.litePutSession((await lite.sessionTokenHash("after-injection"))!, verdict);
   ok(still === true, "and the cache keeps working");
+}
+
+// ---- a permission change reaches the FILE, so no runtime needs Postgres ----
+// The scenario this exists for: the operator revokes someone, and that person
+// is mid-session on another runtime. A drop would make their next request ask
+// Postgres. A write-through means the file already carries the new answer.
+{
+  const h1 = (await lite.sessionTokenHash("perm-token-a"))!;
+  const h2 = (await lite.sessionTokenHash("perm-token-b"))!;
+  await lite.litePutSession(h1, verdict); // isAdmin: false, isApproved: true
+  await lite.litePutSession(h2, verdict);
+
+  ok((await lite.liteUpdateSessionPermissions("user-1", { isApproved: false })) === true, "a permission write reports success");
+  const afterRevoke = await lite.liteGetSession(h1);
+  ok(afterRevoke?.isApproved === false, "the cached verdict now says not approved");
+  ok(afterRevoke?.isAdmin === false, "an unnamed flag is left alone, not reset");
+
+  // The second token — another device — changed too.
+  ok((await lite.liteGetSession(h2))?.isApproved === false, "every token the user holds is updated");
+
+  // Re-granting lands just as fast.
+  await lite.liteUpdateSessionPermissions("user-1", { isApproved: true, isAdmin: true, canUseDj: true });
+  const restored = await lite.liteGetSession(h1);
+  ok(restored?.isApproved === true && restored?.isAdmin === true && restored?.canUseDj === true,
+    "granting several permissions at once writes them all");
+
+  // Nobody else is touched.
+  const hOther = (await lite.sessionTokenHash("perm-token-c"))!;
+  await lite.litePutSession(hOther, { ...verdict, userId: "user-2" });
+  await lite.liteUpdateSessionPermissions("user-1", { isApproved: false });
+  ok((await lite.liteGetSession(hOther))?.isApproved === true, "another user's cached verdict is untouched");
+
+  // The deadline must NOT move: a permission change is not a licence to live
+  // longer, and the row must still go stale on its own schedule.
+  const before = (await lite.liteGetSession(h1))!.sessionExpires;
+  await lite.liteUpdateSessionPermissions("user-1", { isAdmin: true });
+  ok((await lite.liteGetSession(h1))!.sessionExpires === before, "the session expiry is untouched by a permission change");
+
+  // Nothing to write is not an error.
+  ok((await lite.liteUpdateSessionPermissions("user-1", {})) === false, "an empty flag set writes nothing");
+  ok((await lite.liteUpdateSessionPermissions("", { isAdmin: true })) === false, "an empty user id writes nothing");
+
+  await lite.liteDropSession(h1);
+  await lite.liteDropSession(h2);
+  await lite.liteDropSession(hOther);
+}
+
+// ---- the table rebuilds itself when its shape is stale ----
+// A cache needs no migration, and this is what lets the column set above change
+// without a deploy-time step or an opaque "no such column" on first request.
+{
+  await lite.resetLiteState();
+  const h = (await lite.sessionTokenHash("shape-token"))!;
+  await lite.litePutSession(h, verdict);
+  ok((await lite.liteGetSession(h))?.userId === "user-1", "the current shape round-trips");
+
+  // Recreate the table in the OLD shape, as a previous build would have left it.
+  const { execFileSync } = await import("node:child_process");
+  const url = process.env.LITE_CACHE_DB_PATH!.replace(/^file:/, "");
+  const sqlite = (args: string[]) => execFileSync("sqlite3", [url, ...args], { encoding: "utf8" });
+  sqlite(["DROP TABLE \"SessionCache\""]);
+  sqlite([
+    'CREATE TABLE "SessionCache" ("tokenHash" TEXT PRIMARY KEY, "userId" TEXT NOT NULL, "sessionExpires" TEXT NOT NULL, "validUntil" TEXT NOT NULL, "isApproved" INTEGER NOT NULL, "isAdmin" INTEGER NOT NULL, "nameEnc" TEXT, "nicknameEnc" TEXT, "emailEnc" TEXT, "email" TEXT)',
+  ]);
+  // Force a fresh open so the reconciliation runs.
+  await lite.resetLiteState();
+  const cols = sqlite(["PRAGMA table_info(\"SessionCache\");"]).trim().split("\n").map((l) => l.split("|")[1]);
+  ok(!cols.includes("canUseDj"), "the stale table really does lack the new column");
+  ok((await lite.litePutSession(h, verdict)) === true, "a write against the stale table succeeds rather than erroring");
+  ok((await lite.liteGetSession(h))?.userId === "user-1", "and the table came back with the current shape");
+  const after = sqlite(["PRAGMA table_info(\"SessionCache\");"]).trim().split("\n").map((l) => l.split("|")[1]);
+  ok(after.includes("canUseDj") && after.includes("canApprove") && after.includes("canUseSkills"),
+    "the rebuilt table has every expected column");
 }
 
 // ---- dropping is real: revocation must not be served from the file ----

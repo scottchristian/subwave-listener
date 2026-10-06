@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
-import { dropSessionsForUser } from "@/lib/session-cache";
+import { refreshSessionsForUser } from "@/lib/session-cache";
 
 
 
@@ -23,9 +23,11 @@ export async function POST(req: NextRequest) {
     where: { id: userId },
     data: { isApproved: true },
   });
-  // A pending account has a cached "not approved" verdict. Drop it so the newly
-  // approved listener is let in now, not when the interval happens to expire.
-  dropSessionsForUser(userId);
+  // A pending account has a cached "not approved" verdict. Written through, not
+  // dropped: the newly approved listener is let in on their very next request,
+  // with no database read to establish it — which is the moment the operator is
+  // watching to see whether it worked.
+  refreshSessionsForUser(userId, { isApproved: true });
 
   return NextResponse.json({ success: true });
 }

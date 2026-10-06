@@ -304,10 +304,48 @@ async function ensureCacheTables(c: LiteClient): Promise<void> {
   // (~1.8e12), and Prisma's SQLite connector maps a declared INTEGER to a 32-bit
   // int — reading one back fails with an opaque "raw query failed" and no
   // column named. TEXT round-trips the value exactly; the reader parses it.
-  await raw.call(
-    c,
-    `CREATE TABLE IF NOT EXISTS "SessionCache" ("tokenHash" TEXT NOT NULL PRIMARY KEY, "userId" TEXT NOT NULL, "sessionExpires" TEXT NOT NULL, "validUntil" TEXT NOT NULL, "isApproved" INTEGER NOT NULL, "isAdmin" INTEGER NOT NULL, "nameEnc" TEXT, "nicknameEnc" TEXT, "emailEnc" TEXT, "email" TEXT)`
-  );
+  await reconcileSessionTable(c);
+}
+
+/**
+ * Create the session mirror, rebuilding it if its shape is stale.
+ *
+ * A cache is the one table here we are free to throw away, because nothing in it
+ * is the record of anything — Postgres holds that. So a schema change does not
+ * need a migration: if the columns are not what we expect, the table is dropped
+ * and recreated, and the next request repopulates it from Postgres.
+ *
+ * `CREATE TABLE IF NOT EXISTS` alone cannot do this — it leaves an old table in
+ * place, and the first query naming a new column then fails with an opaque
+ * "no such column" on a cache that should be disposable.
+ */
+// sessionExpires/validUntil are TEXT on purpose: they hold epoch milliseconds
+// (~1.8e12) and Prisma's SQLite connector maps a declared INTEGER to a 32-bit
+// int, which overflows on read with a bare "raw query failed".
+const SESSION_TABLE_DDL =
+  `CREATE TABLE "SessionCache" ("tokenHash" TEXT NOT NULL PRIMARY KEY, ` +
+  `"userId" TEXT NOT NULL, "sessionExpires" TEXT NOT NULL, "validUntil" TEXT NOT NULL, ` +
+  `"isApproved" INTEGER NOT NULL, "isAdmin" INTEGER NOT NULL, ` +
+  `"canUseDj" INTEGER NOT NULL, "canApprove" INTEGER NOT NULL, "canUseSkills" INTEGER NOT NULL, ` +
+  `"nameEnc" TEXT, "nicknameEnc" TEXT, "emailEnc" TEXT, "email" TEXT)`;
+
+const SESSION_COLUMNS = [
+  "tokenHash", "userId", "sessionExpires", "validUntil",
+  "isApproved", "isAdmin", "canUseDj", "canApprove", "canUseSkills",
+  "nameEnc", "nicknameEnc", "emailEnc", "email",
+] as const;
+
+async function reconcileSessionTable(c: LiteClient): Promise<void> {
+  const exec = (c as unknown as { $executeRawUnsafe: (q: string) => Promise<unknown> }).$executeRawUnsafe.bind(c);
+  const read = (c as unknown as { $queryRawUnsafe: (q: string) => Promise<unknown> }).$queryRawUnsafe.bind(c);
+  await exec(SESSION_TABLE_DDL.replace('CREATE TABLE "SessionCache"', 'CREATE TABLE IF NOT EXISTS "SessionCache"'));
+  const info = (await read(`PRAGMA table_info("SessionCache")`)) as any[];
+  const have = new Set((info ?? []).map((r) => r?.name));
+  const missing = SESSION_COLUMNS.filter((col) => !have.has(col));
+  if (missing.length === 0) return;
+  // Disposable: drop and rebuild rather than migrate.
+  await exec(`DROP TABLE "SessionCache"`);
+  await exec(SESSION_TABLE_DDL);
 }
 
 // ---- SongLinkCache: SQLite read-through, write-back ----
@@ -616,10 +654,22 @@ export type SessionRow = {
   sessionExpires: number;
   isApproved: boolean;
   isAdmin: boolean;
+  canUseDj: boolean;
+  canApprove: boolean;
+  canUseSkills: boolean;
   name: string | null;
   nickname: string | null;
   email: string | null;
   emailEnc: string | null;
+};
+
+/** The permissions a verdict carries, for a targeted write-through. */
+export type PermissionFlags = {
+  isApproved?: boolean;
+  isAdmin?: boolean;
+  canUseDj?: boolean;
+  canApprove?: boolean;
+  canUseSkills?: boolean;
 };
 
 /**
@@ -682,7 +732,7 @@ export async function liteGetSession(tokenHash: string, now = Date.now()): Promi
   if (!tokenHash) return null;
   return withCache(async (c) => {
     const rows = (await query(c)(
-      `SELECT "userId","sessionExpires","validUntil","isApproved","isAdmin","nameEnc","nicknameEnc","emailEnc","email" ` +
+      `SELECT "userId","sessionExpires","validUntil","isApproved","isAdmin","canUseDj","canApprove","canUseSkills","nameEnc","nicknameEnc","emailEnc","email" ` +
       `FROM "SessionCache" WHERE "tokenHash" = ${lit(tokenHash)}`
     )) as any[];
     const r = rows?.[0];
@@ -696,6 +746,9 @@ export async function liteGetSession(tokenHash: string, now = Date.now()): Promi
       sessionExpires: Number(r.sessionExpires),
       isApproved: Number(r.isApproved) === 1,
       isAdmin: Number(r.isAdmin) === 1,
+      canUseDj: Number(r.canUseDj) === 1,
+      canApprove: Number(r.canApprove) === 1,
+      canUseSkills: Number(r.canUseSkills) === 1,
       name: dec(r.nameEnc),
       nickname: dec(r.nicknameEnc),
       email: r.email ?? null,
@@ -724,14 +777,16 @@ export async function litePutSession(
     // anything already expired would be handed back as live.
     if (row.sessionExpires <= Date.now()) return false;
     await execute(c)(
-      `INSERT INTO "SessionCache" ("tokenHash","userId","sessionExpires","validUntil","isApproved","isAdmin","nameEnc","nicknameEnc","emailEnc","email") ` +
+      `INSERT INTO "SessionCache" ("tokenHash","userId","sessionExpires","validUntil","isApproved","isAdmin","canUseDj","canApprove","canUseSkills","nameEnc","nicknameEnc","emailEnc","email") ` +
       `VALUES (${lit(tokenHash)}, ${lit(row.userId)}, ${lit(String(Number(row.sessionExpires)))}, ${lit(String(Number(validUntil)))}, ` +
-      `${row.isApproved ? 1 : 0}, ${row.isAdmin ? 1 : 0}, ${lit(enc(row.name ?? null))}, ${lit(enc(row.nickname ?? null))}, ` +
+      `${row.isApproved ? 1 : 0}, ${row.isAdmin ? 1 : 0}, ${row.canUseDj ? 1 : 0}, ${row.canApprove ? 1 : 0}, ${row.canUseSkills ? 1 : 0}, ` +
+      `${lit(enc(row.name ?? null))}, ${lit(enc(row.nickname ?? null))}, ` +
       `${lit(row.emailEnc ?? null)}, ${lit(row.email ?? null)}) ` +
       `ON CONFLICT("tokenHash") DO UPDATE SET ` +
       `"userId"=excluded."userId","sessionExpires"=excluded."sessionExpires","validUntil"=excluded."validUntil",` +
-      `"isApproved"=excluded."isApproved","isAdmin"=excluded."isAdmin","nameEnc"=excluded."nameEnc",` +
-      `"nicknameEnc"=excluded."nicknameEnc","emailEnc"=excluded."emailEnc","email"=excluded."email"`
+      `"isApproved"=excluded."isApproved","isAdmin"=excluded."isAdmin",` +
+      `"canUseDj"=excluded."canUseDj","canApprove"=excluded."canApprove","canUseSkills"=excluded."canUseSkills",` +
+      `"nameEnc"=excluded."nameEnc","nicknameEnc"=excluded."nicknameEnc","emailEnc"=excluded."emailEnc","email"=excluded."email"`
     );
     return true;
   });
@@ -757,4 +812,38 @@ export async function liteDropSessionsForUser(userId: string): Promise<void> {
     await execute(c)(`DELETE FROM "SessionCache" WHERE "userId" = ${lit(userId)}`);
     return true;
   });
+}
+
+/**
+ * Write a permission change straight into every cached verdict for a user.
+ *
+ * This is the difference between "revoked, but the listener keeps their access
+ * until the next revalidation" and "revoked, immediately". The alternative —
+ * dropping the rows — is correct but costs a Postgres read on the very next
+ * request, which is the one thing this cache exists to avoid.
+ *
+ * Only the named columns move. The deadline, the identity and the encrypted
+ * display fields are deliberately untouched: a permission change says nothing
+ * about when the session expires or what the listener is called, and rewriting
+ * them would risk widening a verdict's life.
+ *
+ * Every token the user holds is updated, so a change applies on all their
+ * devices at once.
+ */
+export async function liteUpdateSessionPermissions(
+  userId: string,
+  flags: PermissionFlags
+): Promise<boolean> {
+  if (!userId) return false;
+  const cols = Object.keys(flags).filter(
+    (k): k is keyof PermissionFlags =>
+      k === "isApproved" || k === "isAdmin" || k === "canUseDj" || k === "canApprove" || k === "canUseSkills"
+  );
+  if (cols.length === 0) return false;
+  const assignments = cols.map((c) => `"${c}" = ${flags[c] ? 1 : 0}`).join(", ");
+  const wrote = await withCache(async (c) => {
+    await execute(c)(`UPDATE "SessionCache" SET ${assignments} WHERE "userId" = ${lit(userId)}`);
+    return true;
+  });
+  return wrote === true;
 }

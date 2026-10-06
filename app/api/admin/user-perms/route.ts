@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
+import { refreshSessionsForUser } from "@/lib/session-cache";
 
 // Per-user booth permissions, set individually: Manual Voice DJ, approve
 // access, or promote to full admin. Admin implies the other two, so promoting
@@ -49,6 +50,18 @@ export async function POST(req: NextRequest) {
   }
 
   const updated = await prisma.user.update({ where: { id: userId }, data });
+
+  // The change is written into every cached verdict for this user, on all their
+  // devices. Only `data` is written, never the whole row rebuilt from defaults:
+  // a caller that changed one flag must not silently clear the other three.
+  // Admin carries the rest, so it is reported the way it is stored.
+  refreshSessionsForUser(userId, {
+    ...(data as Record<string, boolean>),
+    isAdmin: updated.isAdmin,
+    canUseDj: updated.isAdmin || updated.canUseDj,
+    canApprove: updated.isAdmin || updated.canApprove,
+    canUseSkills: updated.isAdmin || updated.canUseSkills,
+  });
   return NextResponse.json({
     success: true,
     user: {

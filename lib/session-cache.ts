@@ -33,6 +33,15 @@ export type CachedSession = {
   sessionExpires: number;
   isApproved: boolean;
   isAdmin: boolean;
+  /**
+   * The listener permissions, cached alongside approval so a change to any of
+   * them can be written straight through instead of costing a revalidation.
+   * Absent on an entry written by an older build, which reads as false — the
+   * safe direction for a permission.
+   */
+  canUseDj: boolean;
+  canApprove: boolean;
+  canUseSkills: boolean;
   name: string | null;
   nickname: string | null;
   email: string | null;
@@ -67,6 +76,9 @@ async function defaultLoad(token: string): Promise<CachedSession | null> {
       emailEnc: true,
       isApproved: true,
       isAdmin: true,
+      canUseDj: true,
+      canApprove: true,
+      canUseSkills: true,
     },
   });
   if (!user) return null;
@@ -75,6 +87,9 @@ async function defaultLoad(token: string): Promise<CachedSession | null> {
     sessionExpires: session.expires.getTime(),
     isApproved: user.isApproved ?? false,
     isAdmin: user.isAdmin ?? false,
+    canUseDj: user.isAdmin ?? user.canUseDj ?? false,
+    canApprove: user.isAdmin ?? user.canApprove ?? false,
+    canUseSkills: user.isAdmin ?? user.canUseSkills ?? false,
     name: user.name ?? null,
     nickname: user.nickname ?? null,
     email: user.email ?? null,
@@ -159,6 +174,9 @@ async function cachedSessionFromDisk(token: string, now: number): Promise<Cached
       sessionExpires: row.sessionExpires,
       isApproved: row.isApproved,
       isAdmin: row.isAdmin,
+      canUseDj: row.canUseDj,
+      canApprove: row.canApprove,
+      canUseSkills: row.canUseSkills,
       name: row.name,
       nickname: row.nickname,
       email: row.email,
@@ -229,4 +247,60 @@ export function sessionTokenFromCookies(req: {
     if (v) return v;
   }
   return undefined;
+}
+
+/**
+ * A permission changed: write the new values into every cached verdict for this
+ * user, in both tiers.
+ *
+ * This is what makes a permission change take effect immediately without a
+ * Postgres read. `dropSessionsForUser` also makes it correct — the next request
+ * asks Postgres — but it spends a read to do so, on precisely the request where
+ * the operator is watching to see whether it worked.
+ *
+ * The memory tier is updated synchronously because it is what this runtime will
+ * serve next; the SQLite tier is updated in the background because other
+ * runtimes read it. Every token the user holds is covered, so all their devices
+ * change at once.
+ *
+ * Call this *after* the Postgres write succeeds. It carries only the flags that
+ * changed — anything left out keeps its cached value rather than being reset,
+ * so a caller that knows one flag cannot accidentally clear another.
+ */
+export function refreshSessionsForUser(
+  userId: string,
+  flags: {
+    isApproved?: boolean;
+    isAdmin?: boolean;
+    canUseDj?: boolean;
+    canApprove?: boolean;
+    canUseSkills?: boolean;
+  }
+): void {
+  if (!userId || Object.keys(flags).length === 0) return;
+  for (const [token, entry] of cache) {
+    const v = entry.value;
+    if (!v || v.userId !== userId) continue;
+    cache.set(token, {
+      ...entry,
+      value: {
+        ...v,
+        ...(typeof flags.isApproved === "boolean" ? { isApproved: flags.isApproved } : {}),
+        ...(typeof flags.isAdmin === "boolean" ? { isAdmin: flags.isAdmin } : {}),
+        ...(typeof flags.canUseDj === "boolean" ? { canUseDj: flags.canUseDj } : {}),
+        ...(typeof flags.canApprove === "boolean" ? { canApprove: flags.canApprove } : {}),
+        ...(typeof flags.canUseSkills === "boolean" ? { canUseSkills: flags.canUseSkills } : {}),
+      },
+    });
+  }
+  void (async () => {
+    try {
+      const lite = await import("@/lib/lite-cache");
+      await lite.liteUpdateSessionPermissions(userId, flags);
+    } catch {
+      // The write-through is an optimisation. If it fails, the cache still goes
+      // stale and Postgres answers correctly on the next revalidation, so this
+      // must never surface.
+    }
+  })();
 }

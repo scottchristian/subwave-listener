@@ -1,7 +1,7 @@
 // Session cache: hot routes answer from memory with bounded staleness.
 // Loader and clock are injected — no database. Run:
 // node scripts/check-session-cache.mts (wired as `npm run check:session-cache`).
-import { cachedSession, clearSessionCache, type CachedSession } from "../lib/session-cache.ts";
+import { cachedSession, clearSessionCache, type CachedSession, refreshSessionsForUser } from "../lib/session-cache.ts";
 
 let passed = 0;
 let failed = 0;
@@ -21,6 +21,9 @@ const base: CachedSession = {
   sessionExpires: T0 + 3600_000,
   isApproved: true,
   isAdmin: false,
+  canUseDj: false,
+  canApprove: false,
+  canUseSkills: false,
   name: "Fan",
   nickname: null,
   email: null,
@@ -103,9 +106,20 @@ ok((await cachedSession("t3", { now: T0, load: expired })) === null, "expired se
 
   // Every path that changes approval or removes an account must drop the cached
   // verdicts, or a revoked listener keeps their access until the interval ends.
-  for (const rel of ["approve", "revoke", "remove"]) {
+  // Approve and revoke must WRITE the new permissions through, not merely drop
+  // the entry: a drop is correct but spends a database read on the next request,
+  // which is the read this cache exists to avoid.
+  for (const rel of ["approve", "revoke", "user-perms"]) {
     const f = path.join(repo, "app", "api", "admin", rel, "route.ts");
-    ok(/dropSessionsForUser/.test(readFileSync(f, "utf8")), `${rel} drops that user's cached verdicts`);
+    ok(/refreshSessionsForUser\(/.test(readFileSync(f, "utf8")), `${rel} writes the new permissions through`);
+    ok(!/dropSessionsForUser\(/.test(readFileSync(f, "utf8")), `${rel} does not merely drop the entry`);
+  }
+  // Removal is the opposite case: the user is gone, so there is nothing to write
+  // to and a stale verdict must not survive them.
+  {
+    const f = path.join(repo, "app", "api", "admin", "remove", "route.ts");
+    ok(/dropSessionsForUser\(/.test(readFileSync(f, "utf8")), "remove drops the deleted user's cached verdicts");
+    ok(!/refreshSessionsForUser\(/.test(readFileSync(f, "utf8")), "and does not try to write permissions to a deleted user");
   }
 
   // Signing out must drop the token's verdict, or the cache outlives the session.
@@ -119,6 +133,60 @@ ok((await cachedSession("t3", { now: T0, load: expired })) === null, "expired se
   const callback = auth.slice(auth.indexOf("async session("), auth.indexOf("events:"));
   ok(!/prisma\.\w+\.(findUnique|findFirst)/.test(callback), "the session callback runs no query of its own");
   ok(!/await\s+prisma/.test(callback), "and awaits no database work at all");
+}
+
+// ---- the memory tier of a permission write-through ----
+// The point of writing the new values rather than dropping the entry: the very
+// next request gets them, and gets them without a database read.
+{
+  clearSessionCache();
+  loads = 0;
+  await cachedSession("tok-r", { now: T0, load });
+
+  refreshSessionsForUser("u1", { isApproved: false });
+  const afterRevoke = await cachedSession("tok-r", { now: T0 + 1000, load });
+  ok(afterRevoke?.isApproved === false, "a revoked user is unapproved on the next read");
+  ok(loads === 1, "and it cost no further load — the write-through answered it");
+
+  refreshSessionsForUser("u1", { isApproved: true });
+  ok((await cachedSession("tok-r", { now: T0 + 2000, load }))?.isApproved === true, "re-approving lands just as fast");
+  ok(loads === 1, "still with no extra load");
+
+  // Only the named flags move. Clearing isAdmin must not clear canUseDj — start
+  // from an entry that actually has it set, or the assertion proves nothing.
+  clearSessionCache();
+  await cachedSession("tok-p", {
+    now: T0,
+    load: async () => ({ ...base, isAdmin: true, canUseDj: true }),
+  });
+  refreshSessionsForUser("u1", { isAdmin: false });
+  const partial = await cachedSession("tok-p", { now: T0 + 3000, load });
+  ok(partial?.isAdmin === false, "isAdmin is cleared");
+  ok(partial?.canUseDj === true, "an unnamed flag keeps its value, not reset to false");
+  ok(partial?.isApproved === true, "and so does approval");
+
+  // Every token the user holds changes, since they may be on several devices.
+  // tok-r is re-primed first: the block above cleared the cache to test a
+  // partial write, so it is no longer held.
+  await cachedSession("tok-r", { now: T0, load });
+  await cachedSession("tok-r2", { now: T0, load: async () => ({ ...base, userId: "u1" }) });
+  refreshSessionsForUser("u1", { isApproved: false });
+  ok((await cachedSession("tok-r", { now: T0 + 4000, load }))?.isApproved === false, "the first token changed");
+  ok((await cachedSession("tok-r2", { now: T0 + 4000, load }))?.isApproved === false, "and so did the second");
+
+  // And nobody else is affected.
+  await cachedSession("tok-other", { now: T0, load: async () => ({ ...base, userId: "u2" }) });
+  refreshSessionsForUser("u1", { isApproved: true });
+  ok((await cachedSession("tok-other", { now: T0 + 5000, load }))?.isApproved === true, "another user's entry is untouched by name");
+  clearSessionCache();
+  await cachedSession("tok-other", { now: T0, load: async () => ({ ...base, userId: "u2", isApproved: false }) });
+  refreshSessionsForUser("u1", { isApproved: true });
+  ok((await cachedSession("tok-other", { now: T0 + 5000, load }))?.isApproved === false, "and a write for u1 leaves u2 alone");
+
+  // Nothing to do is not an error.
+  refreshSessionsForUser("u1", {});
+  refreshSessionsForUser("", { isApproved: true });
+  ok(true, "an empty flag set or empty user id is simply ignored");
 }
 
 console.log(`  ${passed}/${passed + failed} session-cache assertions passed`);
