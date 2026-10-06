@@ -25,13 +25,16 @@ async function requireAdmin() {
 // restart at the end, which the job file survives and the process does not.
 export async function GET() {
   if (!(await requireAdmin())) return new Response("Forbidden", { status: 403 });
-  const [job, pre, source, auto, stationTimezone] = await Promise.all([
+  const [job, pre, source, autoRead, stationTimezone] = await Promise.all([
     readJob(),
     preflight(process.cwd()),
     readSource(),
     readAutoUpdateSettings(),
     resolveStationTimezone(),
   ]);
+  // Spread rather than serve the wrapper, so the panel keeps its existing shape,
+  // plus `autoReadable` so it can tell "off" from "the database did not answer".
+  const auto = { ...autoRead.settings, readable: autoRead.ok };
   return NextResponse.json({
     current: APP_VERSION,
     job,

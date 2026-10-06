@@ -10,7 +10,7 @@
     "check:auto": "node --import ./scripts/test-register.mjs scripts/check-auto-update.mts",
     "check:backup": "TEST_PRISMA_CLIENT=\"$PWD/.test-client\" node --import ./scripts/test-register.mjs scripts/check-backup.mts",
     "check:brandpaths": "node --import ./scripts/test-register.mjs scripts/check-brandpaths.mts",
-    "check:db": "npm run --silent check:backup && npm run --silent check:update && npm run --silent check:auto && npm run --silent check:activity && npm run --silent check:still-listening && npm run --silent check:heartbeat && npm run --silent check:presence-live && npm run --silent check:schedule-run && npm run --silent check:session-cache && npm run --silent check:session-sqlite && npm run --silent check:lite-cache && npm run --silent check:listeners && npm run --silent check:session-prune && npm run --silent check:subwave",
+    "check:db": "npm run --silent check:backup && npm run --silent check:update && npm run --silent check:auto && npm run --silent check:auto-update-wake && npm run --silent check:activity && npm run --silent check:still-listening && npm run --silent check:heartbeat && npm run --silent check:presence-live && npm run --silent check:schedule-run && npm run --silent check:session-cache && npm run --silent check:session-sqlite && npm run --silent check:lite-cache && npm run --silent check:listeners && npm run --silent check:session-prune && npm run --silent check:subwave",
     "check:db-provider": "node --import ./scripts/test-register.mjs scripts/check-db-provider.mts",
     "check:dbmigrate": "node --import ./scripts/test-register.mjs scripts/check-dbmigrate.mts",
     "check:duration": "node scripts/check-track-duration.mts",

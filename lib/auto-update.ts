@@ -125,7 +125,20 @@ export async function resolveStationTimezone(): Promise<string | null> {
   return tz;
 }
 
-export async function readAutoUpdateSettings(): Promise<AutoUpdateSettings> {
+/**
+ * The saved settings, and whether they were actually readable.
+ *
+ * `ok: false` means the database did not answer — a sleeping or suspended
+ * instance, most often. That is NOT the same answer as "the operator switched
+ * automatic updates off", and returning the same shape for both is how the
+ * feature used to switch itself off: a transient read failure produced
+ * `enabled: false`, which the tick then remembered, after which an idle station
+ * never re-read the setting and the update stopped happening for good.
+ *
+ * The defaults are still returned so a caller can render something, but `ok` is
+ * what tells a caller not to believe them.
+ */
+export async function readAutoUpdateSettings(): Promise<{ settings: AutoUpdateSettings; ok: boolean }> {
   const defaults: AutoUpdateSettings = { enabled: false, start: "", end: "" };
   try {
     const rows = await prisma.setting.findMany({
@@ -134,9 +147,12 @@ export async function readAutoUpdateSettings(): Promise<AutoUpdateSettings> {
     const get = (k: string) => rows.find((r) => r.key === k)?.value || "";
     const start = parseTimeOfDay(get(AUTO_UPDATE_KEYS.start)) || "";
     const end = parseTimeOfDay(get(AUTO_UPDATE_KEYS.end)) || "";
-    return { enabled: get(AUTO_UPDATE_KEYS.enabled) === "true", start, end };
+    return {
+      ok: true,
+      settings: { enabled: get(AUTO_UPDATE_KEYS.enabled) === "true", start, end },
+    };
   } catch {
-    return defaults;
+    return { ok: false, settings: defaults };
   }
 }
 
@@ -166,7 +182,37 @@ export async function runAutoUpdateTick(appDir: string): Promise<AutoTickDecisio
     }
     return { start: false, reason: "idle and auto-update off" };
   }
-  const settings = await readAutoUpdateSettings();
+  let read = await readAutoUpdateSettings();
+  if (!read.ok) {
+    // The database did not answer — almost always because it is asleep.
+    //
+    // Waking it and returning was the obvious fix and is not enough: the next
+    // tick is twenty minutes away, and by then the database has gone back to
+    // sleep, so the wake would buy nothing and the update would never run. The
+    // wake and the read have to happen in the same tick, which means waiting —
+    // up to three minutes, on a background timer, which is exactly what "wake
+    // the database to do the update" costs.
+    //
+    // Nothing else would have woken it: the wake loop is reachable only from an
+    // incoming request, so with nobody visiting, this is the sole caller that
+    // has to start one. Joining the shared loop means it shares rather than
+    // doubles up if a visitor has already knocked.
+    const { wakeDbInBackground } = await import("./dbwake");
+    const woke = await wakeDbInBackground().catch(() => false);
+    if (!woke) {
+      return { start: false, reason: "database would not wake" };
+    }
+    console.log("[auto-update] database was asleep — woke it and carrying on");
+    read = await readAutoUpdateSettings();
+    if (!read.ok) {
+      return { start: false, reason: "database awake but settings still unreadable" };
+    }
+  }
+  // Only now, with a real answer in hand, is it safe to remember the value.
+  // Latching the default on a failed read is what used to stop automatic
+  // updates permanently: remembered as off, an idle station took the early
+  // return above and never re-read the setting again.
+  const settings = read.settings;
   lastKnownAutoEnabled = settings.enabled;
   const [tz, status, listeners, job] = await Promise.all([
     resolveStationTimezone(),
