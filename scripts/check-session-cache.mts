@@ -1,7 +1,7 @@
 // Session cache: hot routes answer from memory with bounded staleness.
 // Loader and clock are injected — no database. Run:
 // node scripts/check-session-cache.mts (wired as `npm run check:session-cache`).
-import { cachedSession, clearSessionCache, type CachedSession, refreshSessionsForUser } from "../lib/session-cache.ts";
+import { cachedSession, clearSessionCache, toCachedSession, type CachedSession, refreshSessionsForUser } from "../lib/session-cache.ts";
 
 let passed = 0;
 let failed = 0;
@@ -187,6 +187,45 @@ ok((await cachedSession("t3", { now: T0, load: expired })) === null, "expired se
   refreshSessionsForUser("u1", {});
   refreshSessionsForUser("", { isApproved: true });
   ok(true, "an empty flag set or empty user id is simply ignored");
+}
+
+// ---- permissions must survive the trip from the database row ----
+// Regression guard for a real bug: these were built with `isAdmin ?? canUseDj`,
+// and `false ?? x` is `false`, so every listener permission was cached as denied
+// even for a user who had it. Only a user who actually holds a permission can
+// tell you that.
+{
+  clearSessionCache();
+  loads = 0;
+  const sess = { expires: new Date(T0 + 3600_000), userId: "u1" };
+  const withPerms = toCachedSession(sess, {
+    id: "u1", isAdmin: false, canUseDj: true, canApprove: true, canUseSkills: true,
+  });
+  const got = withPerms;
+  ok(got?.canUseDj === true, "a non-admin who may use the DJ keeps the permission");
+  ok(got?.canApprove === true, "and canApprove survives too");
+  ok(got?.canUseSkills === true, "and canUseSkills");
+
+  // An admin implies all three, matching how next-auth computes them.
+  clearSessionCache();
+  const asAdmin = toCachedSession(sess, {
+    id: "u1", isAdmin: true, canUseDj: false, canApprove: false, canUseSkills: false,
+  });
+  ok(asAdmin?.canUseDj === true && asAdmin?.canApprove === true && asAdmin?.canUseSkills === true,
+    "an admin implies all three listener permissions even when the columns are false");
+
+  // Genuinely absent stays false rather than becoming undefined.
+  clearSessionCache();
+  const bare = toCachedSession(sess, { id: "u1", isAdmin: false });
+  ok(bare?.canUseDj === false && bare?.canApprove === false && bare?.canUseSkills === false,
+    "an absent permission column reads as false, never undefined");
+  ok(got?.isAdmin === false, "admin is false, not undefined");
+  // No isApproved was passed, so this asserts the fail-closed default: a row
+  // that somehow lacks approval is treated as unapproved, never as allowed.
+  ok(got?.isApproved === false, "an absent approval column fails closed");
+  ok(toCachedSession(sess, { id: "u1", isApproved: true }).isApproved === true, "and a real approval passes through");
+  ok(got?.sessionExpires === T0 + 3600_000, "the expiry is the session row's, in milliseconds");
+  clearSessionCache();
 }
 
 console.log(`  ${passed}/${passed + failed} session-cache assertions passed`);

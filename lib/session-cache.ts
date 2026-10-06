@@ -60,6 +60,48 @@ export function clearSessionCache(): void {
   cache.clear();
 }
 
+/**
+ * Turn a database row into a cached verdict.
+ *
+ * Exported so the mapping can be tested on its own. The permission rule is the
+ * part worth isolating: admin *implies* the other three, exactly as the
+ * next-auth session callback computes it, and that has to be `||` rather than
+ * `??` — `??` only falls through on null/undefined, and isAdmin is `false`
+ * rather than absent, so `false ?? canUseDj` is `false` and every listener
+ * permission was cached as denied. Nothing in the database looks wrong; it only
+ * showed up because a live user who *had* the permission came back without it.
+ */
+export function toCachedSession(
+  session: { expires: Date; userId: string },
+  user: {
+    id: string;
+    name?: string | null;
+    nickname?: string | null;
+    email?: string | null;
+    emailEnc?: string | null;
+    isApproved?: boolean | null;
+    isAdmin?: boolean | null;
+    canUseDj?: boolean | null;
+    canApprove?: boolean | null;
+    canUseSkills?: boolean | null;
+  }
+): CachedSession {
+  const isAdmin = user.isAdmin ?? false;
+  return {
+    userId: user.id,
+    sessionExpires: session.expires.getTime(),
+    isApproved: user.isApproved ?? false,
+    isAdmin,
+    canUseDj: isAdmin || user.canUseDj || false,
+    canApprove: isAdmin || user.canApprove || false,
+    canUseSkills: isAdmin || user.canUseSkills || false,
+    name: user.name ?? null,
+    nickname: user.nickname ?? null,
+    email: user.email ?? null,
+    emailEnc: user.emailEnc ?? null,
+  };
+}
+
 async function defaultLoad(token: string): Promise<CachedSession | null> {
   const session = await prisma.session.findUnique({
     where: { sessionToken: token },
@@ -82,19 +124,7 @@ async function defaultLoad(token: string): Promise<CachedSession | null> {
     },
   });
   if (!user) return null;
-  return {
-    userId: user.id,
-    sessionExpires: session.expires.getTime(),
-    isApproved: user.isApproved ?? false,
-    isAdmin: user.isAdmin ?? false,
-    canUseDj: user.isAdmin ?? user.canUseDj ?? false,
-    canApprove: user.isAdmin ?? user.canApprove ?? false,
-    canUseSkills: user.isAdmin ?? user.canUseSkills ?? false,
-    name: user.name ?? null,
-    nickname: user.nickname ?? null,
-    email: user.email ?? null,
-    emailEnc: user.emailEnc ?? null,
-  };
+  return toCachedSession(session, user);
 }
 
 export async function cachedSession(
