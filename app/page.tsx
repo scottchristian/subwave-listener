@@ -14,11 +14,16 @@ import { canSkipAsListener, parseSkipVisibility, type SkipVisibility } from "@/l
 import { shouldHeartbeat } from "@/lib/heartbeat";
 import {
   parseStillListening,
-  stillListeningPhase,
-  stopAtFrom,
-  extendStop,
+  onPlaybackChange,
+  onStillListeningTick,
+  onStillListeningConfirm,
+  onStillListeningStopNow,
+  shouldStopStream,
+  initialStillListeningState,
   STILL_LISTENING_DEFAULTS,
   type StillListeningConfig,
+  type StillListeningState,
+  type StillListeningPopup,
 } from "@/lib/still-listening";
 import { APP_VERSION, REPO_URL, SUBWAVE_URL } from "@/lib/version";
 import { defaultHour12 } from "@/lib/update-time";
@@ -186,10 +191,15 @@ export default function Home() {
   // window out, the reminder one offset before it. Confirming pushes the stop
   // out by a whole window (never restarts the clock from the press).
   const [slCfg, setSlCfg] = useState<StillListeningConfig>(STILL_LISTENING_DEFAULTS);
-  const slStopAt = useRef<number | null>(null);
-  const slReminded = useRef(false);
-  const slAutoStopped = useRef(false);
-  const [slPopup, setSlPopup] = useState<null | "remind" | "stopped">(null);
+  // The whole cutoff lives in one ref as a pure state machine (see
+  // lib/still-listening.ts). A ref rather than several useStates because the
+  // one-second tick reads and writes it thousands of times without re-rendering,
+  // and because a split across refs is how it came to disagree with itself.
+  const slState = useRef<StillListeningState>(initialStillListeningState);
+  const prevSlPopup = useRef<StillListeningPopup>(null);
+  // Mirrored into React because the popup is rendered. Written only when the
+  // machine's popup actually changes.
+  const [slPopup, setSlPopup] = useState<StillListeningPopup>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [stationData, setStationData] = useState<any>(null);
   const [appStateData, setAppStateData] = useState<any>(null);
@@ -603,26 +613,26 @@ export default function Home() {
     return () => clearInterval(id);
   }, [status, isPlaying]);
 
-  // Arm the idle cutoff on play, disarm on manual stop. An automatic stop
-  // sets slAutoStopped first so this does not sweep the "stopped" popup away.
+  // Arm the idle cutoff on play, disarm on a manual stop. An automatic stop
+  // marks itself in the state machine so this does not sweep the "stopped"
+  // popup away — the listener is owed the explanation. This effect also runs
+  // when the config arrives, which is how a fast Play still gets a cutoff.
   const slPrevPlaying = useRef(false);
   useEffect(() => {
-    if (isPlaying && !slPrevPlaying.current) {
-      slPrevPlaying.current = true;
-      if (slCfg.enabled && slStopAt.current === null) {
-        slStopAt.current = stopAtFrom(Date.now(), slCfg.minutes);
-        slReminded.current = false;
-        slAutoStopped.current = false;
-        setSlPopup(null);
-      }
-    } else if (!isPlaying && slPrevPlaying.current) {
-      slPrevPlaying.current = false;
-      if (!slAutoStopped.current) {
-        slStopAt.current = null;
-        slReminded.current = false;
-        setSlPopup(null);
-      }
-      slAutoStopped.current = false;
+    const wasPlaying = slPrevPlaying.current;
+    slPrevPlaying.current = isPlaying;
+    const next = onPlaybackChange(slState.current, {
+      isPlaying,
+      wasPlaying,
+      enabled: slCfg.enabled,
+      minutes: slCfg.minutes,
+      nowMs: Date.now(),
+    });
+    if (next !== slState.current) slState.current = next;
+    // Only a real transition updates the popup; a no-op returns the same object.
+    if (next.popup !== prevSlPopup.current) {
+      prevSlPopup.current = next.popup;
+      setSlPopup(next.popup);
     }
   }, [isPlaying, slCfg.enabled, slCfg.minutes]);
 
@@ -630,34 +640,43 @@ export default function Home() {
   // the end. Wall-clock on purpose — a stream left running in a buried tab is
   // exactly what this is for.
   useEffect(() => {
-    if (!isPlaying || !slCfg.enabled || slStopAt.current === null) return;
+    if (!isPlaying || !slCfg.enabled || slState.current.stopAtMs === null) return;
     const id = setInterval(() => {
-      const stopAt = slStopAt.current;
-      if (stopAt === null) return;
-      const phase = stillListeningPhase(Date.now(), stopAt, slCfg.reminderMinutes * 60 * 1000);
-      if (phase === "remind" && !slReminded.current) {
-        slReminded.current = true;
-        playReminderChime();
-        setSlPopup("remind");
-      } else if (phase === "stop") {
-        slAutoStopped.current = true;
-        slStopAt.current = null;
-        slReminded.current = false;
-        setSlPopup("stopped");
-        if (intendedPlayRef.current) togglePlay();
+      const before = slState.current;
+      const { state, action } = onStillListeningTick(before, {
+        nowMs: Date.now(),
+        reminderMs: slCfg.reminderMinutes * 60 * 1000,
+        enabled: slCfg.enabled,
+      });
+      if (state === before) return;
+      slState.current = state;
+      if (state.popup !== prevSlPopup.current) {
+        prevSlPopup.current = state.popup;
+        setSlPopup(state.popup);
       }
+      if (action === "remind") playReminderChime();
+      // Pausing is what aborts the stream request, which is what ends the
+      // server-side session — so this call IS the stop, not just the UI.
+      if (action === "stop" && shouldStopStream(state, intendedPlayRef.current)) togglePlay();
     }, 1000);
     return () => clearInterval(id);
   }, [isPlaying, slCfg.enabled, slCfg.minutes, slCfg.reminderMinutes]);
 
   const slConfirm = () => {
-    // Push the stop out by a whole window from the STOP, not the press: a
-    // 9:00 start on a 60-minute window, confirmed at 9:50, now stops at
-    // 11:00. The reminder re-arms ahead of the new stop on its own.
-    if (slStopAt.current === null) return;
-    slStopAt.current = extendStop(slStopAt.current, slCfg.minutes);
-    slReminded.current = false;
-    setSlPopup(null);
+    const next = onStillListeningConfirm(slState.current, slCfg.minutes);
+    if (next === slState.current) return;
+    slState.current = next;
+    prevSlPopup.current = next.popup;
+    setSlPopup(next.popup);
+  };
+
+  const slStopNow = () => {
+    const next = onStillListeningStopNow(slState.current);
+    if (next === slState.current) return;
+    slState.current = next;
+    prevSlPopup.current = next.popup;
+    setSlPopup(next.popup);
+    if (shouldStopStream(next, intendedPlayRef.current)) togglePlay();
   };
 
   const [tourStep, setTourStep] = useState(-1);
@@ -2838,7 +2857,8 @@ export default function Home() {
                     <button
                       className="primary-btn"
                       style={{ width: "auto", padding: "0.55rem 1.25rem", background: "rgba(255,255,255,0.1)", color: "#fff" }}
-                      onClick={() => { slAutoStopped.current = true; slStopAt.current = null; slReminded.current = false; setSlPopup("stopped"); if (intendedPlayRef.current) togglePlay(); }}
+                      id="btn-still-listening-stop"
+                      onClick={slStopNow}
                     >
                       Stop now
                     </button>
