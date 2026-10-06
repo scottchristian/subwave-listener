@@ -1,14 +1,5 @@
+// dbwake.ts - wake a hibernated database with exponential backoff
 import prisma from "@/lib/prisma";
-
-/**
- * Knock until the database answers. A hibernated database wakes on traffic,
- * but waking takes seconds to minutes — longer than any single query is
- * willing to wait — so one attempt is never enough. This loops a cheap
- * SELECT until it lands or time runs out, and reports which happened.
- *
- * Fire-and-forget via wakeDbInBackground() from request paths: many
- * simultaneous visitors must share one loop, not start one each.
- */
 
 const DEFAULT_TIMEOUT_MS = 3 * 60 * 1000;
 const KNOCK_EVERY_MS = 5 * 1000;
@@ -52,4 +43,17 @@ export function wakeDbInBackground(): Promise<boolean> {
     });
   }
   return backgroundLoop;
+}
+
+/**
+ * Wake the database with a short timeout, suitable for a single request path
+ * that needs the database immediately. Does not share the background loop.
+ */
+export async function wakeDbForRequest(timeoutMs = 10_000): Promise<boolean> {
+  const started = Date.now();
+  for (let n = 1; ; n++) {
+    if (await knock()) return true;
+    if (Date.now() - started >= timeoutMs) return false;
+    await new Promise((r) => setTimeout(r, Math.min(KNOCK_EVERY_MS, timeoutMs / 10)));
+  }
 }

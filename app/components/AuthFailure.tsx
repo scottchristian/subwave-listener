@@ -42,14 +42,28 @@ export default function AuthFailure({ code }: { code: string }) {
   const [attempt, setAttempt] = useState(0);
   const [countdown, setCountdown] = useState(RETRY_EVERY_S);
   const [stopped, setStopped] = useState(false);
+  const [wakingDb, setWakingDb] = useState(false);
   const autoRetry = waking && !stopped && attempt < MAX_ATTEMPTS;
+
+  const wakeDatabase = async () => {
+    setWakingDb(true);
+    try {
+      await fetch("/api/auth/wake-db", { method: "POST" });
+    } catch {
+      // Ignore wake errors; the sign-in will fail naturally if it doesn't work
+    } finally {
+      setWakingDb(false);
+    }
+  };
 
   useEffect(() => {
     if (!autoRetry) return;
     if (countdown <= 0) {
       setAttempt((a) => a + 1);
       setCountdown(RETRY_EVERY_S);
-      signIn("google", { callbackUrl: "/" });
+      wakeDatabase().then(() => {
+        signIn("google", { callbackUrl: "/" });
+      });
       return;
     }
     const id = setTimeout(() => setCountdown((c) => c - 1), 1000);
@@ -60,7 +74,9 @@ export default function AuthFailure({ code }: { code: string }) {
     setAttempt(0);
     setCountdown(RETRY_EVERY_S);
     setStopped(false);
-    signIn("google", { callbackUrl: "/" });
+    wakeDatabase().then(() => {
+      signIn("google", { callbackUrl: "/" });
+    });
   };
 
   return (
@@ -80,10 +96,12 @@ export default function AuthFailure({ code }: { code: string }) {
           </p>
         ) : waking ? (
           <p id="about-text-db-asleep" className="about-text" style={{ marginBottom: "2rem" }}>
-            The station database was probably asleep or paused when you tried — it wakes on its own.
-            {autoRetry
-              ? ` Retrying in ${countdown}s${attempt > 0 ? ` (attempt ${attempt + 1})` : ""}…`
-              : " Automatic retries are off — try below, or resume the database in its dashboard if it keeps failing."}
+            The station database was probably asleep or paused when you tried.
+            {wakingDb
+              ? " Waking it up…"
+              : autoRetry
+                ? ` Retrying in ${countdown}s${attempt > 0 ? ` (attempt ${attempt + 1})` : ""}…`
+                : " Automatic retries are off — try below, or resume the database in its dashboard if it keeps failing."}
           </p>
         ) : (
           <p className="about-text" style={{ marginBottom: "2rem" }}>
@@ -96,8 +114,9 @@ export default function AuthFailure({ code }: { code: string }) {
             className="primary-btn"
             style={{ width: "auto" }}
             onClick={denied || !waking ? () => signIn("google", { callbackUrl: "/" }) : retryNow}
+            disabled={wakingDb}
           >
-            {denied || !waking ? "Sign in with Google" : autoRetry ? "Retry now" : "Try again"}
+            {denied || !waking ? "Sign in with Google" : wakingDb ? "Waking database…" : autoRetry ? "Retry now" : "Try again"}
           </button>
           {waking && autoRetry ? (
             <button

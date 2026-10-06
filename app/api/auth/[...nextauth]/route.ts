@@ -6,6 +6,7 @@ import { STATION } from "@/lib/station";
 import { pushToAdmins } from "@/lib/push";
 import { enc, dec, idx, displayName } from "@/lib/pii";
 import { dropSessionCache } from "@/lib/session-cache";
+import { wakeDbForRequest } from "@/lib/dbwake";
 
 
 // Prisma stores no plaintext address, so every adapter entry point that
@@ -14,29 +15,75 @@ import { dropSessionCache } from "@/lib/session-cache";
 // user on every sign-in.
 const baseAdapter = PrismaAdapter(prisma) as any;
 
+/**
+ * Wrap an adapter method to wake the database on connection failures.
+ * The database may be asleep (free tier hibernation), and the first
+ * request after wake must succeed for the auth flow to complete.
+ */
+function withWake<T extends (...args: any[]) => Promise<any>>(fn: T): T {
+  return (async (...args: any[]) => {
+    try {
+      return await fn(...args);
+    } catch (e: any) {
+      // Check if this is a database connection error (sleeping/hibernated DB)
+      const msg = e?.message?.toLowerCase() || "";
+      const isConnectionError =
+        msg.includes("connection") ||
+        msg.includes("timeout") ||
+        msg.includes("econnrefused") ||
+        msg.includes("etimedout") ||
+        msg.includes("socket") ||
+        msg.includes("canceled") ||
+        msg.includes("terminated") ||
+        msg.includes("57p01") || // admin shutdown
+        msg.includes("08006") || // connection failure
+        msg.includes("08001") || // sqlclient unable to establish connection
+        msg.includes("08004") || // sqlserver rejected connection
+        msg.includes("53300") || // too many connections
+        msg.includes("57014") || // query canceled
+        e?.code === "P1001" || // prisma: can't reach database
+        e?.code === "P1002" || // prisma: connection timed out
+        e?.code === "P1008" || // prisma: operation timed out
+        e?.code === "P1017";   // prisma: server has closed the connection
+
+      if (isConnectionError) {
+        console.log("[auth-adapter] Database connection failed — waking database...");
+        const woke = await wakeDbForRequest(15_000);
+        if (!woke) {
+          console.error("[auth-adapter] Failed to wake database after 15s");
+          throw e;
+        }
+        console.log("[auth-adapter] Database woke up — retrying operation");
+        return await fn(...args);
+      }
+      throw e;
+    }
+  }) as T;
+}
+
 const adapter = {
   ...baseAdapter,
   async getUserByEmail(email: string) {
     const token = idx(email);
-    return token ? baseAdapter.getUserByEmail(token) : null;
+    return token ? await withWake(baseAdapter.getUserByEmail)(token) : null;
   },
   async getUserById(id: string) {
-    const user = await baseAdapter.getUserById(id);
+    const user = await withWake(baseAdapter.getUserById)(id);
     return user ? { ...user, name: dec(user.name) } : user;
   },
   async getUserByAccount(args: any) {
-    const user = await baseAdapter.getUserByAccount(args);
+    const user = await withWake(baseAdapter.getUserByAccount)(args);
     return user ? { ...user, name: dec(user.name) } : user;
   },
   async createUser({ name, email, ...rest }: any) {
-    return baseAdapter.createUser({
+    return withWake(baseAdapter.createUser)({
       ...rest,
       email: idx(email),
       name: enc(name),
     });
   },
   async updateUser({ name, ...rest }: any) {
-    return baseAdapter.updateUser({ ...rest, name: enc(name) });
+    return withWake(baseAdapter.updateUser)({ ...rest, name: enc(name) });
   },
 };
 
@@ -58,13 +105,13 @@ export const authOptions: NextAuthOptions = {
       const adminEmail = process.env.ADMIN_EMAIL;
       const isAdmin = !!adminEmail && email === adminEmail;
 
-      const existingUser = await prisma.user.findUnique({ where: { email: token } });
+      const existingUser = await withWake(prisma.user.findUnique.bind(prisma.user))({ where: { email: token } });
 
       if (!existingUser) {
         // The adapter creates the row (with an indexed email) after we return
         // true. isApproved defaults to false, so a new signup waits for review.
       } else if (isAdmin && !existingUser.isAdmin) {
-        await prisma.user.update({
+        await withWake(prisma.user.update.bind(prisma.user))({
           where: { email: token },
           data: { isAdmin: true, isApproved: true },
         });
