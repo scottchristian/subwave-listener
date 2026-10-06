@@ -620,9 +620,17 @@ export function startLiteFlushScheduler(): void {
       const postgres =
         process.env.LITE_CACHE_FORCE === "1" || providerFromEnv() === "postgresql";
       if (postgres && cfg?.enabled && Date.now() - lastFlushAt >= cfg.minutes * 60 * 1000) {
-        await refreshLiteConfig();
-        const fresh = memCfg;
-        if (fresh?.enabled) {
+        // No configuration re-read here, and that is the whole point.
+        //
+        // The line above already resolved the config from the local mirror, and
+        // the admin save writes that mirror, so it is current by construction.
+        // Re-reading from Postgres on every flush was defensive against a change
+        // made outside the panel — and it cost one query per interval. At a
+        // 20-minute interval against a sleep window of about fifteen minutes,
+        // that is not a safety net but a heartbeat: it guaranteed the database
+        // could never accumulate enough idle time to stop running, which is the
+        // one thing this whole feature exists to achieve.
+        if (cfg.enabled) {
           const res = await liteFlush().catch((e) => ({ likes: 0, links: 0, errors: [String(e?.message || e).slice(0, 160)] }));
           lastFlushAt = Date.now();
           if (res.errors.length > 0) {

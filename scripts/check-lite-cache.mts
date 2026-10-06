@@ -215,6 +215,66 @@ try {
   await lite.liteTrackLikes("s3", direct, (row, u) => ({ ...row, user: u }), (r: any) => r.id);
   ok(built === 1, "disabled track list calls direct");
 
+  // ---- an idle flush must cost the database NOTHING ----
+  // The station's whole premise is that an idle station does not touch Postgres,
+  // so the database can sleep. A flush over an empty cache reads the local
+  // mirror and stops — one query per interval would be enough to hold a free
+  // tier awake for ever, since the interval is longer than the sleep window.
+  //
+  // Proven by making every Postgres call an explosion: if the flush reaches for
+  // the database at all, this fails loudly rather than quietly costing a query.
+  {
+    await lite.liteFlush(); // drain anything the cases above left buffered
+    const client: any = (globalThis as any).prisma;
+    const saved = {
+      songLike: client.songLike,
+      songLinkCache: client.songLinkCache,
+      setting: client.setting,
+    };
+    let touched = 0;
+    const trap = () => { touched++; throw new Error("the idle flush reached for Postgres"); };
+    for (const model of ["songLike", "songLinkCache", "setting"]) {
+      client[model] = new Proxy({}, { get: () => trap });
+    }
+    let threw = "";
+    let res: any = null;
+    try {
+      res = await lite.liteFlush();
+    } catch (e: any) {
+      threw = String(e?.message || e);
+    }
+    for (const [k, v] of Object.entries(saved)) client[k] = v;
+
+    ok(touched === 0, "an empty-cache flush makes no database call at all");
+    ok(threw === "", `and does not throw${threw ? " — " + threw : ""}`);
+    ok(res?.likes === 0 && res?.links === 0 && res?.errors?.length === 0, "and reports a clean no-op");
+
+    // And with something buffered it must touch the database — proving the trap
+    // above was actually armed rather than silently inert.
+    await lite.litePutLink({ trackId: "idle-probe", spotifyUrl: "https://sp/probe", appleMusicUrl: null, explicit: false });
+    const busy = await lite.liteFlush();
+    ok(busy.links === 1, "a flush with something buffered does write to Postgres");
+  }
+
+  // ---- the scheduler must stay off the database between flushes ----
+  {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../lib/lite-cache.ts", import.meta.url), "utf8");
+    const sched = src.slice(src.indexOf("export function startLiteFlushScheduler"));
+    // Resolving the config may fall back to Postgres once, when neither memory
+    // nor the file mirror knows anything — that is first boot only, once per
+    // process. What must not exist is a refresh INSIDE the flush branch: that
+    // is one query per interval, and the interval is longer than the free
+    // tier's sleep window, so it would hold the database awake for ever.
+    const branch = sched.slice(sched.indexOf("if (postgres &&"));
+    const inBranch = (branch.match(/refreshLiteConfig\(/g) ?? []).length;
+    ok(inBranch === 0, `the flush branch never re-reads config from Postgres (found ${inBranch})`);
+    const total = (sched.match(/refreshLiteConfig\(/g) ?? []).length;
+    ok(total === 1, `with exactly one fallback, for first boot (found ${total})`);
+    ok(/readLiteConfigFile\(\)/.test(sched), "it reads the local mirror instead");
+    ok(!/setInterval\(/.test(sched), "no setInterval, so the loop cannot be left running twice");
+  }
+
   await pg.$disconnect();
   console.log(`  ${passed}/${passed + failed} lite-cache assertions passed`);
   if (failed > 0) process.exit(1);
