@@ -76,7 +76,7 @@ export default function AuthFailure({ code }: { code: string }) {
           {denied
             ? "That account can't come in"
             : waking
-              ? "The station couldn't sign you in"
+              ? "Please wait"
               : "Sign in"}
         </h1>
         {denied ? (
@@ -85,13 +85,22 @@ export default function AuthFailure({ code }: { code: string }) {
             this screen lets you in automatically once approved. Otherwise try the account you were invited with.
           </p>
         ) : waking ? (
+          // Deliberately short, and deliberately not a diagnosis. This screen is
+          // read by someone who has done nothing wrong, on a phone, while a
+          // database they will never see is coming back up. It used to open
+          // "The station couldn't sign you in" and then explain which of the
+          // station's own moving parts had let them down — two sentences of
+          // housekeeping read as an accusation, and nobody who lands here is
+          // reading either. So: ask them to wait, say it will be brief, and give
+          // up gracefully if it isn't.
           <p id="about-text-db-asleep" className="about-text" style={{ marginBottom: "2rem" }}>
-            The station database was probably asleep or paused when you tried.
             {wakingDb
-              ? " Waking it up…"
+              ? "Waking the station up."
               : autoRetry
-                ? ` Retrying in ${countdown}s${attempt > 0 ? ` (attempt ${attempt + 1})` : ""}…`
-                : " Automatic retries are off — try below, or resume the database in its dashboard if it keeps failing."}
+                ? attempt > 0
+                  ? `Still trying — next attempt in ${countdown}s.`
+                  : "This usually only takes a moment."
+                : "The station isn't waking up. Try again below, or check back a little later."}
           </p>
         ) : (
           <p className="about-text" style={{ marginBottom: "2rem" }}>
@@ -106,7 +115,7 @@ export default function AuthFailure({ code }: { code: string }) {
             onClick={denied || !waking ? () => signIn("google", { callbackUrl: "/" }) : retryNow}
             disabled={wakingDb}
           >
-            {denied || !waking ? "Sign in with Google" : wakingDb ? "Waking database…" : autoRetry ? "Retry now" : "Try again"}
+            {denied || !waking ? "Sign in with Google" : wakingDb ? "Waking the station…" : autoRetry ? "Retry now" : "Try again"}
           </button>
           {waking && autoRetry ? (
             <button
