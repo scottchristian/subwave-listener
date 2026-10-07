@@ -27,6 +27,7 @@ import {
 } from "@/lib/still-listening";
 import { APP_VERSION, REPO_URL, SUBWAVE_URL } from "@/lib/version";
 import { computeShowRunway } from "@/lib/show-runway";
+import { beginCommit, endCommit, newGate, shouldAnimateCommit } from "@/lib/view-transition";
 import {
   shouldWriteRememberCookie,
   rememberCookieHeader,
@@ -819,6 +820,7 @@ export default function Home() {
 
           if (isCancelled) return;
           
+          const vtGate = newGate();
           const applyTriple = (t: { newData: any; newSchedule: any; newState: any }, animate = true) => {
             if (isCancelled) return;
             const doApply = () => {
@@ -828,21 +830,55 @@ export default function Home() {
             };
 
             // Snapshotting identical DOM flashes white for nothing — only
-            // animate when something visible actually changed. Hidden tabs
-            // can't transition (InvalidStateError) — apply directly.
-            if (animate && !document.hidden && typeof window !== "undefined" && typeof (document as any).startViewTransition === "function") {
-              import("react-dom").then((ReactDOM) => {
-                try {
-                  const t = (document as any).startViewTransition(() => {
-                    ReactDOM.flushSync(doApply);
-                  });
-                  if (t && typeof t.catch === "function") t.catch(() => doApply());
-                } catch {
-                  doApply();
-                }
-              });
-            } else {
+            // animate when something visible actually changed.
+            //
+            // NO flushSync, and never behind a dynamic import. This used to be
+            // `import("react-dom").then(() => startViewTransition(() =>
+            // flushSync(doApply)))`, which fired from a promise callback React
+            // had not scheduled, every poll, with nothing stopping a second
+            // transition starting while the first ran. flushSync renders
+            // synchronously, so calling it from outside React's scheduling
+            // re-enters the renderer mid-render and desynchronises the hook
+            // cursor — and the next render dies with #310 on its FIRST hook,
+            // which pointed at useSession() in Home and nowhere near the cause.
+            // It only ever hit signed-in listeners, because the poll returns
+            // early for anyone else, so it read as an account fault: incognito
+            // worked, a signed-in profile never did.
+            //
+            // See lib/view-transition.ts for the rules and why each is here.
+            const supported =
+              typeof document !== "undefined" &&
+              typeof (document as any).startViewTransition === "function";
+
+            if (!shouldAnimateCommit({ animate, hidden: document.hidden, supported, gate: vtGate })) {
               doApply();
+              return;
+            }
+            if (!beginCommit(vtGate)) {
+              doApply();
+              return;
+            }
+
+            let transition: any;
+            try {
+              transition = (document as any).startViewTransition(() => {
+                doApply();
+              });
+            } catch {
+              endCommit(vtGate);
+              doApply();
+              return;
+            }
+            // Release on settle either way. A rejected transition must not leave
+            // the slot held, or the page silently stops animating for good.
+            const settled = transition?.finished;
+            if (settled && typeof settled.then === "function") {
+              settled.then(
+                () => endCommit(vtGate),
+                () => endCommit(vtGate)
+              );
+            } else {
+              endCommit(vtGate);
             }
           };
 
