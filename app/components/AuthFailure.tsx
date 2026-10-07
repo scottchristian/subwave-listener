@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
-import { isWakingDbError, wakeStationDatabase } from "@/lib/remember-login";
+import { claimSigninAttempt, isWakingDbError, wakeStationDatabase } from "@/lib/remember-login";
 
 // Seconds between automatic sign-in attempts while the database may be
 // waking, and how many before handing control back to the human. Each attempt
@@ -38,9 +38,27 @@ export default function AuthFailure({ code }: { code: string }) {
   const [countdown, setCountdown] = useState(RETRY_EVERY_S);
   const [stopped, setStopped] = useState(false);
   const [wakingDb, setWakingDb] = useState(false);
+  // True when this tab stood down because another tab already owns the round-trip.
+  const [waitingOnOtherTab, setWaitingOnOtherTab] = useState(false);
   const autoRetry = waking && !stopped && attempt < MAX_ATTEMPTS;
 
+  // Wake, then start one OAuth round-trip — but only if this browser has not
+  // already got one in flight.
+  //
+  // The claim is per-BROWSER on purpose. This page is a retry LOOP, so a listener
+  // with the error page open in three tabs used to run three loops, each firing
+  // signIn() on its own ten-second beat, each overwriting the single OAuth state
+  // cookie they all share. Every callback then arrived to a state that no longer
+  // existed and NextAuth refused it ("State cookie was missing") — so nobody could
+  // sign in at all, against a database that was wide awake. One tab now wins and
+  // the others wait their turn.
   const wakeThenSignIn = () => {
+    if (!claimSigninAttempt(Date.now(), window.localStorage)) {
+      // Another tab owns this round-trip. Say so rather than looking frozen.
+      setWaitingOnOtherTab(true);
+      return Promise.resolve(false);
+    }
+    setWaitingOnOtherTab(false);
     setWakingDb(true);
     return wakeStationDatabase()
       .catch(() => false)
@@ -60,6 +78,9 @@ export default function AuthFailure({ code }: { code: string }) {
     }
     const id = setTimeout(() => setCountdown((c) => c - 1), 1000);
     return () => clearTimeout(id);
+    // wakeThenSignIn closes over nothing that changes between attempts, and
+    // re-running on every attempt would double-fire the sign-in it just started.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoRetry, countdown]);
 
   const retryNow = () => {
@@ -96,11 +117,13 @@ export default function AuthFailure({ code }: { code: string }) {
           <p id="about-text-db-asleep" className="about-text" style={{ marginBottom: "2rem" }}>
             {wakingDb
               ? "Waking the station up."
-              : autoRetry
-                ? attempt > 0
-                  ? `Still trying — next attempt in ${countdown}s.`
-                  : "This usually only takes a moment."
-                : "The station isn't waking up. Try again below, or check back a little later."}
+              : waitingOnOtherTab
+                ? "You're signed in on another tab."
+                : autoRetry
+                  ? attempt > 0
+                    ? `Still trying — next attempt in ${countdown}s.`
+                    : "This usually only takes a moment."
+                  : "The station isn't waking up. Try again below, or check back a little later."}
           </p>
         ) : (
           <p className="about-text" style={{ marginBottom: "2rem" }}>

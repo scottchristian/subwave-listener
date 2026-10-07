@@ -118,6 +118,86 @@ export function decideAutoSignIn(args: {
   return args.alreadyAttempted ? "leave-alone" : "attempt";
 }
 
+/* ---------------------------------------------------------------------------
+ * Claiming the right to start an OAuth round-trip.
+ *
+ * The guard for this is `localStorage`, and it has to be: the thing being
+ * serialised is the browser's single OAuth `state` cookie, which is per-BROWSER.
+ * A per-tab guard (sessionStorage) does not serialise anything — it only stops
+ * one tab repeating itself, which was never the problem. With the error page
+ * open in three tabs, each tab's own retry timer fired `signIn("google")` at its
+ * own pace, each one overwrote the shared state cookie, and every callback then
+ * arrived to find a state that no longer existed: "State cookie was missing."
+ * Nobody could sign in at all, on a database that was perfectly awake.
+ *
+ * So the claim is taken in localStorage, immediately before navigating, and is
+ * honoured by every tab for the length of the window.
+ * ------------------------------------------------------------------------- */
+
+export const SIGNIN_ATTEMPT_KEY = "subwave_signin_attempt_at";
+
+/**
+ * How long one automatic attempt owns the browser.
+ *
+ * Long enough that every tab standing by sees the claim and stays put, short
+ * enough that a genuinely failed round-trip does not strand anyone: a database
+ * takes one to five seconds to wake, so the next permitted attempt is never far
+ * behind the one that just failed.
+ */
+export const SIGNIN_ATTEMPT_WINDOW_MS = 45 * 1000;
+
+/** The slice of the Web Storage API this needs, so tests need no globals. */
+export interface AttemptStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+/**
+ * Is an attempt already outstanding for this browser?
+ *
+ * Read-only, so a caller can decide what it wants to do about it before
+ * deciding to act. claimSigninAttempt re-checks at the moment of acting, because
+ * the wake that precedes a navigation is async and another tab may have claimed
+ * in the meantime.
+ */
+export function signinAttemptPending(
+  now: number,
+  storage: AttemptStorage,
+  windowMs: number = SIGNIN_ATTEMPT_WINDOW_MS
+): boolean {
+  let last = 0;
+  try {
+    last = Number(storage.getItem(SIGNIN_ATTEMPT_KEY)) || 0;
+  } catch {
+    return false;
+  }
+  return !!last && now - last < windowMs;
+}
+
+/**
+ * Take the browser-wide right to start one OAuth round-trip.
+ *
+ * Returns true for exactly one caller per window — the first tab to ask. Read
+ * and write are both guarded: storage throws in private browsing and can be full,
+ * and a claim that cannot be recorded must not become a claim that is never
+ * honoured.
+ */
+export function claimSigninAttempt(
+  now: number,
+  storage: AttemptStorage,
+  windowMs: number = SIGNIN_ATTEMPT_WINDOW_MS
+): boolean {
+  if (signinAttemptPending(now, storage, windowMs)) return false;
+  try {
+    storage.setItem(SIGNIN_ATTEMPT_KEY, String(now));
+  } catch {
+    // Cannot record the claim. Refusing to proceed would mean nobody can ever
+    // sign in on a browser that blocks storage, which is worse than the race we
+    // are guarding against.
+  }
+  return true;
+}
+
 /**
  * Wake the station before leaning on Google. The OAuth round-trip is what the
  * station uses to pull a sleeping database up, so waking first is the difference

@@ -22,6 +22,10 @@ import {
   WAKING_DB_ERRORS,
   decideAutoSignIn,
   wakeStationDatabase,
+  claimSigninAttempt,
+  signinAttemptPending,
+  SIGNIN_ATTEMPT_KEY,
+  SIGNIN_ATTEMPT_WINDOW_MS,
 } from "../lib/remember-login.ts";
 
 let passed = 0;
@@ -194,6 +198,83 @@ ok(isWakingDbError("") === false, "a plain visit is not an error");
   await wakeStationDatabase(nope).catch(() => {});
   reached = true;
   ok(reached, "a refused wake does not throw, so the caller still proceeds to sign in");
+}
+
+// ------------------------------------------- browser-wide OAuth flow claim
+
+{
+  // THE REGRESSION: three tabs of the error page, three retry loops, three
+  // signIn() calls landing on ONE shared state cookie. NextAuth then refuses
+  // every callback ("State cookie was missing") and nobody can sign in at all —
+  // on a database that is perfectly awake, which is what made this look like an
+  // outage rather than a race.
+  //
+  // Drive the real claim function against one shared store, the way three tabs
+  // share one browser, and require that only the first wins.
+  const shared = new Map<string, string>();
+  const store = {
+    getItem: (k: string) => shared.get(k) ?? null,
+    setItem: (k: string, v: string) => void shared.set(k, v),
+  };
+  const t0 = 1_800_000_000_000;
+  const tabs = [0, 1, 2].map((i) => claimSigninAttempt(t0 + i * 40, store)); // 40ms apart
+  ok(
+    tabs.filter(Boolean).length === 1,
+    "three tabs signing in at once produce exactly ONE OAuth round-trip",
+    tabs
+  );
+  ok(tabs[0] === true, "and it is the first to ask");
+  ok(tabs[1] === false && tabs[2] === false, "the other two stand down");
+  ok(
+    signinAttemptPending(t0 + 100, store) === true,
+    "while that flow is out, the browser reports an attempt as pending"
+  );
+  ok(
+    claimSigninAttempt(t0 + 100, store) === false,
+    "so a fourth tab cannot start one either"
+  );
+  ok(
+    claimSigninAttempt(t0 + SIGNIN_ATTEMPT_WINDOW_MS, store) === true,
+    "and once the window passes, the next tab may try",
+  );
+  ok(
+    claimSigninAttempt(t0 + SIGNIN_ATTEMPT_WINDOW_MS - 1, store) === false,
+    "one millisecond short of the window is still not enough"
+  );
+
+  // A tab that stood down must be able to recover on its own later, rather than
+  // waiting for a human — the recovery loop has to keep working on its own.
+  ok(
+    claimSigninAttempt(t0 + 2 * SIGNIN_ATTEMPT_WINDOW_MS + 5_000, store) === true,
+    "the loser retries on its own once the window passes"
+  );
+  ok(
+    claimSigninAttempt(t0 + 2 * SIGNIN_ATTEMPT_WINDOW_MS + 6_000, store) === false,
+    "and each success re-arms the window, so the loops stay staggered"
+  );
+
+  // Storage that refuses to cooperate must not lock everyone out of signing in.
+  const hostile = {
+    getItem: () => {
+      throw new Error("blocked");
+    },
+    setItem: () => {
+      throw new Error("blocked");
+    },
+  };
+  ok(claimSigninAttempt(t0, hostile) === true, "a browser that blocks storage can still sign in");
+  ok(signinAttemptPending(t0, hostile) === false, "and never believes an attempt is pending");
+
+  // An unreadable marker must not read as a fresh one.
+  const corrupt = { getItem: () => "not-a-number", setItem: () => {} };
+  ok(signinAttemptPending(t0, corrupt) === false, "a corrupt marker reads as no attempt, not as a permanent block");
+
+  ok(SIGNIN_ATTEMPT_WINDOW_MS >= 20_000, "the window outlives a real round-trip", SIGNIN_ATTEMPT_WINDOW_MS);
+  ok(
+    SIGNIN_ATTEMPT_WINDOW_MS <= 120_000,
+    "but not so long that a failed round-trip strands the listener",
+    SIGNIN_ATTEMPT_WINDOW_MS
+  );
 }
 
 console.log(`  ${passed}/${passed + failed} remember-login assertions passed`);

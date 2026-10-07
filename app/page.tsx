@@ -32,6 +32,7 @@ import {
   rememberCookieHeader,
   forgetRememberCookieHeader,
   hasRememberCookie,
+  SIGNIN_ATTEMPT_KEY,
 } from "@/lib/remember-login";
 import { defaultHour12 } from "@/lib/update-time";
 import { resolveTrackDuration, isDurationDiscredited } from "@/lib/trackduration";
@@ -219,7 +220,9 @@ export default function Home() {
     if (typeof document !== "undefined") {
       document.cookie = forgetRememberCookieHeader();
       try {
-        sessionStorage.removeItem("subwave_auto_signin_attempted");
+        // Signing out should not inherit a spent budget: clear the claim so a
+        // later, deliberate sign-in gets the automatic courtesy try again.
+        window.localStorage.removeItem(SIGNIN_ATTEMPT_KEY);
       } catch {
         // Private browsing can refuse storage; the cookie is what matters.
       }

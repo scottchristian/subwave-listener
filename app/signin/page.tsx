@@ -4,41 +4,13 @@ import { Suspense, useEffect } from "react";
 import { useSearchParams } from "next/navigation";
 import { signIn } from "next-auth/react";
 import AuthFailure from "@/app/components/AuthFailure";
-import { decideAutoSignIn, hasRememberCookie, wakeStationDatabase } from "@/lib/remember-login";
-
-/**
- * Per-tab record that the one automatic attempt has been spent.
- *
- * sessionStorage, deliberately: it must SURVIVE the round-trip to Google (the
- * document is torn down and rebuilt, and it is the same tab) and must NOT
- * survive closing the tab. An earlier version deleted this on unmount, which is
- * what turned the courtesy try into an endless carousel — see decideAutoSignIn.
- */
-const AUTO_SIGNIN_GUARD = "subwave_auto_signin_attempted";
-
-/** storage can throw in private browsing; none of this is worth a crash over. */
-function readGuard(): boolean {
-  try {
-    return sessionStorage.getItem(AUTO_SIGNIN_GUARD) === "1";
-  } catch {
-    return false;
-  }
-}
-function setGuard(): void {
-  try {
-    sessionStorage.setItem(AUTO_SIGNIN_GUARD, "1");
-  } catch {
-    // Worst case the courtesy try repeats once per page load. Bounded by the
-    // fact that a plain visit is a plain visit, not a loop.
-  }
-}
-function clearGuard(): void {
-  try {
-    sessionStorage.removeItem(AUTO_SIGNIN_GUARD);
-  } catch {
-    // As above.
-  }
-}
+import {
+  claimSigninAttempt,
+  decideAutoSignIn,
+  hasRememberCookie,
+  signinAttemptPending,
+  wakeStationDatabase,
+} from "@/lib/remember-login";
 
 /**
  * The station's sign-in page. NextAuth forces failed sign-ins here (its own
@@ -63,20 +35,24 @@ function SigninBody() {
       remembers = false;
     }
 
-    const decision = decideAutoSignIn({ remembers, errorCode, alreadyAttempted: readGuard() });
+    // Browser-wide, not tab-wide: the state cookie these attempts fight over is
+    // shared by every tab, so "has an attempt already gone out?" has to be asked
+    // of the browser.
+    const decision = decideAutoSignIn({
+      remembers,
+      errorCode,
+      alreadyAttempted: signinAttemptPending(Date.now(), window.localStorage),
+    });
 
-    if (decision === "leave-to-retry-loop") {
-      // Getting here means the automatic path did not work. Release the guard so
-      // AuthFailure's loop is not gagged by it, and let it take over.
-      clearGuard();
-      return;
-    }
+    if (decision === "leave-to-retry-loop") return;
     if (decision !== "attempt") return;
 
-    // Spend the guard BEFORE leaving, and never hand it back: this survives the
-    // trip to Google, which is the entire point. No cleanup function on purpose
-    // — a cleanup here is what restarted the loop every single time.
-    setGuard();
+    // Take the browser-wide claim BEFORE navigating away. This is the only thing
+    // standing between a remembered listener with three tabs open and three
+    // simultaneous OAuth flows fighting over one state cookie — see
+    // claimSigninAttempt. No cleanup function, deliberately: unmounting is what
+    // tore down the guard last time and restarted the carousel every lap.
+    if (!claimSigninAttempt(Date.now(), window.localStorage)) return;
 
     // Deliberately not cancellable on unmount. Unmount here means React tearing
     // down (or StrictMode remounting) before the wake came back, and refusing to
