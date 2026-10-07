@@ -27,7 +27,6 @@ import {
 } from "@/lib/still-listening";
 import { APP_VERSION, REPO_URL, SUBWAVE_URL } from "@/lib/version";
 import { computeShowRunway } from "@/lib/show-runway";
-import { beginCommit, endCommit, newGate, shouldAnimateCommit } from "@/lib/view-transition";
 import {
   shouldWriteRememberCookie,
   rememberCookieHeader,
@@ -820,7 +819,6 @@ export default function Home() {
 
           if (isCancelled) return;
           
-          const vtGate = newGate();
           const applyTriple = (t: { newData: any; newSchedule: any; newState: any }, animate = true) => {
             if (isCancelled) return;
             const doApply = () => {
@@ -829,57 +827,32 @@ export default function Home() {
               if (t.newState) setAppStateData(t.newState);
             };
 
-            // Snapshotting identical DOM flashes white for nothing — only
-            // animate when something visible actually changed.
+            // Commits are applied directly. No View Transition, no flushSync,
+            // no dynamic import — and that is a decision, not an omission.
             //
-            // NO flushSync, and never behind a dynamic import. This used to be
-            // `import("react-dom").then(() => startViewTransition(() =>
-            // flushSync(doApply)))`, which fired from a promise callback React
-            // had not scheduled, every poll, with nothing stopping a second
-            // transition starting while the first ran. flushSync renders
-            // synchronously, so calling it from outside React's scheduling
-            // re-enters the renderer mid-render and desynchronises the hook
-            // cursor — and the next render dies with #310 on its FIRST hook,
-            // which pointed at useSession() in Home and nowhere near the cause.
-            // It only ever hit signed-in listeners, because the poll returns
-            // early for anyone else, so it read as an account fault: incognito
-            // worked, a signed-in profile never did.
+            // The player used to animate this commit:
             //
-            // See lib/view-transition.ts for the rules and why each is here.
-            const supported =
-              typeof document !== "undefined" &&
-              typeof (document as any).startViewTransition === "function";
-
-            if (!shouldAnimateCommit({ animate, hidden: document.hidden, supported, gate: vtGate })) {
-              doApply();
-              return;
-            }
-            if (!beginCommit(vtGate)) {
-              doApply();
-              return;
-            }
-
-            let transition: any;
-            try {
-              transition = (document as any).startViewTransition(() => {
-                doApply();
-              });
-            } catch {
-              endCommit(vtGate);
-              doApply();
-              return;
-            }
-            // Release on settle either way. A rejected transition must not leave
-            // the slot held, or the page silently stops animating for good.
-            const settled = transition?.finished;
-            if (settled && typeof settled.then === "function") {
-              settled.then(
-                () => endCommit(vtGate),
-                () => endCommit(vtGate)
-              );
-            } else {
-              endCommit(vtGate);
-            }
+            //   import("react-dom").then(() =>
+            //     document.startViewTransition(() => flushSync(doApply)))
+            //
+            // which took the player down for every signed-in listener with React
+            // #310, "Rendered more hooks than during the previous render", thrown
+            // on the FIRST hook of this component — useSession() — naming nothing
+            // near the cause. flushSync renders synchronously from a promise
+            // callback React did not schedule, and calling document
+            // .startViewTransition by hand puts a commit at a moment React did not
+            // choose. Either is enough to re-enter the renderer mid-render and
+            // desynchronise the hook cursor. The poll only runs for an
+            // authenticated, approved session, which is why a signed-out visitor
+            // and every incognito window were unaffected and it read as an
+            // account fault rather than a rendering one.
+            //
+            // It is decoration. The lineup updates perfectly well without it, and
+            // a smooth transition is not worth a page that will not draw.
+            //
+            // Should it ever come back, it belongs inside React's own transition
+            // machinery rather than bolted onto a fetch callback.
+            doApply();
           };
 
           // Content signature for change-gating: fresh objects every poll
