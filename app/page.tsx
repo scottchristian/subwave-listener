@@ -27,6 +27,12 @@ import {
 } from "@/lib/still-listening";
 import { APP_VERSION, REPO_URL, SUBWAVE_URL } from "@/lib/version";
 import { computeShowRunway } from "@/lib/show-runway";
+import {
+  shouldWriteRememberCookie,
+  rememberCookieHeader,
+  forgetRememberCookieHeader,
+  hasRememberCookie,
+} from "@/lib/remember-login";
 import { defaultHour12 } from "@/lib/update-time";
 import { resolveTrackDuration, isDurationDiscredited } from "@/lib/trackduration";
 // The request ladder: what we tell a listener while the booth has not answered.
@@ -189,21 +195,37 @@ export default function Home() {
   const { data: session, status } = useSession();
   const [isPlaying, setIsPlaying] = useState(false);
 
-  // Set "remember me" cookie when user is authenticated
+  // Set the "remember me" cookie on an authenticated session.
+  //
+  // It is deliberately NOT cleared when status goes "unauthenticated". That
+  // status does not mean "signed out": next-auth's SessionProvider swallows a
+  // failed /api/auth/session (a sleeping database, a dropped connection) and
+  // resolves to unauthenticated with no error, so clearing here deleted the
+  // cookie on precisely the arrival the cookie exists for — the listener coming
+  // back after the database had gone to sleep. One auto sign-in, then never
+  // again, and the button was back for good with nothing to explain why.
+  //
+  // Signing out is an explicit act, so that is the only thing that clears it
+  // (signOutAndForget, below).
   useEffect(() => {
-    if (status === "authenticated" && session) {
-      const hasCookie = document.cookie.includes("subwave_remember=true");
-      if (!hasCookie) {
-        // Cookie expires in 1 year, secure, same-site lax for OAuth redirects
-        document.cookie = "subwave_remember=true; max-age=31536000; path=/; secure; same-site=lax";
-      }
-    } else if (status === "unauthenticated") {
-      // Clear cookie on sign-out
-      if (document.cookie.includes("subwave_remember=true")) {
-        document.cookie = "subwave_remember=; max-age=0; path=/; secure; same-site=lax";
+    if (!shouldWriteRememberCookie(status, hasRememberCookie(document.cookie))) return;
+    document.cookie = rememberCookieHeader();
+  }, [status, session]);
+
+  // Sign out, and forget that this browser has ever been here. Order matters
+  // only in that the cookie must be gone before we navigate, so the next
+  // /signin does not read it and start an OAuth round-trip nobody asked for.
+  const signOutAndForget = () => {
+    if (typeof document !== "undefined") {
+      document.cookie = forgetRememberCookieHeader();
+      try {
+        sessionStorage.removeItem("subwave_auto_signin_attempted");
+      } catch {
+        // Private browsing can refuse storage; the cookie is what matters.
       }
     }
-  }, [status, session]);
+    return signOut({ callbackUrl: "/" });
+  };
   // "Are you still listening?" Armed when play starts: the stop lands one
   // window out, the reminder one offset before it. Confirming pushes the stop
   // out by a whole window (never restarts the clock from the press).
@@ -1964,7 +1986,7 @@ export default function Home() {
                 <strong>Access denied.</strong><br/><br/>
                 This account no longer has access to the station.
               </p>
-              <button id="btn-signout-denied" className="primary-btn" onClick={() => signOut({ callbackUrl: "/" })}>Sign out</button>
+              <button id="btn-signout-denied" className="primary-btn" onClick={signOutAndForget}>Sign out</button>
             </>
           ) : (
             <>
@@ -1972,7 +1994,7 @@ export default function Home() {
                 <strong>Your account is pending approval.</strong><br/><br/>
                 The station owner will review your request shortly. This screen lets you in automatically once approved.
               </p>
-              <button id="btn-signout-pending" className="primary-btn" onClick={() => signOut({ callbackUrl: "/" })}>Sign out</button>
+              <button id="btn-signout-pending" className="primary-btn" onClick={signOutAndForget}>Sign out</button>
             </>
           )}
         </div>
@@ -2253,7 +2275,7 @@ export default function Home() {
                 {(session.user as any)?.isAdmin && (
                   <a id="btn-admin" href="/admin" style={{ display: "block", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)" }}>Admin</a>
                 )}
-                <button id="btn-signout" onClick={() => signOut({ callbackUrl: "/" })} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>Sign out</button>
+                <button id="btn-signout" onClick={signOutAndForget} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>Sign out</button>
               </div>
             </>
           )}
