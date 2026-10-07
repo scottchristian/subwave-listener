@@ -47,3 +47,92 @@ export function forgetRememberCookieHeader(): string {
 export function hasRememberCookie(cookie: string): boolean {
   return cookie.split(";").some((c) => c.trim() === `${REMEMBER_COOKIE}=true`);
 }
+
+/**
+ * Error classes NextAuth forces onto the signin page (its own allowlist
+ * bypasses pages.error for these), plus the ones pages.error receives.
+ * Grouped by what the human should hear, not by NextAuth's names.
+ */
+export const WAKING_DB_ERRORS: ReadonlySet<string> = new Set([
+  "Callback",
+  "OAuthCallback",
+  "OAuthCreateAccount",
+  "OAuthSignin",
+  "Signin",
+  "AdapterError",
+  "default",
+]);
+
+export function isWakingDbError(code: string): boolean {
+  return WAKING_DB_ERRORS.has(code);
+}
+
+/**
+ * What the sign-in page should do about signing this browser in by itself.
+ *
+ * This exists as a decision function because the version that lived in the
+ * component was an unbounded redirect loop, and the shape of the bug was the
+ * shape of the code: a guard written on mount and deleted on unmount, while
+ * `signIn()` navigates the whole document — so every trip to Google unmounted
+ * the page that was guarding against the next trip. A listener who had ever
+ * signed in could never load the station again; a browser that never had (or
+ * incognito, with no cookie) never entered the loop at all.
+ *
+ * So: the page-level courtesy try is ONE attempt, on a plain visit only, and it
+ * is bounded by a guard that nothing deletes on the way out. Once a real error
+ * page is reached, recovery belongs to AuthFailure's retry loop, which has a
+ * ceiling and a stop button — and reaching an error page means the courtesy try
+ * did not work, so that guard is released rather than left to gag the loop.
+ */
+export type AutoSignInDecision =
+  /** Wake the station, then start the Google flow. Once, ever, per tab. */
+  | "attempt"
+  /** Hand over to AuthFailure's bounded retry loop, and release the guard. */
+  | "leave-to-retry-loop"
+  /** Do nothing on our own initiative; the human presses the button. */
+  | "leave-alone";
+
+export function decideAutoSignIn(args: {
+  /** Does this browser carry the remember-me cookie? */
+  remembers: boolean;
+  /** The NextAuth error code on the URL, or "" for a plain visit. */
+  errorCode: string;
+  /** Has the courtesy try already been spent in this tab? */
+  alreadyAttempted: boolean;
+}): AutoSignInDecision {
+  // Never auto-fire for a browser we have never signed in.
+  if (!args.remembers) return "leave-alone";
+
+  if (args.errorCode) {
+    // A rejected account is about approval, not about a sleeping database.
+    // Retrying cannot fix it, and hammering Google on someone's behalf cannot
+    // help them either.
+    if (!isWakingDbError(args.errorCode)) return "leave-alone";
+    // Unconditionally, alreadyAttempted or not: the error page is where the
+    // bounded loop lives, and gating it on the guard is what left the earlier
+    // version stuck on a countdown that could never move.
+    return "leave-to-retry-loop";
+  }
+
+  // A plain visit: the whole point of the cookie, one time.
+  return args.alreadyAttempted ? "leave-alone" : "attempt";
+}
+
+/**
+ * Wake the station before leaning on Google. The OAuth round-trip is what the
+ * station uses to pull a sleeping database up, so waking first is the difference
+ * between one round-trip and thirty of them.
+ */
+export async function wakeStationDatabase(
+  fetchImpl: typeof fetch = fetch,
+  endpoint = "/api/auth/wake-db"
+): Promise<boolean> {
+  try {
+    const res = await fetchImpl(endpoint, { method: "POST" });
+    return !!res?.ok;
+  } catch {
+    // A failed wake is not a reason to skip the sign-in: the round-trip may
+    // still succeed, and AuthFailure reports the real outcome either way.
+    return false;
+  }
+}

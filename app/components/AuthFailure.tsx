@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
+import { isWakingDbError, wakeStationDatabase } from "@/lib/remember-login";
 
 // Seconds between automatic sign-in attempts while the database may be
 // waking, and how many before handing control back to the human. Each attempt
@@ -10,30 +11,24 @@ import { signIn } from "next-auth/react";
 const RETRY_EVERY_S = 10;
 const MAX_ATTEMPTS = 30;
 
-// Error classes NextAuth forces onto the signin page (its own allowlist
-// bypasses pages.error for these), plus the ones pages.error receives.
-// Grouped by what the human should hear, not by NextAuth's names.
-const WAKING_DB = new Set([
-  "Callback",
-  "OAuthCallback",
-  "OAuthCreateAccount",
-  "OAuthSignin",
-  "Signin",
-  "AdapterError",
-  "default",
-]);
-
 /**
  * Failed sign-in, in the station's own words. Two genuinely different
  * failures: a rejected account is about approval, everything else here is
  * almost always the free-tier database asleep or paused — which wakes on its
  * own, so the page retries by itself instead of blaming the account.
+ *
+ * This loop is the station's only bounded recovery path, so nothing else may
+ * suppress it. It used to defer to a per-tab "an automatic attempt was already
+ * made" flag on the sign-in page — which meant a listener whose courtesy try had
+ * failed landed here and then watched a countdown that could never move, with
+ * no button of their own either. The sign-in page now releases that flag on the
+ * way in; see decideAutoSignIn.
  */
 export default function AuthFailure({ code }: { code: string }) {
   const denied = code === "AccessDenied";
   // No code means a plain visit (bookmarked /signin, or the error page with
   // nothing to say) — a clean prompt, never failure copy and never auto-fire.
-  const waking = !denied && WAKING_DB.has(code);
+  const waking = !denied && isWakingDbError(code);
 
   // A sleeping database wakes on its own, so retry without being asked.
   // Success leaves this page signed in; failure lands back here and the
@@ -45,43 +40,33 @@ export default function AuthFailure({ code }: { code: string }) {
   const [wakingDb, setWakingDb] = useState(false);
   const autoRetry = waking && !stopped && attempt < MAX_ATTEMPTS;
 
-  // Check if sign-in page already attempted auto-sign-in (to avoid double retries)
-  const autoSignInAttempted = sessionStorage.getItem("subwave_auto_signin_attempted") === "true";
-
-  const wakeDatabase = async () => {
+  const wakeThenSignIn = () => {
     setWakingDb(true);
-    try {
-      await fetch("/api/auth/wake-db", { method: "POST" });
-    } catch {
-      // Ignore wake errors; the sign-in will fail naturally if it doesn't work
-    } finally {
-      setWakingDb(false);
-    }
+    return wakeStationDatabase()
+      .catch(() => false)
+      .finally(() => {
+        setWakingDb(false);
+        void signIn("google", { callbackUrl: "/" });
+      });
   };
 
   useEffect(() => {
-    // Don't auto-retry if sign-in page already attempted auto-sign-in
-    if (autoSignInAttempted) return;
     if (!autoRetry) return;
     if (countdown <= 0) {
       setAttempt((a) => a + 1);
       setCountdown(RETRY_EVERY_S);
-      wakeDatabase().then(() => {
-        signIn("google", { callbackUrl: "/" });
-      });
+      void wakeThenSignIn();
       return;
     }
     const id = setTimeout(() => setCountdown((c) => c - 1), 1000);
     return () => clearTimeout(id);
-  }, [autoRetry, countdown, autoSignInAttempted]);
+  }, [autoRetry, countdown]);
 
   const retryNow = () => {
     setAttempt(0);
     setCountdown(RETRY_EVERY_S);
     setStopped(false);
-    wakeDatabase().then(() => {
-      signIn("google", { callbackUrl: "/" });
-    });
+    void wakeThenSignIn();
   };
 
   return (

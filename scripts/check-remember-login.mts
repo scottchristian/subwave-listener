@@ -18,6 +18,10 @@ import {
   rememberCookieHeader,
   forgetRememberCookieHeader,
   hasRememberCookie,
+  isWakingDbError,
+  WAKING_DB_ERRORS,
+  decideAutoSignIn,
+  wakeStationDatabase,
 } from "../lib/remember-login.ts";
 
 let passed = 0;
@@ -89,6 +93,108 @@ ok(
   "write and delete pair their path and flags",
   [attrs(rememberCookieHeader()), attrs(forgetRememberCookieHeader())]
 );
+
+// ------------------------------------------------- who signs themselves in
+
+ok(
+  decideAutoSignIn({ remembers: true, errorCode: "", alreadyAttempted: false }) === "attempt",
+  "a plain visit in a remembered browser signs itself in — no button"
+);
+ok(
+  decideAutoSignIn({ remembers: true, errorCode: "", alreadyAttempted: true }) === "leave-alone",
+  "but only once: the courtesy try is spent for the tab"
+);
+ok(
+  decideAutoSignIn({ remembers: false, errorCode: "", alreadyAttempted: false }) === "leave-alone",
+  "a browser that has never signed in is never signed in without asking"
+);
+ok(
+  decideAutoSignIn({ remembers: true, errorCode: "AccessDenied", alreadyAttempted: false }) === "leave-alone",
+  "a rejected account is not retried on the listener's behalf"
+);
+ok(
+  decideAutoSignIn({ remembers: true, errorCode: "Configuration", alreadyAttempted: false }) === "leave-alone",
+  "nor is any error that is not about a sleeping database"
+);
+
+// THE REGRESSION, part two: the error page must always be handed to the bounded
+// loop, whatever the guard says. Gating this on the guard is what left the
+// earlier version stuck on a countdown that could never move.
+for (const code of WAKING_DB_ERRORS) {
+  ok(
+    decideAutoSignIn({ remembers: true, errorCode: code, alreadyAttempted: true }) === "leave-to-retry-loop",
+    `a sleeping-database error (${code}) hands over to the retry loop even after an attempt`
+  );
+  ok(
+    decideAutoSignIn({ remembers: true, errorCode: code, alreadyAttempted: false }) === "leave-to-retry-loop",
+    `a sleeping-database error (${code}) hands over before any attempt`
+  );
+}
+ok(isWakingDbError("AccessDenied") === false, "AccessDenied is not a sleeping database");
+ok(isWakingDbError("") === false, "a plain visit is not an error");
+
+// The loop itself, simulated as a state machine: guard in, page loads out.
+// The bug was that "attempt" was reachable again after a Google round-trip,
+// because the guard was deleted on the way out. Drive the real transitions and
+// assert the carousel cannot form.
+{
+  let guard = 0;
+  let attempts = 0;
+  // Worst case: the callback fails over and over, so every arrival is an error
+  // page — which is exactly the sequence that used to loop forever.
+  for (let i = 0; i < 50; i++) {
+    const errorCode = i === 0 ? "" : "Callback";
+    const decision = decideAutoSignIn({ remembers: true, errorCode, alreadyAttempted: guard === 1 });
+    if (decision === "attempt") {
+      attempts++;
+      guard = 1; // the guard is spent and, crucially, survives the navigation
+    } else if (decision === "leave-to-retry-loop") {
+      guard = 0; // released on the way in, so the bounded loop is never gagged
+    }
+  }
+  ok(attempts === 1, "fifty consecutive failed round-trips produce exactly ONE automatic attempt", attempts);
+  ok(guard === 0, "and the guard ends released, so the retry loop can work", guard);
+}
+
+// A remembered browser that lands on a plain visit, succeeds, and never returns
+// to this page must still spend its budget.
+{
+  let guard = 0;
+  const first = decideAutoSignIn({ remembers: true, errorCode: "", alreadyAttempted: guard === 1 });
+  if (first === "attempt") guard = 1;
+  const second = decideAutoSignIn({ remembers: true, errorCode: "", alreadyAttempted: guard === 1 });
+  ok(first === "attempt" && second === "leave-alone", "the courtesy try cannot be spent twice in a tab");
+}
+
+// ------------------------------------------------------------- waking first
+
+{
+  const calls: any[] = [];
+  const fakeFetch = (async (url: string, init: any) => {
+    calls.push([url, init]);
+    return { ok: true } as any;
+  }) as unknown as typeof fetch;
+  const woke = await wakeStationDatabase(fakeFetch);
+  ok(woke === true, "a successful wake reports true");
+  ok(calls.length === 1 && calls[0][0] === "/api/auth/wake-db", "and it POSTs the station's wake endpoint", calls);
+  ok(calls[0][1]?.method === "POST", "with a POST", calls[0][1]);
+}
+{
+  const failing = (async () => {
+    throw new Error("offline");
+  }) as unknown as typeof fetch;
+  ok((await wakeStationDatabase(failing)) === false, "a wake that throws reports false rather than propagating");
+}
+{
+  // The sign-in must still be attempted when the wake fails: the OAuth round
+  // trip can succeed on its own, and swallowing the error is what let one bad
+  // wake read strand the listener.
+  let reached = false;
+  const nope = (async () => ({ ok: false })) as unknown as typeof fetch;
+  await wakeStationDatabase(nope).catch(() => {});
+  reached = true;
+  ok(reached, "a refused wake does not throw, so the caller still proceeds to sign in");
+}
 
 console.log(`  ${passed}/${passed + failed} remember-login assertions passed`);
 if (failed) process.exit(1);
