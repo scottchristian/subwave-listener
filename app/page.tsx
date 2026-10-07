@@ -1,7 +1,7 @@
 "use client";
 
 import { useSession, signIn, signOut } from "next-auth/react";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import Image from "next/image";
 import LoadingDots from "@/app/components/LoadingDots";
 import LikeButton from "@/app/components/LikeButton";
@@ -26,6 +26,7 @@ import {
   type StillListeningPopup,
 } from "@/lib/still-listening";
 import { APP_VERSION, REPO_URL, SUBWAVE_URL } from "@/lib/version";
+import { computeShowRunway } from "@/lib/show-runway";
 import { defaultHour12 } from "@/lib/update-time";
 import { resolveTrackDuration, isDurationDiscredited } from "@/lib/trackduration";
 // The request ladder: what we tell a listener while the booth has not answered.
@@ -187,6 +188,22 @@ const SongCountdown = ({ nowPlaying, bufferSeconds, duration }: { nowPlaying: an
 export default function Home() {
   const { data: session, status } = useSession();
   const [isPlaying, setIsPlaying] = useState(false);
+
+  // Set "remember me" cookie when user is authenticated
+  useEffect(() => {
+    if (status === "authenticated" && session) {
+      const hasCookie = document.cookie.includes("subwave_remember=true");
+      if (!hasCookie) {
+        // Cookie expires in 1 year, secure, same-site lax for OAuth redirects
+        document.cookie = "subwave_remember=true; max-age=31536000; path=/; secure; same-site=lax";
+      }
+    } else if (status === "unauthenticated") {
+      // Clear cookie on sign-out
+      if (document.cookie.includes("subwave_remember=true")) {
+        document.cookie = "subwave_remember=; max-age=0; path=/; secure; same-site=lax";
+      }
+    }
+  }, [status, session]);
   // "Are you still listening?" Armed when play starts: the stop lands one
   // window out, the reminder one offset before it. Confirming pushes the stop
   // out by a whole window (never restarts the clock from the press).
@@ -1974,10 +1991,44 @@ export default function Home() {
     return `${STATION_API}${normalizedPath}`;
   };
 
+  // The listener-facing now-playing feed reshapes activeShow.persona and its
+  // guests down to {id, name, avatar} — no tagline, because a listener needs a
+  // name and a face, not a biography. The host overlay card is exactly where the
+  // tagline belongs, so it was always rendering a nameless biography: the
+  // overlay opened on any show with an empty tagline line and a bare role.
+  //
+  // /api/schedule carries the same personas WITH taglines, keyed by the same id,
+  // and it is already being polled — so the fix is to resolve through it rather
+  // than to ask the station for more. Guests get the same treatment, and a
+  // persona who has been deleted since the show was saved simply has none.
+  const personaIndex = useMemo(() => {
+    const byId = new Map<string, any>();
+    for (const p of (scheduleData?.personas as any[]) || []) {
+      if (p && typeof p.id === "string") byId.set(p.id, p);
+    }
+    return byId;
+  }, [scheduleData]);
+
+  // Merge a now-playing persona/guest with its schedule twin. Never trust the
+  // enriched shape alone: this also feeds the avatars, which must keep working
+  // before /api/schedule has landed (or if it fails).
+  const withPersonaDetail = (person: any) => {
+    if (!person) return null;
+    const full = typeof person.id === "string" ? personaIndex.get(person.id) : null;
+    return {
+      ...person,
+      name: person.name || full?.name || "",
+      avatar: getAvatarSrc(person.avatar || full?.avatar),
+      tagline: person.tagline || full?.tagline || "",
+    };
+  };
+
   // Helper for rendering avatars
   const renderAvatars = () => {
-    const p = stationData?.activeShow?.persona || stationData?.dj;
-    const guests = stationData?.activeShow?.guests || [];
+    // The on-air persona when a show owns the air, else whoever the station has
+    // selected (which does carry a tagline already).
+    const p = withPersonaDetail(stationData?.activeShow?.persona) || withPersonaDetail(stationData?.dj);
+    const guests = (stationData?.activeShow?.guests || []).map(withPersonaDetail).filter(Boolean);
 
     return (
       <div id="avatars-container" ref={el => { stepRefs.current[5] = el; }} className="avatars" style={{ marginTop: "1rem", display: "flex", gap: "1rem", alignItems: "center", position: tourStep === 5 ? "relative" : "static", zIndex: tourStep === 5 ? 1000 : 1 }}>
@@ -1985,12 +2036,12 @@ export default function Home() {
           <button
             id="avatar-host-container"
             type="button"
-            onClick={() => setShowHost({ name: p.name, avatar: getAvatarSrc(p.avatar), role: "Host", tagline: p.tagline })}
+            onClick={() => setShowHost({ name: p.name, avatar: p.avatar, role: "Host", tagline: p.tagline })}
             aria-label={`About ${p.name}`}
             title={`About ${p.name}`}
             style={{ display: "flex", alignItems: "center", gap: "1rem", background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", textAlign: "left" }}
           >
-            <img id="avatar-host-img" src={getAvatarSrc(p.avatar)} alt={p.name} className="avatar" title={p.name} style={{ width: "64px", height: "64px" }} />
+            <img id="avatar-host-img" src={p.avatar} alt={p.name} className="avatar" title={p.name} style={{ width: "64px", height: "64px" }} />
             <div id="avatar-host-text-container">
               <strong id="avatar-host-name">{p.name}</strong>
               <div id="avatar-host-role" style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>Host</div>
@@ -2008,14 +2059,14 @@ export default function Home() {
         {guests.map((g: any, index: number) => (
           <button
             id={`avatar-guest-container-${index}`}
-            key={g.id}
+            key={g.id || `${g.name}-${index}`}
             type="button"
-            onClick={() => setShowHost({ name: g.name, avatar: getAvatarSrc(g.avatar), role: "Guest", tagline: g.tagline })}
+            onClick={() => setShowHost({ name: g.name, avatar: g.avatar, role: "Guest", tagline: g.tagline })}
             aria-label={`About ${g.name}`}
             title={`About ${g.name}`}
             style={{ display: "flex", alignItems: "center", gap: "1rem", background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", textAlign: "left" }}
           >
-            <img id={`avatar-guest-img-${index}`} src={getAvatarSrc(g.avatar)} alt={g.name} className="avatar" title={g.name} style={{ width: "64px", height: "64px" }} />
+            <img id={`avatar-guest-img-${index}`} src={g.avatar} alt={g.name} className="avatar" title={g.name} style={{ width: "64px", height: "64px" }} />
             <div id={`avatar-guest-text-container-${index}`}>
               <strong id={`avatar-guest-name-${index}`}>{g.name}</strong>
               <div id={`avatar-guest-role-${index}`} style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>Guest</div>
@@ -2038,56 +2089,24 @@ export default function Home() {
   const nextShow = stationData?.context?.showHandover?.nextShow;
   const nextShowText = nextShow ? `Until ${nextShow.startsAt}` : null;
 
-  // Show runway from the weekly grid: when the current show ends + what
-  // follows. Grid keys are station-zone JS weekdays ('0' = Sunday) of hourly
-  // show ids; show/host names resolve off the schedules lists. All arithmetic
-  // runs in station wall-clock minutes, converted to an epoch only at the end.
-  const showRunway = (() => {
-    try {
-      const grid = scheduleData?.schedule;
-      const shows = scheduleData?.shows;
-      const personas = scheduleData?.personas;
-      const tz = scheduleData?.timezone;
-      if (!grid || !shows || !tz) return null;
-      const parts: Record<string, string> = {};
-      for (const p of new Intl.DateTimeFormat("en-AU", {
-        timeZone: tz, weekday: "short", hour: "numeric", minute: "numeric", hour12: false,
-      }).formatToParts(new Date())) parts[p.type] = p.value;
-      const dayKeys = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-      const day = dayKeys.indexOf(parts.weekday);
-      const hour = parseInt(parts.hour, 10) % 24;
-      const minute = parseInt(parts.minute, 10) % 60;
-      if (day < 0 || !Number.isFinite(hour) || !Number.isFinite(minute)) return null;
-      const idAt = (d: number, h: number) => {
-        const row = grid[String(((d % 7) + 7) % 7)];
-        return Array.isArray(row) ? row[((h % 24) + 24) % 24] : null;
-      };
-      const curId = idAt(day, hour);
-      if (!curId) return null;
-      let d = day, h = hour, guard = 0;
-      do { h++; if (h >= 24) { h = 0; d++; } guard++; }
-      while (guard < 72 && idAt(d, h) === curId);
-      if (guard >= 72) return null;
-      const nowMin = (day * 24 + hour) * 60 + minute;
-      const endMin = (d * 24 + h) * 60;
-      const leftMin = Math.max(endMin - nowMin, 1);
-      const showById = (id: string) => (shows as any[]).find((s: any) => s.id === id);
-      const nextShowObj = idAt(d, h) ? showById(idAt(d, h)) : null;
-      const nextPersona = nextShowObj
-        ? (personas as any[])?.find((p: any) => p.id === nextShowObj.personaId) || null
-        : null;
-      return {
-        endMs: Date.now() + leftMin * 60000,
-        leftMin,
-        nextName: nextShowObj?.name || null,
-        nextHost: nextPersona?.name || null,
-        nextPersona,
-        tz,
-      };
-    } catch {
-      return null;
-    }
-  })();
+  // Show runway: when the current show ends + what follows. The weekly grid is
+  // the default answer, but an operator can pin a different show to the air for
+  // a bounded window, and the station itself resolves who is on air by takeover
+  // first — so the runway answers from the same precedence, in lib/show-runway.ts
+  // (pure, so the precedence is tested rather than eyeballed).
+  const showRunway = computeShowRunway({
+    grid: scheduleData?.schedule,
+    shows: scheduleData?.shows,
+    personas: scheduleData?.personas,
+    timezone: scheduleData?.timezone,
+    override: scheduleData?.override,
+    now: Date.now(),
+  });
+  // Hoisted out of the JSX: the null checks below are on the persona, and a
+  // property path is not narrowed across a callback boundary.
+  const runwayNext = showRunway?.nextPersona || null;
+  const runwayNextName = showRunway?.nextName || null;
+  const runwayNextHost = showRunway?.nextHost || null;
 
   const fmtDurLeft = (mins: number) => {
     const h = Math.floor(mins / 60);
@@ -2437,38 +2456,46 @@ export default function Home() {
 
             {showRunway && (
               <div id="on-air-ends" style={{ marginTop: "1rem", color: "var(--color-text)", fontSize: "0.9rem", fontWeight: 600, background: "rgba(255,255,255,0.05)", padding: "8px 12px", borderRadius: "6px" }}>
-                On air until {fmtClock(showRunway.endMs, showRunway.tz)} · {fmtDurLeft(showRunway.leftMin)}
+                On air until {fmtClock(showRunway.endMs, showRunway.timezone)} · {fmtDurLeft(showRunway.leftMin)}
+                {showRunway.mode !== "grid" ? (
+                  <span id="on-air-takeover-note" style={{ marginLeft: "0.4rem", fontWeight: 500, color: "var(--color-muted)" }}>
+                    {showRunway.mode === "takeover" ? "manual takeover" : "default programming"}
+                  </span>
+                ) : null}
               </div>
             )}
-            {showRunway?.nextName && (
+            {runwayNextName && (
               <div id="on-air-next-up" style={{ marginTop: "0.5rem", color: "var(--color-muted)", fontSize: "0.9rem", background: "rgba(255,255,255,0.05)", padding: "8px 12px", borderRadius: "6px" }}>
-                Next: <span style={{ color: "var(--color-text)", fontWeight: 600 }}>{showRunway.nextName}</span>
-                {showRunway.nextHost && (
+                {showRunway?.nextIsResume ? "After this takeover: " : "Next: "}
+                <span style={{ color: "var(--color-text)", fontWeight: 600 }}>{runwayNextName}</span>
+                {runwayNextHost && (
                   <span>
                     {" "}with{" "}
-                    {showRunway.nextPersona ? (
+                    {runwayNext ? (
                       <button
                         id="btn-next-host"
                         type="button"
                         onClick={() => setShowHost({
-                          name: showRunway.nextPersona.name,
-                          avatar: getAvatarSrc(showRunway.nextPersona.avatar),
+                          name: runwayNext.name || runwayNextHost,
+                          avatar: getAvatarSrc(runwayNext.avatar || ""),
                           role: "Host",
-                          tagline: showRunway.nextPersona.tagline,
-                          context: showRunway.nextName ? `up next on ${showRunway.nextName}` : undefined,
+                          tagline: runwayNext.tagline || undefined,
+                          context: runwayNextName
+                            ? `${showRunway?.nextIsResume ? "back on" : "up next on"} ${runwayNextName}`
+                            : undefined,
                         })}
-                        aria-label={`About ${showRunway.nextHost}`}
-                        title={`About ${showRunway.nextHost}`}
+                        aria-label={`About ${runwayNextHost}`}
+                        title={`About ${runwayNextHost}`}
                         style={{ background: "none", border: "none", padding: 0, cursor: "pointer", font: "inherit", color: "#ff4d4d" }}
                       >
-                        {showRunway.nextHost}
+                        {runwayNextHost}
                       </button>
                     ) : (
-                      <span style={{ color: "#ff4d4d" }}>{showRunway.nextHost}</span>
+                      <span style={{ color: "#ff4d4d" }}>{runwayNextHost}</span>
                     )}
                   </span>
                 )}
-                <span> at {fmtClock(showRunway.endMs, showRunway.tz)}</span>
+                <span> at {fmtClock(showRunway!.endMs, showRunway!.timezone)}</span>
               </div>
             )}
             

@@ -45,6 +45,9 @@ export default function AuthFailure({ code }: { code: string }) {
   const [wakingDb, setWakingDb] = useState(false);
   const autoRetry = waking && !stopped && attempt < MAX_ATTEMPTS;
 
+  // Check if sign-in page already attempted auto-sign-in (to avoid double retries)
+  const autoSignInAttempted = sessionStorage.getItem("subwave_auto_signin_attempted") === "true";
+
   const wakeDatabase = async () => {
     setWakingDb(true);
     try {
@@ -57,6 +60,8 @@ export default function AuthFailure({ code }: { code: string }) {
   };
 
   useEffect(() => {
+    // Don't auto-retry if sign-in page already attempted auto-sign-in
+    if (autoSignInAttempted) return;
     if (!autoRetry) return;
     if (countdown <= 0) {
       setAttempt((a) => a + 1);
@@ -68,7 +73,7 @@ export default function AuthFailure({ code }: { code: string }) {
     }
     const id = setTimeout(() => setCountdown((c) => c - 1), 1000);
     return () => clearTimeout(id);
-  }, [autoRetry, countdown]);
+  }, [autoRetry, countdown, autoSignInAttempted]);
 
   const retryNow = () => {
     setAttempt(0);
