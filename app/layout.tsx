@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { STATION } from "@/lib/station";
 import { Providers } from "./providers";
+import { CaptureBoundary } from "./components/CaptureBoundary";
 
 export const metadata: Metadata = {
   title: STATION.name,
@@ -42,9 +43,14 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body>
-        <Providers>
-          {children}
-        </Providers>
+        {/* Outermost, so it catches a render crash anywhere below — including
+            the pages a failure in auth would otherwise strand on a blank
+            document the browser then reports as "couldn't load". */}
+        <CaptureBoundary>
+          <Providers>
+            {children}
+          </Providers>
+        </CaptureBoundary>
       </body>
     </html>
   );
