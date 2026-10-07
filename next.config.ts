@@ -45,6 +45,18 @@ const nextConfig: NextConfig = {
           { key: 'Cache-Control', value: 'public, max-age=31536000, immutable' },
         ],
       },
+
+      // Brand artwork is the other half: stable across deploys but NOT
+      // content-addressed, so it must never be immutable — a replaced logo would
+      // otherwise never reach anyone. It is also 214KB of background, so it is
+      // allowed to be stored and revalidated: the answer is 304 and a few bytes,
+      // rather than the whole image on every visit.
+      {
+        source: '/brand/:path*',
+        headers: [
+          { key: 'Cache-Control', value: 'public, max-age=0, must-revalidate' },
+        ],
+      },
     ];
   },
 };

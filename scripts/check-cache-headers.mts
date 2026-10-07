@@ -45,15 +45,27 @@ while ((m = ruleRe.exec(configSrc))) {
 
 ok(rules.length >= 3, "the config declares the document and asset rules separately", rules.length);
 
-/** Next matches `/:path*` and `/(.*)` as catch-alls; specificity decides, so ask in order. */
+/**
+ * Next applies header rules in order and a later matching rule wins, so a path
+ * takes its Cache-Control from the LAST rule that matches it. A rule matches
+ * everything if it is a catch-all (`/(.*)`, `/:path*`), or only the paths under
+ * its literal prefix if it has one (`/_next/static/:path*`).
+ *
+ * Getting this wrong is not a cosmetic test bug: treat /brand/:path* as a
+ * catch-all and every document looks like brand artwork, which is exactly the
+ * kind of mistake that lets a bad header rule ship.
+ */
 function headersFor(p: string): Record<string, string> {
-  const matched = rules.filter((r) => {
-    const s = r.source;
-    if (s.startsWith("/_next/static")) return p.startsWith("/_next/static/");
-    return true; // the catch-alls
-  });
   const out: Record<string, string> = {};
-  for (const r of matched) Object.assign(out, r.headers);
+  for (const r of rules) {
+    // Strip only the trailing wildcard, keeping the leading slash, so
+    // "/_next/static/:path*" yields the prefix "/_next/static" and a test path of
+    // "/_next/static/chunks/x.js" actually sits under it.
+    const prefix = r.source.replace(/\/\(\.\*\)$/, "").replace(/\/:path\*$/, "");
+    if (prefix === "" || p === prefix || p.startsWith(prefix + "/")) {
+      Object.assign(out, r.headers);
+    }
+  }
   return out;
 }
 
@@ -108,9 +120,16 @@ ok(
 );
 
 // Branding is content-stable but not content-addressed, so it must not be
-// immutable or a replaced logo would never reach anyone.
+// immutable — but it is 214KB of background, so it must still be storable and
+// revalidatable, or every visit re-downloads it.
 const brand = headersFor("/brand/logo.png");
 ok(!(brand["cache-control"] || "").includes("immutable"), "brand artwork is not immutable", brand["cache-control"]);
+ok(!(brand["cache-control"] || "").includes("no-store"), "brand artwork can be stored", brand["cache-control"]);
+ok(
+  (brand["cache-control"] || "").toLowerCase().includes("must-revalidate"),
+  "and is revalidated rather than trusted blindly",
+  brand["cache-control"]
+);
 
 // The noindex guard predates all of this and must survive the rewrite.
 ok(doc["x-robots-tag"] === "noindex, nofollow, noarchive", "the noindex guard is still applied", doc["x-robots-tag"]);
