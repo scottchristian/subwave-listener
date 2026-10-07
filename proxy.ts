@@ -34,6 +34,13 @@ const PUBLIC = [
   // secret, which nothing but Buy Me A Coffee can produce. An unsigned or
   // wrongly-signed body is refused, and a missing secret refuses everything.
   { path: "/api/webhooks/bmac", why: "external webhook delivery; route verifies the signed body" },
+  // Browser crash reports. It has to be open: the failure it exists to report is
+  // very often a broken sign-in, and a reporter behind the auth gate drops
+  // precisely the reports that matter most. It grants nothing — it reads no
+  // session, touches no station state, and writes one capped line about a
+  // render crash to a local file. It is publicly WRITABLE, so the route caps
+  // every field, truncates the entry, and stops appending at LOG_MAX_BYTES.
+  { path: "/api/client-error", why: "crash reporter; writes a capped line to local disk, reads nothing" },
 ];
 
 const isPublic = (pathname: string) =>

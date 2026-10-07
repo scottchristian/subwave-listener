@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { appendFileSync, mkdirSync } from "node:fs";
+import { appendFileSync, mkdirSync, statSync } from "node:fs";
 import path from "node:path";
 
 /**
@@ -29,6 +29,14 @@ const MAX_FIELD = 4000;
 const MAX_BODY = 8000;
 const DIR = process.env.CLIENT_ERROR_LOG_DIR || path.join(process.cwd(), "data");
 
+/**
+ * Ceiling on the log, because this endpoint is deliberately open (see the PUBLIC
+ * list in proxy.ts) and that makes it publicly writable. Anything can POST here,
+ * so the file must not be something anyone can grow without bound — past this it
+ * stops recording rather than filling the disk the station runs on.
+ */
+const LOG_MAX_BYTES = 2 * 1024 * 1024;
+
 function oneLine(v: unknown, cap = MAX_FIELD): string {
   return String(v ?? "")
     .replace(/[\r\n]+/g, " ")
@@ -55,7 +63,16 @@ export async function POST(req: Request) {
 
   try {
     mkdirSync(DIR, { recursive: true });
-    appendFileSync(path.join(DIR, "client-errors.log"), entry + "\n");
+    const file = path.join(DIR, "client-errors.log");
+    let size = 0;
+    try {
+      size = statSync(file).size;
+    } catch {
+      size = 0; // not there yet
+    }
+    if (size < LOG_MAX_BYTES) {
+      appendFileSync(file, entry + "\n");
+    }
   } catch {
     // A full disk or a read-only mount must not turn a crash into a 500 storm.
   }
