@@ -192,6 +192,12 @@ const SongCountdown = ({ nowPlaying, bufferSeconds, duration }: { nowPlaying: an
   );
 };
 
+// How far ahead to warm album art. The station keeps a handful of tracks
+// queued, and one or two is enough to cover the gap between a track entering
+// the queue and its cover being needed; the rest is headroom for the queue
+// changing shape faster than a track airs.
+const UPCOMING_ART_PREFETCH = 3;
+
 export default function Home() {
   const { data: session, status } = useSession();
   const [isPlaying, setIsPlaying] = useState(false);
@@ -738,6 +744,9 @@ export default function Home() {
     status === "authenticated" && !!(session?.user as any)?.isApproved;
   const stepRefs = useRef<(HTMLElement | null)[]>([]);
   const STATION_API = STATION.backendUrl;
+  // Covers already requested. The poll replaces appStateData every 5s, so
+  // without this the same three requests would be re-issued on every tick.
+  const warmedArtRef = useRef<string[]>([]);
 
   // The station's name belongs to the SUB/WAVE host, and /state already carries it
   // in every poll the player was making anyway — it was being fetched and ignored.
@@ -748,6 +757,48 @@ export default function Home() {
   // first poll lands, and the build-time metadata that cannot wait for a fetch.
   const hostStationName: string | null = appStateData?.station?.name || null;
   const stationName = hostStationName || STATION.name;
+
+  // Album art, fetched before it is needed.
+  //
+  // /api/cover/{subsonic_id} is served `immutable, max-age=86400`, so an image
+  // the browser has already seen is free forever — including the second listen
+  // of the same album, which costs no network at all. That is the whole trick
+  // here: this is not a cache we have to build or invalidate, it is the
+  // browser's own, already keyed by a URL that is stable per track.
+  //
+  // The Up Next card was already warming it, incidentally, by rendering that
+  // same URL. Relying on that left three gaps: the card only renders while
+  // playing, `upcoming` may hold a single entry, and nothing guaranteed the
+  // request had been made before the swap. So the fetch is now explicit and
+  // unconditional — every cover in the upcoming window is requested as soon as
+  // the poll reveals it, which is minutes before it can become now-playing, so
+  // the swap at the audible moment finds the bytes already local.
+  //
+  // Bounded on purpose. `upcoming` is untrusted in length, and a window of
+  // hundreds would quietly become a bandwidth bill aimed at the host.
+  useEffect(() => {
+    const upcoming = Array.isArray(appStateData?.upcoming) ? appStateData.upcoming : [];
+    const warmed = warmedArtRef.current;
+    for (const track of upcoming.slice(0, UPCOMING_ART_PREFETCH)) {
+      const id = track?.subsonic_id;
+      if (typeof id !== "string" || !id || warmed.includes(id)) continue;
+      // Detached from the document on purpose: this is for the HTTP cache, which
+      // is what the swap reads from. An <img> in the tree would be laid out and
+      // painted for artwork nobody may be looking at.
+      //
+      // `window.Image`, not `Image`: this module imports next/image as `Image`,
+      // and that shadow would otherwise make this a component constructor.
+      const img = new window.Image();
+      img.decoding = "async";
+      img.src = `${STATION_API}/api/cover/${id}`;
+      warmed.push(id);
+    }
+    // Remember only the recent window. The station plays for ever, so an
+    // unbounded list of warmed ids would be a slow leak of the same kind.
+    if (warmed.length > UPCOMING_ART_PREFETCH * 4) {
+      warmed.splice(0, warmed.length - UPCOMING_ART_PREFETCH * 4);
+    }
+  }, [appStateData]);
 
   // The track length, for the countdown, the skip lock and the lock screen.
   // now-playing.duration is null whenever the host does not know it (untracked
