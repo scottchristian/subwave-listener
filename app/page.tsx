@@ -1928,6 +1928,41 @@ export default function Home() {
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // Everything above this line is a hook, and that is load-bearing.
+  //
+  // The two early returns below mean a signed-out visitor and a signed-in one
+  // run DIFFERENT LENGTHS of this component: the visitor returns before reaching
+  // anything below. A hook placed under those guards is therefore called only
+  // once a session exists, and React answers the difference with #310, "Rendered
+  // more hooks than during the previous render" — thrown on this component's
+  // FIRST hook, which names useSession() and nothing near the cause. That is
+  // exactly how a useMemo for the persona index took the player down for every
+  // signed-in listener while /admin and every signed-out visitor were fine.
+  //
+  // So: no hooks below the guards. Deriving values and defining functions is
+  // fine, because those run unconditionally — only hook CALLS change the count.
+  // scripts/check-hooks-after-return.mts enforces all of this.
+  // ---------------------------------------------------------------------------
+
+  // The listener-facing now-playing feed reshapes activeShow.persona and its
+  // guests down to {id, name, avatar} — no tagline, because a listener needs a
+  // name and a face, not a biography. The host overlay card is exactly where the
+  // tagline belongs, so it was always rendering a nameless biography: the
+  // overlay opened on any show with an empty tagline line and a bare role.
+  //
+  // /api/schedule carries the same personas WITH taglines, keyed by the same id,
+  // and it is already being polled — so the fix is to resolve through it rather
+  // than to ask the station for more. Guests get the same treatment, and a
+  // persona who has been deleted since the show was saved simply has none.
+  const personaIndex = useMemo(() => {
+    const byId = new Map<string, any>();
+    for (const p of (scheduleData?.personas as any[]) || []) {
+      if (p && typeof p.id === "string") byId.set(p.id, p);
+    }
+    return byId;
+  }, [scheduleData]);
+
   if (status === "loading") {
     return <div className="container centered-column" style={{ justifyContent: "center" }}>Loading...</div>;
   }
@@ -2025,23 +2060,6 @@ export default function Home() {
     return `${STATION_API}${normalizedPath}`;
   };
 
-  // The listener-facing now-playing feed reshapes activeShow.persona and its
-  // guests down to {id, name, avatar} — no tagline, because a listener needs a
-  // name and a face, not a biography. The host overlay card is exactly where the
-  // tagline belongs, so it was always rendering a nameless biography: the
-  // overlay opened on any show with an empty tagline line and a bare role.
-  //
-  // /api/schedule carries the same personas WITH taglines, keyed by the same id,
-  // and it is already being polled — so the fix is to resolve through it rather
-  // than to ask the station for more. Guests get the same treatment, and a
-  // persona who has been deleted since the show was saved simply has none.
-  const personaIndex = useMemo(() => {
-    const byId = new Map<string, any>();
-    for (const p of (scheduleData?.personas as any[]) || []) {
-      if (p && typeof p.id === "string") byId.set(p.id, p);
-    }
-    return byId;
-  }, [scheduleData]);
 
   // Merge a now-playing persona/guest with its schedule twin. Never trust the
   // enriched shape alone: this also feeds the avatars, which must keep working
