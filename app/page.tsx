@@ -835,23 +835,37 @@ export default function Home() {
             //   import("react-dom").then(() =>
             //     document.startViewTransition(() => flushSync(doApply)))
             //
-            // which took the player down for every signed-in listener with React
-            // #310, "Rendered more hooks than during the previous render", thrown
-            // on the FIRST hook of this component — useSession() — naming nothing
-            // near the cause. flushSync renders synchronously from a promise
-            // callback React did not schedule, and calling document
-            // .startViewTransition by hand puts a commit at a moment React did not
-            // choose. Either is enough to re-enter the renderer mid-render and
-            // desynchronise the hook cursor. The poll only runs for an
-            // authenticated, approved session, which is why a signed-out visitor
-            // and every incognito window were unaffected and it read as an
-            // account fault rather than a rendering one.
-            //
             // It is decoration. The lineup updates perfectly well without it, and
             // a smooth transition is not worth a page that will not draw.
             //
-            // Should it ever come back, it belongs inside React's own transition
-            // machinery rather than bolted onto a fetch callback.
+            // On the blame, because the wrong version of this comment was here
+            // for a while and cost hours: this pattern was suspected of causing
+            // the React #310 outage ("Rendered more hooks than during the previous
+            // render", thrown on this component's first hook, useSession, naming
+            // nothing near the cause). It was not the cause. The cause was a
+            // useMemo added below this component's two early returns, which made
+            // signed-out and signed-in visitors run paths of different lengths —
+            // scripts/check-hooks-after-return.mts guards that, and named the real
+            // one on its first run.
+            //
+            // The suspicion was understandable rather than foolish: this code sits
+            // on a poll that runs only for an authenticated, approved session, so
+            // a pure rendering fault looked exactly like an account fault — every
+            // affected visitor had a session, every unaffected one did not, and
+            // incognito "worked" because incognito was signed out. That asymmetry
+            // is the expensive part, and it is worth avoiding the next time too.
+            //
+            // So the bans stand on their own merits rather than on that theory.
+            // flushSync renders synchronously from a promise callback React did
+            // not schedule, and calling document.startViewTransition by hand puts
+            // a commit at a moment React did not choose. Neither earns its keep
+            // for a fade.
+            //
+            // If the transition ever comes back, it goes through ONE transition
+            // React itself schedules — startTransition, or a view transition React
+            // owns — with no flushSync and no dynamic react-dom import. That is
+            // the shape check-commit-path.mts would have to be widened to allow,
+            // and it is a deliberate edit rather than an accident.
             doApply();
           };
 

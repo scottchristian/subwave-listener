@@ -1,23 +1,30 @@
 // The player must commit its data updates by calling setState and nothing else.
 //
-// This exists because of React #310 — "Rendered more hooks than during the
-// previous render" — which stopped the player rendering at all, for every
-// signed-in listener, while incognito and signed-out visitors were fine. Home
-// committed its lineup behind
+// This is NOT the check for the React #310 outage, and the header this file used
+// to carry claimed it was. That claim was false, and it is worth being precise
+// about why it was believed:
 //
-//   import("react-dom").then(() => document.startViewTransition(() => flushSync(doApply)))
+//   React #310 — "Rendered more hooks than during the previous render" — stopped
+//   the player rendering for every signed-in listener, while signed-out visitors
+//   and every incognito window were fine. The commit path below runs inside a
+//   poll that only fires for an authenticated, approved session, so a pure
+//   rendering fault presented exactly like an account fault. That asymmetry is
+//   seductive, and three wrong fixes were deployed and reverted on the strength
+//   of it (this one among them).
 //
-// on every poll. flushSync renders synchronously from a promise callback React
-// did not schedule, and calling document.startViewTransition by hand puts a
-// commit at a moment React did not choose. Either re-enters the renderer
-// mid-render and desynchronises the hook cursor, so the NEXT render throws on
-// its first hook — useSession() in Home — naming nothing near the cause. The
-// poll only runs for an authenticated, approved session, which is exactly why it
-// looked like an account problem.
+// The real cause was a `useMemo` added below Home's two early returns, so the two
+// paths had different lengths. scripts/check-hooks-after-return.mts guards that,
+// and found the real one the first time it ran.
 //
-// So the rule is now simply "apply the update", and these assertions exist to
-// make the interesting ways of not doing that impossible to reintroduce by
-// accident.
+// So these bans are kept on their own merits, not on a discredited theory:
+//
+//   flushSync renders synchronously from a callback React did not schedule, and
+//   a hand-rolled document.startViewTransition puts a commit at a moment React
+//   did not choose. Neither is worth a fade on a lineup that updates fine
+//   without one, and both are easy to reach for by accident.
+//
+// The comment in app/page.tsx says all of this too, and says what the shape
+// would have to look like if the transition ever comes back.
 // Run: node scripts/check-commit-path.mts (wired as `npm run check:commit-path`).
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -53,7 +60,7 @@ ok(!/startViewTransition/.test(code), "no hand-rolled View Transition in the pla
 ok(!/import\(\s*["']react-dom["']\s*\)/.test(code), "no dynamic react-dom import in the commit path");
 
 // The same trap in a different costume: forcing a synchronous commit from a
-// timer or a promise is the shape that caused this, whatever it is called.
+// timer or a promise is the shape above, whatever it is called.
 ok(!/reactDom\.flushSync|ReactDOM\.flushSync/.test(code), "and no aliased flushSync either");
 
 // ------------------------------------------------------ the commit itself
@@ -87,12 +94,21 @@ ok(!/typeof document/.test(body), "nor sniff the environment");
 
 // The commit is inside an async fetch, so it is called from outside React's
 // scheduling by construction. That is fine — a plain setState from a timer is
-// ordinary — but it is why every one of the bans above matters.
+// ordinary — and it is worth remembering that being outside React's scheduling
+// is not the same as re-entering its renderer. flushSync crosses that line;
+// setState does not.
 
 // ------------------------------------------------- the reason stays written
 
+// A comment that overstates its own cause is worse than no comment, so the two
+// claims are pinned: that the reason is still written down, and that it does not
+// quietly reinstate the theory this file was wrong about.
 ok(/flushSync renders synchronously/.test(src), "and the reason it was removed is still written down");
 ok(/decoration/.test(src), "including that it was decoration");
+ok(
+  /It was not the cause/.test(src),
+  "and that it does not claim to have caused the outage — that is the part that was wrong before"
+);
 
 console.log(`  ${passed}/${passed + failed} commit-path assertions passed`);
 if (failed) process.exit(1);

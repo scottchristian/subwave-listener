@@ -19,7 +19,7 @@ export const config = {
 const PUBLIC = [
   // NextAuth's own routes: signing in is the one thing a stranger must be able
   // to do. Covers /signin, /callback, /csrf, /providers, /session.
-  { path: "/api/auth", why: "the login flow" },
+  { path: "/api/auth", why: "signing in is the one thing a stranger must be able to do" },
   // Polled by the Sub/Wave host, which authenticates with the station password
   // rather than a session — the route does its own check. Excluding it here
   // does not open it to the public.
