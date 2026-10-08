@@ -1,6 +1,6 @@
 {
   "name": "subwave-web-player",
-  "version": "0.0.4",
+  "version": "0.0.5",
   "private": true,
   "scripts": {
     "build": "node scripts/ensure-cache-client.mjs && node scripts/run-checks.mjs && tsc --noEmit && next build",
