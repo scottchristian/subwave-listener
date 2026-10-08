@@ -747,6 +747,9 @@ export default function Home() {
   // Covers already requested. The poll replaces appStateData every 5s, so
   // without this the same three requests would be re-issued on every tick.
   const warmedArtRef = useRef<string[]>([]);
+  // One registration per page load. The poll replaces state every 5s, and
+  // register() is idempotent but not free.
+  const swRegisteredRef = useRef(false);
 
   // The station's name belongs to the SUB/WAVE host, and /state already carries it
   // in every poll the player was making anyway — it was being fetched and ignored.
@@ -799,6 +802,28 @@ export default function Home() {
       warmed.splice(0, warmed.length - UPCOMING_ART_PREFETCH * 4);
     }
   }, [appStateData]);
+
+  // The service worker is what makes a cover permanent rather than a 24-hour
+  // loan — but it was only ever registered on the push path, which is
+  // admin-only and gated on notification permission. Every ordinary listener
+  // was therefore running with no worker at all, so the album art cache the
+  // worker now holds could never be filled for them. Registration moves here,
+  // once, for anyone actually listening.
+  //
+  // The effect runs on the signed-out path too (it is above the early returns,
+  // so React registers it either way), hence the guard: a visitor who is not
+  // listening gets no worker and no storage spent on their behalf.
+  useEffect(() => {
+    if (!isApprovedPlayer) return;
+    if (swRegisteredRef.current) return;
+    if (!("serviceWorker" in navigator)) return;
+    swRegisteredRef.current = true;
+    void navigator.serviceWorker.register("/sw.js").catch(() => {
+      // A worker we cannot install is not an error worth surfacing — the
+      // artwork falls back to the HTTP cache, which still covers a session.
+      swRegisteredRef.current = false;
+    });
+  }, [isApprovedPlayer]);
 
   // The track length, for the countdown, the skip lock and the lock screen.
   // now-playing.duration is null whenever the host does not know it (untracked

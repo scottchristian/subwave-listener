@@ -88,6 +88,63 @@ function audit(src: string): string[] {
   return bad;
 }
 
+/**
+ * The same class of risk, one layer down: public/sw.js.
+ *
+ * That worker existed for push only, and its header said why it cached nothing
+ * — "the player polls live state and must never serve stale chunks". Art is now
+ * the single exception. So the exception has to be provably narrow, because the
+ * cost of widening it by accident is serving a stale application shell that no
+ * amount of debugging will explain.
+ *
+ * It also has to not cache a failure. The route answers 502 when the upstream is
+ * unreachable, and this worker is cache-first: it cannot see an opaque response's
+ * status, so a 502 stored here would be permanent, invisible damage to that
+ * track's artwork, recoverable only by clearing site data.
+ */
+function auditWorker(src: string): string[] {
+  const bad: string[] = [];
+
+  if (!/addEventListener\(\s*["']fetch["']/.test(src)) bad.push("no fetch handler, so nothing is ever cached");
+  if (!/addEventListener\(\s*["']push["']/.test(src)) bad.push("the push handler is gone — notifications would break");
+
+  // The guard has to exclude non-GET and non-cover before respondWith, and it
+  // has to be the ONLY thing respondWith is reached through.
+  if (!/req\.method\s*!==\s*["']GET["']/.test(src)) bad.push("the fetch handler does not exclude non-GET requests");
+  const match = src.match(/pathname\.startsWith\(\s*(\w+)\s*\)/);
+  if (!match) bad.push("the fetch handler does not scope by pathname");
+  else {
+    const name = match[1];
+    const decl = src.match(new RegExp(`const\\s+${name}\\s*=\\s*["']([^"']+)["']`));
+    if (!decl) bad.push(`the scoped path ${name} is not a declared constant`);
+    else if (!decl[1].endsWith("/")) bad.push(`the scoped path is "${decl[1]}" — an exact-match route is too narrow`);
+  }
+  // Anything that would widen the blast radius.
+  for (const [name, re] of [
+    ["navigation requests", /mode\s*===\s*["']navigate["']\s*&&\s*(?:cache|respondWith)/],
+    ["a catch-all path match", /pathname\s*===\s*["']\/["']\s*\)?\s*(?:,|\n)/],
+    ["caching by ignoring ok", /cache\.put\([^)]*\)\s*;?\s*\n\s*\}\s*\n\s*return\s+res/],
+  ] as const) {
+    if (re.test(src)) bad.push(`the worker appears to cache ${name}`);
+  }
+
+  // The 502 rule, stated as: cache.put is reachable only through an ok check.
+  const put = src.indexOf("cache.put");
+  if (put < 0) bad.push("the worker never writes to the cache");
+  else {
+    const before = src.slice(Math.max(0, put - 200), put);
+    if (!/res\.ok/.test(before)) bad.push("cache.put is not guarded on res.ok — a 502 from the upstream would be cached forever");
+  }
+  // A second put that is not the guarded one would undo the rule above.
+  if (src.indexOf("cache.put", put + 1) >= 0) bad.push("more than one cache.put — one of them is unguarded");
+
+  if (!/clients\.claim\(\)/.test(src)) bad.push("the worker never claims clients, so it would not take effect until every tab closed");
+  if (!/addEventListener\(\s*["']activate["']/.test(src)) bad.push("no activate handler, so an older cache could never be purged");
+  if (!/caches\.delete\(/.test(src)) bad.push("the activate handler does not purge superseded caches");
+
+  return bad;
+}
+
 // ------------------------------------------------------------------ the app
 
 const raw = readFileSync(path.join(REPO, "app/page.tsx"), "utf8");
@@ -107,6 +164,39 @@ ok(
   /const UPCOMING_ART_PREFETCH = \d+;/.test(raw),
   "and the window size is a named constant, not a literal buried in the effect"
 );
+
+// ------------------------------------------------- the worker, and who gets it
+
+const sw = readFileSync(path.join(REPO, "public/sw.js"), "utf8");
+const swFindings = auditWorker(sw);
+for (const f of swFindings) console.log(`  FAIL  sw.js: ${f}`);
+ok(
+  swFindings.length === 0,
+  "the service worker caches album art and nothing else, and never caches a failure",
+  swFindings
+);
+
+{
+  // The reason the worker can hold anything at all: the page registers it for
+  // anyone listening. It used to be registered only on the push path, which is
+  // admin-only and permission-gated — so the cache could never be filled for an
+  // ordinary listener, and the whole feature was dead on arrival for them.
+  ok(/serviceWorker\.register\(/.test(raw), "the page registers the worker");
+  const regStart = raw.indexOf("if (!isApprovedPlayer) return;");
+  const regBlock = regStart < 0 ? "" : raw.slice(regStart, raw.indexOf("serviceWorker.register", regStart));
+  ok(regBlock.length > 0, "and does so from a guard that admits any approved player");
+  ok(
+    regBlock.length > 0 && !/isAdmin/.test(regBlock),
+    "and that guard is not admin-only — the admin gate is why listeners had no worker at all"
+  );
+  // The push registration below it IS admin-only, and correctly so: push is for
+  // the operator. Asserted separately so it cannot be "fixed" into the art path.
+  ok(
+    /isAdmin\) return;[\s\S]{0,400}serviceWorker\.register/.test(raw),
+    "while the push registration stays admin-only, which is correct and separate"
+  );
+  ok(/swRegisteredRef/.test(raw), "registration is guarded so the 5s poll does not re-register every tick");
+}
 
 // ------------------------------------------------- the checker checks itself
 
@@ -164,6 +254,77 @@ ok(audit(GOOD).length === 0, "a correct warm-up passes", audit(GOOD));
 {
   // A page with no warm-up at all must fail, not pass by having nothing to check.
   ok(audit("const x = 1;").length > 0, "a source with no warm-up is a failure, not a pass");
+}
+
+// ------------------------------------------------------ the worker's own tests
+
+const GOOD_SW = `
+const COVER_PATH = "/api/cover/";
+const COVER_CACHE = "causewayfm-cover-v1";
+self.addEventListener("install", (e) => { self.skipWaiting(); });
+self.addEventListener("activate", (e) => {
+  e.waitUntil((async () => {
+    for (const n of await caches.keys()) if (n !== COVER_CACHE) await caches.delete(n);
+    await self.clients.claim();
+  })());
+});
+self.addEventListener("fetch", (event) => {
+  const req = event.request;
+  if (req.method !== "GET") return;
+  let url; try { url = new URL(req.url); } catch { return; }
+  if (!url.pathname.startsWith(COVER_PATH)) return;
+  event.respondWith((async () => {
+    const cache = await caches.open(COVER_CACHE);
+    const hit = await cache.match(req);
+    if (hit) return hit;
+    try {
+      const res = await fetch(req.url, { mode: "cors", credentials: "omit" });
+      if (res.ok) { await cache.put(req, res.clone()); }
+      return res;
+    } catch (e) { return fetch(req); }
+  })());
+});
+self.addEventListener("push", (event) => { event.waitUntil(Promise.resolve()); });`;
+
+ok(auditWorker(GOOD_SW).length === 0, "a correctly scoped worker passes", auditWorker(GOOD_SW));
+
+{
+  // The exact mistake that would undo the original design decision: cache
+  // everything. Served from cache, a stale application shell is a bug nobody
+  // can diagnose from the symptoms.
+  const f = auditWorker(GOOD_SW.replace('if (!url.pathname.startsWith(COVER_PATH)) return;', ""));
+  ok(f.some((x) => /no session check|scope|catch-all/.test(x)) || auditWorker(GOOD_SW.replace('if (!url.pathname.startsWith(COVER_PATH)) return;', "")).length > 0, "an unscoped fetch handler is caught", f);
+}
+
+{
+  // The 502. Cache-first plus an unreadable status means a failed upstream
+  // response becomes permanent artwork damage.
+  const f = auditWorker(GOOD_SW.replace("if (res.ok) { await cache.put(req, res.clone()); }", "await cache.put(req, res.clone());"));
+  ok(f.some((x) => /not guarded on res\.ok/.test(x)), "an unguarded cache.put is caught", f);
+}
+
+{
+  const f = auditWorker(GOOD_SW.replace('if (req.method !== "GET") return;', ""));
+  ok(f.some((x) => /non-GET/.test(x)), "a handler that does not exclude non-GET is caught", f);
+}
+
+{
+  const f = auditWorker(GOOD_SW.replace("await self.clients.claim();", ""));
+  ok(f.some((x) => /claims clients/.test(x)), "a worker that never claims clients is caught", f);
+}
+
+{
+  const f = auditWorker(GOOD_SW.replace("await caches.delete(n);", ""));
+  ok(f.some((x) => /purge superseded caches/.test(x)), "an activate handler that cannot purge old caches is caught", f);
+}
+
+{
+  const f = auditWorker(GOOD_SW.replace('self.addEventListener("push", (event) => { event.waitUntil(Promise.resolve()); });', ""));
+  ok(f.some((x) => /push handler is gone/.test(x)), "a worker that lost its push handler is caught", f);
+}
+
+{
+  ok(auditWorker("// nothing here").length > 0, "a worker with no caching at all is a failure, not a pass");
 }
 
 console.log(`  ${passed}/${passed + failed} art-prefetch assertions passed`);
