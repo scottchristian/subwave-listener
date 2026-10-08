@@ -1,7 +1,7 @@
 "use client";
 
 import { useSession, signIn, signOut } from "next-auth/react";
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import Image from "next/image";
 import LoadingDots from "@/app/components/LoadingDots";
 import LikeButton from "@/app/components/LikeButton";
@@ -802,6 +802,66 @@ export default function Home() {
       warmed.splice(0, warmed.length - UPCOMING_ART_PREFETCH * 4);
     }
   }, [appStateData]);
+
+  // --- album art, crossfaded -------------------------------------------------
+  //
+  // Two layers, because a single <img> cannot fade between pictures: swapping
+  // its src replaces the pixels outright, and React's `key` remount means the
+  // new element has no prior opacity to transition from. So the outgoing cover
+  // stays mounted underneath while the incoming one decodes on top of it.
+  //
+  // The ORDER is the part that matters. The outgoing layer is held at full
+  // opacity until the incoming one has actually loaded, and only then do both
+  // transition together. Fading the old cover out as soon as the new track is
+  // announced would fade to an empty box and then fade back in whenever the
+  // fetch was slow — a visible flash, which is worse than no transition at all.
+  //
+  // Pure CSS opacity, deliberately. This is the same transition the removed
+  // commit animation was, and that one used flushSync and a hand-rolled
+  // document.startViewTransition from a promise callback — re-entering React's
+  // renderer from outside its own scheduling. Two declarative layers with a
+  // transition cannot do that. check-commit-path.mts keeps it that way.
+  const ART_FADE_MS = 650;
+
+  const artSrc: string | null = stationData?.nowPlaying?.subsonic_id
+    ? `${STATION_API}/api/cover/${stationData.nowPlaying.subsonic_id}`
+    : null;
+  const [art, setArt] = useState<{ incoming: string; outgoing: string | null; ready: boolean } | null>(null);
+  // The src currently displayed, so a re-render with identical data is a no-op.
+  const artCurrentRef = useRef<string | null>(null);
+  const artFadeFrameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!artSrc) {
+      artCurrentRef.current = null;
+      setArt(null);
+      return;
+    }
+    if (artCurrentRef.current === artSrc) return;
+    const outgoing = artCurrentRef.current;
+    artCurrentRef.current = artSrc;
+    setArt({ incoming: artSrc, outgoing, ready: false });
+  }, [artSrc]);
+
+  const handleArtLoaded = useCallback(() => {
+    // One frame's grace before revealing the incoming layer. Album art is
+    // normally already decoded — that is the entire point of the prefetch and
+    // the worker cache — so without deferring past the mount, the load and the
+    // state flip often land in the same frame and the browser skips the
+    // transition entirely. The fade then happens consistently, cached or not.
+    if (artFadeFrameRef.current !== null) cancelAnimationFrame(artFadeFrameRef.current);
+    artFadeFrameRef.current = requestAnimationFrame(() => {
+      artFadeFrameRef.current = null;
+      setArt((a) => (a ? { ...a, ready: true } : a));
+    });
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (artFadeFrameRef.current !== null) cancelAnimationFrame(artFadeFrameRef.current);
+    },
+    []
+  );
 
   // The service worker is what makes a cover permanent rather than a 24-hour
   // loan — but it was only ever registered on the push path, which is
@@ -2425,15 +2485,34 @@ export default function Home() {
           <div id="section-now-playing" className="card" style={{ position: "static" }}>
             <div id="now-playing-art-frame" style={{ position: "relative" }}>
               <div id="now-playing-art-container" className="album-art-container" style={{ viewTransitionName: 'now-playing-art-container', position: "relative" } as any}>
-              {stationData?.nowPlaying?.subsonic_id ? (
-                <img
-                  id="now-playing-art"
-                  key={stationData.nowPlaying.subsonic_id}
-                  src={`${STATION_API}/api/cover/${stationData.nowPlaying.subsonic_id}`}
-                  alt="Cover"
-                  className="album-art"
-                  style={{ viewTransitionName: 'now-playing-art', filter: (!isPlaying && !isLoading) ? "grayscale(1)" : "none", transition: "filter 0.4s ease" } as any}
-                />
+              {art ? (
+                <>
+                  {/* The outgoing cover, underneath. aria-hidden because it is
+                      decoration by the time anyone can perceive it. */}
+                  {art.outgoing && (
+                    <img
+                      key={`out-${art.outgoing}`}
+                      src={art.outgoing}
+                      alt=""
+                      aria-hidden="true"
+                      className="album-art album-art-layer"
+                      style={{ opacity: art.ready ? 0 : 1, transition: `opacity ${ART_FADE_MS}ms ease` }}
+                    />
+                  )}
+                  <img
+                    id="now-playing-art"
+                    key={`in-${art.incoming}`}
+                    src={art.incoming}
+                    alt="Cover"
+                    className="album-art album-art-layer"
+                    onLoad={handleArtLoaded}
+                    style={{
+                      opacity: art.ready ? 1 : 0,
+                      transition: `opacity ${ART_FADE_MS}ms ease`,
+                      filter: (!isPlaying && !isLoading) ? "grayscale(1)" : "none",
+                    }}
+                  />
+                </>
               ) : (
                 <div id="now-playing-art-fallback" style={{width:"100%", height:"100%", background:"#1a3050", borderRadius: "var(--radius)", viewTransitionName: 'now-playing-art', filter: (!isPlaying && !isLoading) ? "grayscale(1)" : "none", transition: "filter 0.4s ease"} as any} />
               )}
