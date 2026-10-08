@@ -79,6 +79,12 @@ const adapter = {
     return withWake(baseAdapter.createUser)({
       ...rest,
       email: idx(email),
+      // NextAuth knows nothing about this column, so nothing else will ever
+      // fill it. Without it the account can be found by its blind index but
+      // never displayed — the People list showed a bare `Name ()`, and it
+      // grows by one for every listener who signs up. See the signIn callback
+      // below for how the rows that predate this were recovered.
+      emailEnc: enc(email),
       name: enc(name),
     });
   },
@@ -110,11 +116,34 @@ export const authOptions: NextAuthOptions = {
       if (!existingUser) {
         // The adapter creates the row (with an indexed email) after we return
         // true. isApproved defaults to false, so a new signup waits for review.
-      } else if (isAdmin && !existingUser.isAdmin) {
-        await withWake(prisma.user.update.bind(prisma.user))({
-          where: { email: token },
-          data: { isAdmin: true, isApproved: true },
-        });
+      } else {
+        // One update serving both purposes. These are two different repairs —
+        // an admin whose row predates the promotion rule, and an account whose
+        // address was indexed but never captured — and they must not become two
+        // round trips, because the free tier counts writes.
+        const data: { isAdmin?: boolean; isApproved?: boolean; emailEnc?: string } = {};
+        if (isAdmin && !existingUser.isAdmin) {
+          data.isAdmin = true;
+          data.isApproved = true;
+        }
+        // An address that was indexed but never encrypted cannot be recovered
+        // from the database: `email` is a blind index by now, and the plaintext
+        // is gone — scripts/encrypt-pii.mjs meets exactly this case and
+        // deliberately leaves it alone. This callback is the only place that
+        // still holds the real address, and it runs on every sign-in, so it is
+        // the only chance to capture it. Never write a null over a stored
+        // value: `enc` returns null if the encryption key is missing, and
+        // losing a good value to a failed re-encryption would be worse than
+        // having none.
+        const recovered = enc(email);
+        if (recovered && !existingUser.emailEnc) data.emailEnc = recovered;
+
+        if (Object.keys(data).length > 0) {
+          await withWake(prisma.user.update.bind(prisma.user))({
+            where: { email: token },
+            data,
+          });
+        }
       }
       return true;
     },
