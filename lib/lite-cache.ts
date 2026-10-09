@@ -296,6 +296,12 @@ async function ensureCacheTables(c: LiteClient): Promise<void> {
     c,
     `CREATE TABLE IF NOT EXISTS "SongLinkCache" ("trackId" TEXT NOT NULL PRIMARY KEY, "spotifyUrl" TEXT, "appleMusicUrl" TEXT, "explicit" INTEGER, "resolvedAt" DATETIME NOT NULL)`
   );
+  // Operator switches, mirrored. See liteGetSettings for why maintenance mode
+  // is here and nothing else is.
+  await raw.call(
+    c,
+    `CREATE TABLE IF NOT EXISTS "Setting" ("key" TEXT NOT NULL PRIMARY KEY, "value" TEXT NOT NULL)`
+  );
   // Session gate mirror. tokenHash is an HMAC of the session token, never the
   // token itself, so this file holds no usable credential; the display fields
   // are encrypted exactly as they are in Postgres. validUntil is when the row
@@ -346,6 +352,66 @@ async function reconcileSessionTable(c: LiteClient): Promise<void> {
   // Disposable: drop and rebuild rather than migrate.
   await exec(`DROP TABLE "SessionCache"`);
   await exec(SESSION_TABLE_DDL);
+}
+
+// ---- Setting: a local mirror of the switches that must survive a database
+//      outage ---------------------------------------------------------------
+//
+// Only maintenance mode. It exists for exactly one situation — the station
+// being worked on — and today that situation is the one that breaks it. Both
+// readers query Postgres directly, and both swallow the failure:
+//
+//   - /api/settings answered a catch block with no `maintenanceMode` key at all,
+//     and the player only adopts the value when it is a boolean, so an outage
+//     reported maintenance OFF and the notice vanished
+//   - /api/stream had an empty `catch {}` around the same check, so an outage
+//     served audio straight through a station that was supposed to be dark
+//
+// So the notice now has somewhere to be read from when Postgres cannot be asked.
+//
+// This mirror is never the record — Postgres stays authoritative and every
+// successful read writes the value back. It is also written through on save, so
+// it is never more than one admin action stale. If the cache is deleted or
+// unreadable the readers fall back to Postgres and then to their previous
+// behaviour: the cache being wiped must not change what the station does.
+
+const MAINTENANCE_KEYS = ["maintenanceMode", "maintenanceMessage"] as const;
+
+export type CachedSettings = Record<string, string>;
+
+/** Mirrored settings by key. Absent keys are simply missing, not empty. */
+export async function liteGetSettings(keys: readonly string[] = MAINTENANCE_KEYS): Promise<CachedSettings> {
+  const c = await liteClient();
+  if (!c || !keys.length) return {};
+  try {
+    const rows = await (c as unknown as {
+      setting: { findMany: (a: unknown) => Promise<Array<{ key: string; value: string }>> };
+    })
+      .setting.findMany({ where: { key: { in: [...keys] } } });
+    const out: CachedSettings = {};
+    for (const r of rows) if (r && typeof r.key === "string") out[r.key] = r.value;
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+/** Mirror settings locally. Best effort: never throws, never blocks a save. */
+export async function litePutSettings(entries: CachedSettings): Promise<boolean> {
+  const c = await liteClient();
+  if (!c) return false;
+  const client = c as unknown as {
+    setting: { upsert: (a: unknown) => Promise<unknown> };
+  };
+  try {
+    for (const [key, value] of Object.entries(entries)) {
+      if (typeof key !== "string" || typeof value !== "string") continue;
+      await client.setting.upsert({ where: { key }, update: { value }, create: { key, value } });
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 // ---- SongLinkCache: SQLite read-through, write-back ----

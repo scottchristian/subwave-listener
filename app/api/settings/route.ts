@@ -41,6 +41,14 @@ export async function GET() {
         }
       }
     } catch {}
+    // Mirror maintenance state locally on every successful read, so the answer
+    // survives the database being unreachable. Written here as well as on save
+    // because this route already has the value, and it repairs a mirror that
+    // was deleted out from under us without waiting for an admin action.
+    await mirrorMaintenance({
+      maintenanceMode: get("maintenanceMode") === "true",
+      maintenanceMessage: get("maintenanceMessage") || "",
+    });
     return NextResponse.json({
       donate_url: get("donate_url") || STATION.donateUrl,
       donate_text: get("donate_text") || undefined,
@@ -68,6 +76,16 @@ export async function GET() {
       ...(stationPassword ? { stationPassword } : {}),
     });
   } catch (error) {
+    // The database is unreachable. That is the one situation maintenance mode
+    // exists for, and this catch block used to answer without a
+    // `maintenanceMode` key at all — so the player read "off" and the station
+    // carried on as if nothing were happening. Answer from the local mirror.
+    //
+    // If there is no mirror either — cache deleted, or maintenance never saved
+    // since this was added — the keys stay absent, exactly as before. Not
+    // inventing a value here: defaulting to "on" would take the station dark
+    // on a momentary blip, which is a worse failure than the one being fixed.
+    const cached = await cachedMaintenance();
     return NextResponse.json({
       donate_url: STATION.donateUrl,
       donate_enabled: true,
@@ -75,6 +93,39 @@ export async function GET() {
       headerListeners: true,
       headerWeather: true,
       headerVibe: true,
+      ...cached,
     });
+  }
+}
+
+/**
+ * Push the current maintenance state into the local SQLite mirror.
+ *
+ * Best effort and never throws: this sits on the success path of a route that
+ * must keep answering, and a broken mirror must not be able to fail a read that
+ * Postgres already served correctly.
+ */
+async function mirrorMaintenance(state: { maintenanceMode: boolean; maintenanceMessage: string }): Promise<void> {
+  try {
+    const { litePutSettings } = await import("@/lib/lite-cache");
+    await litePutSettings({
+      maintenanceMode: state.maintenanceMode ? "true" : "false",
+      maintenanceMessage: state.maintenanceMessage,
+    });
+  } catch {}
+}
+
+/** The mirrored maintenance state, as the two keys the client reads. */
+async function cachedMaintenance(): Promise<{ maintenanceMode?: boolean; maintenanceMessage?: string }> {
+  try {
+    const { liteGetSettings } = await import("@/lib/lite-cache");
+    const rows = await liteGetSettings();
+    const out: { maintenanceMode?: boolean; maintenanceMessage?: string } = {};
+    // Absent means "we do not know" and stays absent — see the catch block.
+    if (typeof rows.maintenanceMode === "string") out.maintenanceMode = rows.maintenanceMode === "true";
+    if (typeof rows.maintenanceMessage === "string") out.maintenanceMessage = rows.maintenanceMessage;
+    return out;
+  } catch {
+    return {};
   }
 }

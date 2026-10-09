@@ -26,13 +26,16 @@ export async function GET(req: NextRequest) {
 
   // Maintenance: admins pass through (so they can verify), everyone else
   // gets the notice. Existing sockets drain on their own.
-  try {
-    const maint = await prisma.setting.findUnique({ where: { key: "maintenanceMode" } });
-    if (maint?.value === "true" && !user.isAdmin) {
-      const msg = await prisma.setting.findUnique({ where: { key: "maintenanceMessage" } });
-      return new Response(msg?.value || "Station down for maintenance — back soon.", { status: 503 });
-    }
-  } catch {}
+  //
+  // Reads the local mirror when Postgres cannot be asked. This check used to
+  // sit in an empty `catch {}`, which meant a database outage during
+  // maintenance served the audio anyway — the station was supposed to be dark
+  // and was not. "Unknown" stays unknown: an unresolved state must not start
+  // refusing listeners on its own.
+  const maintenance = await readMaintenance();
+  if (maintenance.mode === true && !user.isAdmin) {
+    return new Response(maintenance.message || "Station down for maintenance — back soon.", { status: 503 });
+  }
 
   const cfg = await getSubwaveConfig();
   const streamUrl = cfg.streamUrl;
@@ -164,5 +167,33 @@ export async function GET(req: NextRequest) {
   } catch (error) {
     console.error("Fetch to stream URL failed", error);
     return new Response("Proxy error", { status: 502 });
+  }
+}
+
+/**
+ * Maintenance state: Postgres if it answers, the local mirror if it does not.
+ *
+ * `mode` is `boolean | null` on purpose. `null` means "we do not know" and is
+ * deliberately not `false`: collapsing it either way would either serve audio
+ * during a maintenance window (the bug this fixes) or cut off a station because
+ * a database blipped for a moment. Callers must treat null as "carry on".
+ */
+async function readMaintenance(): Promise<{ mode: boolean | null; message: string }> {
+  try {
+    const maint = await prisma.setting.findUnique({ where: { key: "maintenanceMode" } });
+    const msg = await prisma.setting.findUnique({ where: { key: "maintenanceMessage" } });
+    return { mode: maint?.value === "true", message: msg?.value || "" };
+  } catch {
+    try {
+      const { liteGetSettings } = await import("@/lib/lite-cache");
+      const rows = await liteGetSettings();
+      const mode = typeof rows.maintenanceMode === "string" ? rows.maintenanceMode === "true" : null;
+      return {
+        mode,
+        message: typeof rows.maintenanceMessage === "string" ? rows.maintenanceMessage : "",
+      };
+    } catch {
+      return { mode: null, message: "" };
+    }
   }
 }
