@@ -294,10 +294,34 @@ export async function POST(req: Request) {
   }
 
   // The response has to reach the browser before the process goes away.
+  //
+  // `--update-env` and an explicit environment are BOTH required, and this is
+  // the fourth bug in this route — the one that made a successful cutover leave
+  // the station unable to sign in.
+  //
+  // A plain `pm2 restart` replays the environment PM2 stored when the app was
+  // first started, which still held the old DATABASE_URL. Next.js does not
+  // override a variable that already exists in process.env, so reloading
+  // .env.local changed nothing: the process kept resolving DATABASE_URL to the
+  // old Postgres URL while the regenerated Prisma client was SQLite, and every
+  // session read failed with
+  //
+  //   Error validating datasource `db`: the URL must start with the protocol
+  //   `file:`.
+  //
+  // which the client classified as a sleeping database — so the listener was
+  // shown "Waking the station up" against a database that did not exist and
+  // could not be woken. Passing the new values with --update-env is what makes
+  // the restart actually pick up the switch.
   setTimeout(() => {
-    execFile(/* turbopackIgnore: true */ PM2_BIN, ["restart", PM2_APP], (err) => {
-      if (err) console.error("Restart after database switch failed:", err.message);
-    });
+    execFile(
+      /* turbopackIgnore: true */ PM2_BIN,
+      ["restart", PM2_APP, "--update-env"],
+      { env: { ...process.env, DATABASE_URL: url, DB_PROVIDER: to } },
+      (err) => {
+        if (err) console.error("Restart after database switch failed:", err.message);
+      }
+    );
   }, 800);
 
   await fs.rm(`${SCHEMA}.bak-switch`, { force: true }).catch(() => {});

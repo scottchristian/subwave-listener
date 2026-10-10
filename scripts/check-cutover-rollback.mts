@@ -144,6 +144,42 @@ const rbCode = scrub(rb);
 
 // --------------------------------------------- 4. still refuses to restart on failure
 
+// --------------------------------------------- 5. the restart must carry the switch
+
+{
+  // The bug that left a *successful* cutover unable to sign anyone in. A plain
+  // `pm2 restart` replays PM2's stored environment, which still held the old
+  // DATABASE_URL, and Next.js does not override variables already in
+  // process.env — so .env.local changed and the process never saw it.
+  const restart = raw.match(/execFile\([\s\S]{0,600}?\n {2}\}, 800\);/);
+  ok(restart !== null, "the restart call is locatable");
+  const rs = restart?.[0] ?? "";
+  ok(
+    /\["restart", PM2_APP, "--update-env"\]/.test(rs),
+    "and it passes --update-env, so PM2 stops replaying the previous environment",
+    rs
+  );
+  ok(
+    /DATABASE_URL:\s*url/.test(rs) && /DB_PROVIDER:\s*to/.test(rs),
+    "and it hands PM2 the NEW url and provider explicitly"
+  );
+  ok(
+    /env:\s*\{\s*\.\.\.process\.env/.test(rs),
+    "while preserving the rest of the process environment"
+  );
+  // The old value must not survive anywhere in that call — process.env here is
+  // the pre-switch environment, so spreading it without an override is exactly
+  // the bug.
+  ok(
+    !/env:\s*\{\s*\.\.\.process\.env\s*\}/.test(rs),
+    "and never bare-spreads the pre-switch environment"
+  );
+}
+
+// ------------------------------------------------- the checker checks itself
+
+// --------------------------------------------- 4. still refuses to restart on failure
+
 {
   // Restoring the client must not turn a failure into a restart. The old build
   // must keep serving until a switch genuinely succeeds.
