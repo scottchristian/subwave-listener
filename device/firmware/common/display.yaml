@@ -316,13 +316,21 @@ online_image:
     request_headers:
       Authorization: !lambda "return std::string(\"Bearer \") + id(display_client)->bearer();"
     on_download_finished:
-      # THE TRIGGER THAT WAS MISSING. art_primed was declared, consulted by
-      # art_swap, and never set to true by anything — so the crossfade never ran
-      # and the incoming cover, once decoded, sat there undisplayed.
+      # THE TRIGGER THAT WAS MISSING, TWICE OVER. art_primed was declared,
+      # consulted by art_swap, and never set by anything — so the crossfade never
+      # ran. And art_tick, the only thing that flushed a queued swap, was never
+      # called either, so even a queued swap stayed queued forever. The incoming
+      # cover, once decoded, sat there undisplayed.
+      #
+      # So: set the flag, then run the swap now if nothing is fading, and queue
+      # it otherwise. Running it directly is what makes the FIRST cover appear —
+      # there is no "previous swap" to have queued it.
       - lambda: |-
           id(art_primed) = true;
-          if (id(art_queued)) {
+          if (!id(art_fading)) {
             id(art_swap).execute();
+          } else {
+            id(art_queued) = true;
           }
     on_error:
       - logger.log: "art_in: nothing to show yet"
