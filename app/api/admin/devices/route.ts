@@ -88,12 +88,12 @@ export async function POST(req: NextRequest) {
   // produce a substitutions file that does not parse, and the failure surfaces as
   // an opaque YAML error at the far end of a fifteen-minute build.
   const command = [
-    "python3 -m esphome compile \\",
+    "python3 -m esphome \\",
     `  -s device_id '${row.deviceId ?? row.id}' \\`,
     `  -s claim_token '${claim.raw}' \\`,
     `  -s server_url '${serverUrl}' \\`,
     "  -s firmware_version '1.0.0' \\",
-    "  subwave-jc8012p4a1.yaml",
+    "  compile subwave-jc8012p4a1.yaml",
   ].join("\n");
 
   return NextResponse.json(
@@ -169,12 +169,12 @@ export async function PATCH(req: NextRequest) {
       return NextResponse.json(
         {
           buildCommand: [
-            "python3 -m esphome compile \\",
+            "python3 -m esphome \\",
             `  -s device_id '${row.deviceId ?? row.id}' \\`,
             `  -s claim_token '${claim.raw}' \\`,
             `  -s server_url '${serverUrl}' \\`,
             "  -s firmware_version '1.0.0' \\",
-            "  subwave-jc8012p4a1.yaml",
+            "  compile subwave-jc8012p4a1.yaml",
           ].join("\n"),
           claimExpiresAt: claim.expires.toISOString(),
           note: "Any firmware already built with the old setup code will no longer claim. Flash the new build.",
