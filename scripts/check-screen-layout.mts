@@ -203,6 +203,67 @@ if (pw && pw.y !== null) {
 }
 
 // ---------------------------------------------------------------------------
+// 4. Nothing sits in the row the field moves INTO.
+// ---------------------------------------------------------------------------
+// The field is raised to the row above the keyboard. That row already belongs to
+// the Scan button and the network picker, so when the keyboard opens the field
+// lands exactly on top of them.
+//
+// The script HIDES both rather than leaving them buried, which is correct — by
+// the time you are typing a password you have already chosen a network. But that
+// makes correctness depend on the hide happening, and a hide that is silently
+// dropped is invisible: the field still works, the keyboard still works, and two
+// controls are just sitting under everything. So the hide is asserted here.
+//
+// It also catches the reverse mistake — a control ADDED to that row later, which
+// would be covered and never hidden, and which nothing else in the suite would
+// notice.
+if (raised && pw && pw.h !== null) {
+  const raisedRow = Number(raised[1]);
+
+  // Which widgets ACTUALLY sit in that row, found by scanning every widget
+  // rather than testing a hardcoded list. A hardcoded list cannot detect a third
+  // control being added to the row later, which is the exact mistake worth
+  // catching — the new control would be covered by the keyboard and never
+  // hidden, and nothing else in the suite would notice.
+  // The keyboard's OWN buttons legitimately share this row — they are shown
+  // exactly when the field is raised. What must not share it is anything else:
+  // a control added here later would sit under the keyboard and never be hidden.
+  const keyboardFurniture = new Set([
+    "wifi_mode_lower",
+    "wifi_mode_upper",
+    "wifi_mode_special",
+    "wifi_mode_number",
+    "wifi_keyboard_done",
+  ]);
+  const inRow = [...setup.values()]
+    .filter((w) => w.y === raisedRow && !keyboardFurniture.has(w.id))
+    .map((w) => w.id)
+    .sort();
+  ok(
+    inRow.length === 2 && inRow[0] === "setup_scan_button" && inRow[1] === "wifi_network_dropdown",
+    "only the Scan button and the network picker share the raised row",
+    `found ${inRow.join(", ") || "nothing"} at y=${raisedRow}`,
+  );
+
+  // The opening branch must actually HIDE them. Checking that the ids appear
+  // somewhere in the script is not enough — they appear in the array that
+  // collects the row, so deleting the hide that applies to that array leaves
+  // every mention of them intact and the check passes.
+  const toggle = scriptSrc.slice(
+    scriptSrc.indexOf("- id: wifi_keyboard_toggle"),
+    scriptSrc.indexOf("- id: wifi_keyboard_mode"),
+  );
+  const opening = toggle.slice(toggle.indexOf("if (opening)"), toggle.indexOf("} else {"));
+  ok(opening.length > 0, "the keyboard toggle has an opening branch");
+  ok(
+    /lv_obj_add_flag/.test(opening),
+    "the opening branch HIDES the controls it covers",
+    "no add_flag(HIDDEN) between `if (opening)` and the else",
+  );
+}
+
+// ---------------------------------------------------------------------------
 // 3. The keyboard is reachable, and dismissible.
 // ---------------------------------------------------------------------------
 // A keyboard with no way to close it is a screen you cannot leave, and the only

@@ -245,16 +245,15 @@ script:
   # needs it.
   #
   # THE FIELD MOVES UP RATHER THAN THE KEYBOARD MOVING DOWN. The keyboard has to
-  # cover the network picker — at arm's length on a wall, a keyboard squeezed
-  # beside a list leaves neither one usable, and by the time you are typing a
-  # password you have already picked a network. So the keyboard rises over the
-  # bottom of the screen and the field steps up above it, which is one
-  # lv_obj_set_y rather than a container to slide.
+  # cover the bottom of the screen — at arm's length on a wall, a keyboard
+  # squeezed beside a list leaves neither one usable. So the keyboard rises over
+  # the bottom, the field steps up to the row above it, and the two controls that
+  # shared that row are hidden rather than left buried underneath.
   #
   # The y values are duplicated between setup.yaml and here. That is the cost of
   # a panel this full; the alternative is a layout pass in C++ for two numbers.
   # 468 is above the keyboard's top edge of 520, which is the only constraint
-  # that actually matters.
+  # that actually matters. check:screen-layout asserts both files agree.
   # ---------------------------------------------------------------------------
   - id: wifi_keyboard_toggle
     mode: single
@@ -263,18 +262,36 @@ script:
           auto *kb = id(wifi_keyboard)->obj;
           bool opening = lv_obj_has_flag(kb, LV_OBJ_FLAG_HIDDEN);
 
+          // The controls that share the field's raised row. They are hidden while
+          // the keyboard is up rather than left underneath it: by the time anyone
+          // is typing a password they have already chosen a network, and the
+          // field needs somewhere to go that is not on top of the picker.
+          //
+          // The type is spelled out rather than `auto`, and not because the two
+          // differ — they are both `lv_obj_t *`. It is that `auto *row[] = {...}`
+          // cannot deduce from a braced-init-list at all, and the error it
+          // produces names a dozen inherited class paths and never mentions a
+          // braced list. Declaring `lv_obj_t *` is fine even though the type is
+          // incomplete: a pointer to an incomplete type may be declared, just
+          // not dereferenced.
+          lv_obj_t *row[] = {id(setup_scan_button), id(wifi_network_dropdown)->obj};
+          lv_obj_t *keys[] = {id(wifi_mode_lower), id(wifi_mode_upper), id(wifi_mode_special),
+                              id(wifi_mode_number), id(wifi_keyboard_done)};
+
           if (opening) {
             lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
-            for (auto *b : {id(wifi_mode_lower), id(wifi_mode_upper), id(wifi_mode_special),
-                            id(wifi_mode_number), id(wifi_keyboard_done)})
-              lv_obj_clear_flag(b, LV_OBJ_FLAG_HIDDEN);
+            for (auto *o : row)
+              lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+            for (auto *o : keys)
+              lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_y(id(wifi_password), 468);
           } else {
             lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
-            for (auto *b : {id(wifi_mode_lower), id(wifi_mode_upper), id(wifi_mode_special),
-                            id(wifi_mode_number), id(wifi_keyboard_done)})
-              lv_obj_add_flag(b, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_y(id(wifi_password), 700);
+            for (auto *o : row)
+              lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
+            for (auto *o : keys)
+              lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_y(id(wifi_password), 568);
           }
           lv_obj_invalidate(kb);
           lv_obj_invalidate(id(wifi_password));

@@ -342,6 +342,14 @@ network. The password field steps **up** to y=468 so it stays visible above the
 keyboard's top edge; that is the only hard layout constraint, and it is why the
 field's y changes rather than the keyboard's.
 
+**The Scan button and the picker are HIDDEN while the keyboard is up**, not left
+buried. They share the row the field moves into, so without the hide the field
+lands on top of them. `check:screen-layout` asserts both that those are the only
+two things in that row and that the opening branch actually hides them —
+checking that the ids merely *appear* in the script is not enough, because they
+appear in the array that collects the row, so deleting the hide leaves every
+mention intact and the check passes.
+
 **Four mode buttons are not optional.** LVGL's keyboard shows exactly one
 character set at a time and does not cycle. Its modes are `TEXT_LOWER`,
 `TEXT_UPPER`, `SPECIAL`, `NUMBER` (`SPECIAL`, not `TEXT_SPECIAL` — a wrong name
@@ -352,18 +360,67 @@ in one case and most passwords cannot be typed at all.
 The mode parameter is an `int` index into a `lv_keyboard_mode_t[4]` rather than a
 string, because ESPHome script parameters are typed.
 
+### `auto *arr[] = {...}` cannot be deduced
+
+`auto *row[] = {id(a), id(b)->obj};` fails with an error that names a dozen
+inherited class paths and never mentions a braced list — `auto` cannot be deduced
+from a braced-init-list at all. Write the type out: `lv_obj_t *row[] = {...}`.
+That is fine even though `lv_obj_t` is incomplete there; a pointer to an
+incomplete type may be declared, just not dereferenced.
+
+## Setup screen layout (1.6.0)
+
+Reworked, because three things were measurably wrong rather than merely plain:
+
+- **An 880×260 void beside the QR.** The code sat at x 40–320 with the
+  credentials in a separate band at y=380, leaving the largest block of nothing
+  on the screen immediately right of the one element people are told to look at
+  first. The credentials now sit in that column — which is also where they
+  belong, since they exist for somebody who is *not* going to scan the code.
+- **Labels and values had identical voice.** "Password" and "D2P2K7FF" were both
+  `font_body` at full contrast, so the pair read as a flat list. Captions are now
+  `font_small` and `c_muted`; answers are `font_body` and `c_text`. That
+  difference is the whole of the hierarchy and it costs nothing.
+- **The instruction gave two instructions in one sentence** — "Join
+  SUBWAVE-SCREEN on your phone, then pick your home network below" — and a reader
+  cannot tell whether those are two steps of one route or two alternatives. They
+  are alternatives. It now names both.
+
+A hairline (`c_rule`) separates the two routes, which is structure carrying
+information rather than decoration.
+
+### The geometry is reasoned, not seen
+
+`check:screen-layout` proves no widget falls off the panel, that the raised field
+clears the keyboard, and that the controls hidden while typing are the right
+ones — and eight fault shapes are verified to fail it. What no script here can
+answer is whether the seven networks are legible at two metres. That still needs
+a person standing in front of the screen.
+
+## Fonts are deliberately NOT the web app's
+
+The app uses Outfit (`app/globals.css`). The device uses Newsreader for the track
+title and Archivo for everything else, and that difference is specified in
+`device/design.md` with a reason: a serif display face is the voice of a radio
+station, and a wall screen read from across a room is the one place that voice is
+legible. Only the **colours** are shared with the app — all six day tokens match
+exactly (`#06101e`, `#0d1f35`, `#dce8f5`, `#6a8ba8`, `#1a3050`, `#4e9fd4`).
+
+Do not "fix" this by switching the fonts to Outfit.
+
 ## Gate checks
 
 All pass (read-only, no compiler, no hardware):
 - `check:panel-init` — 21/21. Verified to fail on the real fault shapes:
   appending to a model's sequence, bare-number delays, truncated sequence, wrong
   sequence file vs panel variant.
-- `check:screen-layout` — 40/40. The setup screen's geometry, which is the one
+- `check:screen-layout` — 44/44. The setup screen's geometry, which is the one
   thing about this device that cannot be verified from this bench — there is no
-  camera, and the panel is bolted to a wall. Verified to fail on six fault
+  camera, and the panel is bolted to a wall. Verified to fail on eight fault
   shapes: a widget past y=800, the keyboard covering the field it types into,
   the closing move deleted, the resting y drifting in one file only, the Done
-  button removed, a character-set mode button removed.
+  button removed, a character-set mode button removed, the hide-while-typing
+  dropped, and a third control landing in the row the field is raised into.
 - `check:device-firmware` — 29/29
 - `check:firmware-bindings` — 7/7
 - `check:device-hosts` — 165/165 (was crashing on a dangling symlink
@@ -400,9 +457,10 @@ stay distinct; do not merge them.
   server. The server's device-types contract would need matching fields.
 - **The on-screen list has not been verified by eye.** The scan, the dedupe and
   the dropdown fill are all confirmed in the log (17 results → 8 unique SSIDs,
-  `home_automation` present). That the eight are *legible on an 800px panel*,
-  and that the keyboard covers what it should, has not — there is no camera on
-  this bench. Treat the layout as reasoned, not seen.
+  `home_automation` present). That the entries are legible on an 800px panel, and
+  that the keyboard covers what it should, has not — there is no camera on this
+  bench. `check:screen-layout` bounds the geometry; it cannot judge legibility.
+  Treat the layout as reasoned, not seen.
 - `panel_vendor.yaml` (old revision) exists but is not the default; it has not
   been verified on hardware.
 - The light bleed around the top/right edges is physical backlight bleed on

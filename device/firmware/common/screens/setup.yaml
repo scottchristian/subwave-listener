@@ -50,14 +50,20 @@
     x: 40px
     y: 12px
 
+# NAMES BOTH ROUTES, AND ASKS FOR ONE. The previous copy — "Join
+# SUBWAVE-SCREEN on your phone, then pick your home network below" — gave two
+# instructions in one sentence and the reader cannot tell whether they are two
+# steps of one route or two alternatives. They are alternatives: one needs a
+# phone, the other does not, and somebody standing at a wall with neither should
+# still be able to read what their options are.
 - label:
     id: setup_instruction
-    text: "Join SUBWAVE-SCREEN on your phone, then pick your home network below."
+    text: "Two ways to do this. Join the screen's Wi-Fi with your phone, or set it up here."
     text_font: font_body
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 40px
-    y: 44px
+    y: 48px
     width: 1200px
 
 - qrcode:
@@ -65,32 +71,43 @@
     size: 280
     align: TOP_LEFT
     x: 40px
-    y: 76px
+    y: 96px
     light_color: 0xE8EDF3
     dark_color: 0x0B1A2B
     text: "WIFI:T:WPA;S:SUBWAVE-SCREEN;P:D2P2K7FF;;"
 
+# ── Beside the QR: what the QR does, and what to type if you would rather ──
+#
+# THIS COLUMN USED TO BE EMPTY. The QR occupied x 40..320 and the credentials sat
+# in a separate band at y=380, which left 880x260 of bare panel to the right of
+# the code — the largest single block of nothing on the screen, beside the one
+# element people are told to look at first. The credentials now sit here, which
+# is also where they belong logically: they exist for somebody who is NOT going
+# to scan the code, so they belong opposite it.
 - label:
     id: setup_hint
-    text: "Scan to join SUBWAVE-SCREEN. Setup page appears automatically."
+    text: "Scan with your phone to join the screen's Wi-Fi. The setup page opens by itself."
     text_font: font_body
     text_color: 0x6A8BA8
     align: TOP_LEFT
-    x: 360px
-    y: 76px
-    width: 880px
+    x: 380px
+    y: 96px
+    width: 860px
 
-# ── Middle: screen credentials (for manual phone entry) ─────────────────
-
+# LABELS AND VALUES ARE NOT THE SAME VOICE. Both were font_body in full-contrast
+# text, so "Password" and "D2P2K7FF" carried identical weight and the pair read as
+# a flat list rather than a caption and its answer. Captions are font_small and
+# muted; answers are font_body and full contrast. That difference is the whole of
+# the hierarchy, and it costs nothing.
 - label:
     id: setup_wifi_label
     text: "Network"
-    text_font: font_body
-    text_color: 0xDCE8F5
+    text_font: font_small
+    text_color: 0x6A8BA8
     align: TOP_LEFT
-    x: 40px
-    y: 380px
-    width: 200px
+    x: 380px
+    y: 200px
+    width: 300px
 
 - label:
     id: setup_wifi_value
@@ -98,19 +115,19 @@
     text_font: font_body
     text_color: 0xDCE8F5
     align: TOP_LEFT
-    x: 40px
-    y: 420px
-    width: 300px
+    x: 380px
+    y: 228px
+    width: 400px
 
 - label:
     id: setup_password_label
     text: "Password"
-    text_font: font_body
-    text_color: 0xDCE8F5
+    text_font: font_small
+    text_color: 0x6A8BA8
     align: TOP_LEFT
-    x: 40px
-    y: 464px
-    width: 200px
+    x: 380px
+    y: 276px
+    width: 300px
 
 - label:
     id: setup_password_value
@@ -118,28 +135,44 @@
     text_font: font_body
     text_color: 0xDCE8F5
     align: TOP_LEFT
-    x: 40px
-    y: 504px
+    x: 380px
+    y: 304px
     width: 300px
+
+# A HAIRLINE, NOT A DIVIDER FOR ITS OWN SAKE. The two routes have nothing to do
+# with each other and both are plausible, so the rule says "below this is a
+# different way of doing the same thing" — structure carrying information, which
+# is the only reason a rule is allowed here. c_rule is the token the rest of the
+# design already uses for exactly this.
+- obj:
+    id: setup_rule
+    width: 1200px
+    height: 1px
+    align: TOP_LEFT
+    x: 40px
+    y: 404px
+    bg_color: 0x1A3050
+    bg_opa: COVER
+    border_width: 0
 
 # ── Bottom: on-screen setup ─────────────────────────────────────────────
 
 - label:
     id: setup_home_label
-    text: "Home network"
-    text_font: font_body
-    text_color: 0xDCE8F5
+    text: "Or set it up here"
+    text_font: font_small
+    text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 40px
-    y: 556px
-    width: 200px
+    y: 424px
+    width: 400px
 
 - button:
     id: setup_scan_button
     text: "Scan"
     align: TOP_LEFT
     x: 40px
-    y: 596px
+    y: 468px
     width: 100px
     height: 44px
     bg_color: 0x0D1F35
@@ -153,9 +186,9 @@
 - dropdown:
     id: wifi_network_dropdown
     align: TOP_LEFT
-    x: 40px
-    y: 648px
-    width: 880px
+    x: 160px
+    y: 468px
+    width: 1080px
     options:
       - "Scanning…"
     symbol: "›"
@@ -163,18 +196,18 @@
 - label:
     id: setup_password_label2
     text: "Password"
-    text_font: font_body
-    text_color: 0xDCE8F5
+    text_font: font_small
+    text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 40px
-    y: 706px
+    y: 536px
     width: 200px
 
 - textarea:
     id: wifi_password
     align: TOP_LEFT
     x: 40px
-    y: 700px
+    y: 568px
     width: 400px
     height: 44px
     one_line: true
@@ -303,7 +336,7 @@
     text: "Connect"
     align: TOP_LEFT
     x: 460px
-    y: 700px
+    y: 568px
     width: 140px
     height: 44px
     bg_color: 0x0D1F35
@@ -321,8 +354,8 @@
     text_color: 0x4E9FD4
     align: TOP_LEFT
     x: 620px
-    y: 700px
-    width: 660px
+    y: 568px
+    width: 620px
 
 - label:
     id: setup_address

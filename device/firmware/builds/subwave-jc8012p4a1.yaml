@@ -23,7 +23,7 @@ substitutions:
   device_id: "unprovisioned"
   claim_token: "unprovisioned"
   server_url: "https://causewayfm.com"
-  firmware_version: "1.5.0"
+  firmware_version: "1.6.0"
 
   # The panel is natively 800x1280 portrait and driven as 1280x800 landscape.
   # Getting this backwards is the single most common mistake with this board.

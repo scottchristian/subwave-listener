@@ -12,7 +12,6 @@
 #include "esphome/components/light/light_call.h"
 #include "esphome/components/light/light_state.h"
 #include "display_client.h"
-#include "setup_portal.h"
 
 // LVGL object ids come from the YAML. They are declared here rather than pulled
 // from a generated header because the whole point of pre-allocating all three
