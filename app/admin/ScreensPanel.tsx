@@ -260,11 +260,11 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
             your computer. {command.note}
           </p>
           <ol style={{ color: "var(--color-muted)", fontSize: "0.875rem", lineHeight: "1.7", paddingLeft: "1.25rem", margin: "0.75rem 0" }}>
-            <li>Open a terminal on the machine where you cloned the <code>subwave</code> repository.</li>
-            <li>Make sure ESPHome is installed: <code>pip install esphome</code> (Python 3.9+).</li>
-            <li>Change into the repository root: <code>cd /path/to/subwave</code> (the directory that contains <code>device/firmware/builds/</code>).</li>
+            <li>Install ESPHome on your machine (one time): <code>pip install esphome</code> (needs Python 3.9+). On macOS, if <code>pip</code> is missing, use <code>python3 -m pip install esphome</code>.</li>
+            <li>Download the firmware template: <a href="/api/admin/devices/yaml" download="subwave-jc8012p4a1.yaml" style={{ color: "var(--color-accent-warm)" }}>subwave-jc8012p4a1.yaml</a> and save it somewhere you can find it.</li>
+            <li>Open a terminal and <code>cd</code> into the folder where you saved the YAML file.</li>
             <li>Run the command below. The first build takes a few minutes; later ones are cached.</li>
-            <li>When it finishes, find the <code>.bin</code> file it produced (ESPHome prints the path at the end) and upload it with <strong>Upload firmware</strong> below.</li>
+            <li>When it finishes, find the <code>.bin</code> file it produced (ESPHome prints the path at the end, under <code>.esphome/build/</code>) and upload it with <strong>Upload firmware</strong> below.</li>
           </ol>
           <pre style={{ background: "var(--color-bg)", padding: "0.75rem", borderRadius: "6px", overflowX: "auto", fontSize: "0.8rem" }}>{command.text}</pre>
           <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
