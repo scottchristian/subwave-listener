@@ -93,7 +93,7 @@ export async function POST(req: NextRequest) {
     `  -s claim_token '${claim.raw}' \\`,
     `  -s server_url '${serverUrl}' \\`,
     "  -s firmware_version '1.0.0' \\",
-    "  compile subwave-jc8012p4a1.yaml",
+    "  compile firmware/builds/subwave-jc8012p4a1.yaml",
   ].join("\n");
 
   return NextResponse.json(
@@ -174,7 +174,7 @@ export async function PATCH(req: NextRequest) {
             `  -s claim_token '${claim.raw}' \\`,
             `  -s server_url '${serverUrl}' \\`,
             "  -s firmware_version '1.0.0' \\",
-            "  compile subwave-jc8012p4a1.yaml",
+            "  compile firmware/builds/subwave-jc8012p4a1.yaml",
           ].join("\n"),
           claimExpiresAt: claim.expires.toISOString(),
           note: "Any firmware already built with the old setup code will no longer claim. Flash the new build.",
