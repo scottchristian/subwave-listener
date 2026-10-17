@@ -23,7 +23,7 @@ substitutions:
   device_id: "unprovisioned"
   claim_token: "unprovisioned"
   server_url: "https://causewayfm.com"
-  firmware_version: "1.10.4"
+  firmware_version: "1.10.5"
 
   # The panel is natively 800x1280 portrait and driven as 1280x800 landscape.
   # Getting this backwards is the single most common mistake with this board.
@@ -71,9 +71,6 @@ esphome:
       # visible and they all stack at 0,0, so without this the setup screen
       # draws over the now-playing screen on every boot.
       - script.execute: boot_windows
-      # Arm the idle deadline. Without this the timer is never set and the screen
-      # never dims — which is how it behaved for the whole of this firmware's life.
-      - script.execute: idle_arm
       # Scan on boot and print every result to the console.
       #
       # Not a convenience. A screen that shows an empty picker is a screen you

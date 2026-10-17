@@ -154,3 +154,8 @@ script:
       # The first state poll can land inside bind_widgets' one-second delay on a
       # fast network, so this is not a theoretical ordering.
       - lambda: subwave_display::ui_mark_ready();
+      # Arm the idle deadline LAST, after every binding exists. Calling it earlier
+      # — directly from on_boot, which is where it used to live — dereferences
+      # idle_deadline_ms and screen_asleep before bind_widgets has populated them,
+      # which is a store access fault and a reboot loop.
+      - script.execute: idle_arm
