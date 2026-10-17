@@ -16,10 +16,11 @@ export async function GET() {
   if (!(session?.user as any)?.isAdmin) return new Response("Forbidden", { status: 403 });
 
   try {
-    const { stdout } = await run("tar", [
-      "-czf", "-", "-C", process.cwd(), "device/firmware",
-      "--exclude", "device/firmware/.esphome",
-    ]);
+    const { stdout } = await run(
+      "tar",
+      ["-czf", "-", "-C", process.cwd(), "device/firmware", "--exclude", "device/firmware/.esphome"],
+      { encoding: "buffer" }
+    );
     return new NextResponse(stdout, {
       headers: {
         "Content-Type": "application/gzip",
