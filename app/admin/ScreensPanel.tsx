@@ -90,16 +90,23 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
 
   async function add(e: React.FormEvent) {
     e.preventDefault();
+    console.log("[screens] add() submitted", { name: name.trim() || "Screen" });
     setBusy(true);
     setError(null);
     try {
+      console.log("[screens] POST /api/admin/devices ...");
       const res = await fetch("/api/admin/devices", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ name: name.trim() || "Screen" }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data?.error || "Could not add that screen.");
+      console.log("[screens] response", { status: res.status, redirected: res.redirected, url: res.url, type: res.type });
+      const data = await res.json().catch((err) => {
+        console.error("[screens] response was not JSON", err);
+        return null;
+      });
+      console.log("[screens] data", data);
+      if (!res.ok) throw new Error(data?.error || `Could not add that screen (HTTP ${res.status}).`);
       setCommand({
         label: name.trim() || "Screen",
         text: data.buildCommand,
@@ -108,6 +115,7 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
       setName("");
       await load();
     } catch (e: any) {
+      console.error("[screens] add() failed", e);
       setError(e?.message || "Could not add that screen.");
     } finally {
       setBusy(false);
@@ -226,18 +234,18 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
         never appears in the signed-in or listening counts.
       </p>
 
-      <form onSubmit={add} style={{ display: "flex", gap: "0.75rem", marginTop: "1rem", alignItems: "flex-end" }}>
-        <div style={{ flex: 1 }}>
+      <form onSubmit={add} style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginTop: "1rem" }}>
+        <div>
           <label htmlFor="screen-name" className="admin-label">Screen name</label>
           <input
             id="screen-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
             placeholder="e.g. Kitchen, Studio, Hallway"
-            style={{ width: "100%", padding: "0.75rem 1rem", fontSize: "1rem", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text)" }}
+            style={{ width: "100%", padding: "0.875rem 1rem", fontSize: "1.1rem", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text)" }}
           />
         </div>
-        <button id="btn-add-screen" className="primary-btn" type="submit" disabled={busy} style={{ padding: "0.75rem 1.5rem", fontSize: "1rem", whiteSpace: "nowrap" }}>Add screen</button>
+        <button id="btn-add-screen" className="primary-btn" type="submit" disabled={busy} style={{ padding: "0.875rem 1.5rem", fontSize: "1.1rem", whiteSpace: "nowrap", alignSelf: "flex-start" }}>Add screen</button>
       </form>
 
       {error && (
