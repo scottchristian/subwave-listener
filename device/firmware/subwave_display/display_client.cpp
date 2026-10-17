@@ -240,12 +240,15 @@ void SubwaveDisplay::parse_state_(const std::string &json) {
   now_refresh();
   shows_refresh();
 
-  // Artwork, but only when the cover is actually a different one. Fetching every
-  // poll would pull a JPEG down the wire every ten seconds to redraw a picture
-  // that is already there.
-  if (this->now_.art_url != this->art_url_shown_) {
-    this->art_url_shown_ = this->now_.art_url;
-    this->request_artwork(this->now_.art_url);
+  // Artwork. The URL is a path under the app's own host, so it has to be
+  // turned into a full URL and handed to the incoming online_image — and that
+  // object is reachable only from YAML, so it is queued here and applied by the
+  // one-second tick below. Fetching every poll would pull a JPEG every ten
+  // seconds to redraw a picture that is already there, so it is gated on the
+  // URL actually changing.
+  if (!this->now_.art_url.empty() && this->now_.art_url != this->shown_art_url_) {
+    this->shown_art_url_ = this->now_.art_url;
+    this->pending_art_url_ = this->now_.art_url;
   }
 }
 
@@ -386,17 +389,6 @@ void SubwaveDisplay::handle_(Req kind, int status, const std::string &body) {
         this->claimed_ = false;
       }
       return;
-  }
-}
-
-void SubwaveDisplay::request_artwork(const std::string &url) {
-  if (url.empty()) return;
-  // An absolute URL is passed through untouched; the artwork route is proxied
-  // under the app's own host and the server sends a path, never a foreign URL.
-  if (url[0] == '/') {
-    this->request_(Req::ARTWORK, "GET", url, "", 15000);
-  } else {
-    this->request_(Req::ARTWORK, "GET", "", url, 15000);
   }
 }
 

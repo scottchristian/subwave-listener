@@ -105,6 +105,15 @@ class SubwaveDisplay
   void set_art_buffer_bytes(int v) { art_buffer_bytes_ = v; }
   const std::string &get_setup_ap_ssid_() const { return setup_ap_ssid_; }
 
+  /** The bearer token, for the online_image auth header. Public for the same
+   *  reason send_heartbeat() is: YAML cannot reach a private member. */
+  const std::string &bearer() const { return bearer_; }
+  /** The app's base URL, for building artwork URLs in YAML. */
+  const std::string &api_base() const { return api_base_; }
+
+  const std::string &pending_art_url() const { return pending_art_url_; }
+  void clear_pending_art_url() { pending_art_url_.clear(); }
+
   // For the screens: the current state, and the artwork fetch to start.
   const NowPlaying &now_playing() const { return now_; }
   const Byline &byline() const { return byline_; }
@@ -174,8 +183,6 @@ class SubwaveDisplay
   /** True when setup should be demanded rather than merely offered. */
   bool needs_setup() const { return this->connectivity_ != Connectivity::OK; }
 
-  /** Fetch the cover. Decoded into PSRAM, never on the tick that swaps windows. */
-  void request_artwork(const std::string &url);
   /** The Skip button. Refused by the server under the same policy as a listener's. */
   void request_skip();
   /** Push a settings change made on the device's own settings screen. */
@@ -262,9 +269,10 @@ class SubwaveDisplay
   int poll_after_sec_{10};
   std::string station_name_;
   std::string logo_url_;
-  // The cover currently on the glass. Compared against the incoming art URL so a
-  // ten-second poll does not pull the same JPEG down again every time.
-  std::string art_url_shown_;
+  // The cover the server just named. Held here until the YAML layer has set it
+  // on the incoming online_image, because C++ cannot reach that object directly.
+  std::string pending_art_url_;
+  std::string shown_art_url_;
 
   bool claimed_{false};
   bool server_reachable_{false};

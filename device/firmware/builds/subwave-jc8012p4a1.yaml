@@ -23,7 +23,7 @@ substitutions:
   device_id: "unprovisioned"
   claim_token: "unprovisioned"
   server_url: "https://causewayfm.com"
-  firmware_version: "1.10.1"
+  firmware_version: "1.10.2"
 
   # The panel is natively 800x1280 portrait and driven as 1280x800 landscape.
   # Getting this backwards is the single most common mistake with this board.
@@ -247,6 +247,18 @@ interval:
       # steps visibly, and one fed from the five-second idle tick is worse; one
       # label write a second is not a cost worth optimising away.
       - lambda: subwave_display::clock_refresh();
+      # Apply a cover the server just named, if one is pending. The URL is a path
+      # under the app's own host, so it is joined here in YAML where the base URL
+      # is reachable, rather than in C++ where the online_image object is not.
+      - lambda: |-
+          auto *c = id(display_client);
+          const std::string path = c->pending_art_url();
+          if (path.empty()) return;
+          const std::string url = c->api_base() + path;
+          id(art_in_image)->set_url(url);
+          id(art_in_image)->update();
+          c->clear_pending_art_url();
+          ESP_LOGI("subwave.art", "Fetching cover: %s", url.c_str());
     startup_delay: 2s
 
   - interval: 45s

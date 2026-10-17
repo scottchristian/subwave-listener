@@ -750,16 +750,27 @@ reported. `idle_touch` sat in that report for the life of the firmware. Run
 `on_touch` wiring makes the gate fail. A gate that passes on a comment is not a
 gate.
 
-## Artwork — still half-built
+## Artwork — wired, not yet verified on the glass
 
-The crossfade scaffold exists (`art_swap`, `art_fading`, `art_queued`,
-`art_primed`) and the online images exist, but:
+The crossfade scaffold (`art_swap`, `art_fading`, `art_queued`, `art_primed`)
+and the online images existed, but three things were missing and all three are
+fixed now:
 
-- `art_primed` is never set to true, so `art_swap` never fires.
-- `online_image` has no auth header, and the art route is bearer-protected, so
-  even a triggered download would 401.
-- The initial URL is a deliberate 404.
+- `art_primed` was never set, so `art_swap` never fired. `on_download_finished`
+  on `art_in_image` now sets it and triggers the swap when one is queued.
+- `online_image` had no auth header while the art route is bearer-protected, so
+  every fetch 401'd. Both online images now send
+  `Authorization: Bearer <token>` via a templated header read at fetch time.
+- The cover URL never changed: the server names a new cover in state and nothing
+  applied it. `parse_state_()` now queues the path, and the one-second tick
+  joins it to the app base URL and calls `set_url` + `update` on `art_in_image`.
 
-The cover is the one part of the now-playing window that is still blank. The
-fetch through the authenticated `request_()` path runs but only logs; wiring the
-online image to it is the next piece of work and needs hardware verification.
+`request_artwork()` is gone — the online image does the fetch itself, with auth,
+so the old authenticated-fetch-into-a-discarded-buffer is dead code and was
+removed rather than kept alive. The initial URL is still the deliberate 404.
+
+What is NOT verified: the crossfade pointer swap. `art_swap` swaps the
+`art_out`/`art_in` widget pointers but the online_image components keep their
+identities, and I have not been able to confirm on hardware that the second cover
+lands in the right slot. The fetch and decode path is complete; the swap is the
+part to watch.

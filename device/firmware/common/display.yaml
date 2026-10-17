@@ -297,6 +297,11 @@ online_image:
     resize: 520x520
     buffer_size: ${art_buffer_bytes}
     update_interval: never
+    # The art route is bearer-protected; without this every fetch 401s and the
+    # cover stays blank. The header is templated so it is read at fetch time,
+    # after the claim has stored the token.
+    request_headers:
+      Authorization: !lambda "return std::string(\"Bearer \") + id(display_client)->bearer();"
     on_error:
       - logger.log: "art_out: nothing to show yet"
 
@@ -308,6 +313,17 @@ online_image:
     resize: 520x520
     buffer_size: ${art_buffer_bytes}
     update_interval: never
+    request_headers:
+      Authorization: !lambda "return std::string(\"Bearer \") + id(display_client)->bearer();"
+    on_download_finished:
+      # THE TRIGGER THAT WAS MISSING. art_primed was declared, consulted by
+      # art_swap, and never set to true by anything — so the crossfade never ran
+      # and the incoming cover, once decoded, sat there undisplayed.
+      - lambda: |-
+          id(art_primed) = true;
+          if (id(art_queued)) {
+            id(art_swap).execute();
+          }
     on_error:
       - logger.log: "art_in: nothing to show yet"
 
