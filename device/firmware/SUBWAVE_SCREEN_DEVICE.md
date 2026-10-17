@@ -771,6 +771,6 @@ removed rather than kept alive. The initial URL is still the deliberate 404.
 
 What is NOT verified: the crossfade pointer swap. `art_swap` swaps the
 `art_out`/`art_in` widget pointers but the online_image components keep their
-identities, and I have not been able to confirm on hardware that the second cover
-lands in the right slot. The fetch and decode path is complete; the swap is the
-part to watch.
+identities, so a second cover fetched into `art_in_image` lands in whichever
+widget currently holds the `art_in` name. That is the part to watch on the
+glass. The fetch, decode, auth and trigger paths are all complete.
