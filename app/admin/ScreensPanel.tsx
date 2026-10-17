@@ -226,18 +226,18 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
         never appears in the signed-in or listening counts.
       </p>
 
-      <form onSubmit={add} style={{ display: "flex", gap: "0.5rem", marginTop: "1rem", alignItems: "flex-end" }}>
+      <form onSubmit={add} style={{ display: "flex", gap: "0.75rem", marginTop: "1rem", alignItems: "flex-end" }}>
         <div style={{ flex: 1 }}>
-          <label htmlFor="screen-name" className="admin-label">Name this screen</label>
+          <label htmlFor="screen-name" className="admin-label">Screen name</label>
           <input
             id="screen-name"
             value={name}
             onChange={(e) => setName(e.target.value)}
-            placeholder="Kitchen, studio, hallway"
-            style={{ width: "100%", padding: "0.6rem", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text)" }}
+            placeholder="e.g. Kitchen, Studio, Hallway"
+            style={{ width: "100%", padding: "0.75rem 1rem", fontSize: "1rem", borderRadius: "8px", border: "1px solid var(--color-border)", background: "var(--color-bg)", color: "var(--color-text)" }}
           />
         </div>
-        <button id="btn-add-screen" className="primary-btn" type="submit" disabled={busy}>Add a screen</button>
+        <button id="btn-add-screen" className="primary-btn" type="submit" disabled={busy} style={{ padding: "0.75rem 1.5rem", fontSize: "1rem", whiteSpace: "nowrap" }}>Add screen</button>
       </form>
 
       {error && (
@@ -249,7 +249,7 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
           <h3 style={{ marginTop: 0 }}>Build {command.label}</h3>
           <p style={{ color: "var(--color-muted)", fontSize: "0.875rem" }}>{command.note}</p>
           <pre style={{ background: "var(--color-bg)", padding: "0.75rem", borderRadius: "6px", overflowX: "auto", fontSize: "0.8rem" }}>{command.text}</pre>
-          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+          <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
             <button id="btn-copy-build" className="primary-btn" type="button" onClick={async () => {
               await navigator.clipboard.writeText(command.text);
               setCopied(true);
