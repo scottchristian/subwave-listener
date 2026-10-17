@@ -254,8 +254,18 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
 
       {command && (
         <div id="build-command" style={{ marginTop: "1.25rem", padding: "1rem", border: "1px solid var(--color-accent-warm)", borderRadius: "8px" }}>
-          <h3 style={{ marginTop: 0 }}>Build {command.label}</h3>
-          <p style={{ color: "var(--color-muted)", fontSize: "0.875rem" }}>{command.note}</p>
+          <h3 style={{ marginTop: 0 }}>Build {command.label} on your machine</h3>
+          <p style={{ color: "var(--color-muted)", fontSize: "0.875rem" }}>
+            The server cannot compile firmware — it runs on a small VPS. This command does the build on
+            your computer. {command.note}
+          </p>
+          <ol style={{ color: "var(--color-muted)", fontSize: "0.875rem", lineHeight: "1.7", paddingLeft: "1.25rem", margin: "0.75rem 0" }}>
+            <li>Open a terminal on the machine where you cloned the <code>subwave</code> repository.</li>
+            <li>Make sure ESPHome is installed: <code>pip install esphome</code> (Python 3.9+).</li>
+            <li>Change into the repository root: <code>cd /path/to/subwave</code> (the directory that contains <code>device/firmware/builds/</code>).</li>
+            <li>Run the command below. The first build takes a few minutes; later ones are cached.</li>
+            <li>When it finishes, find the <code>.bin</code> file it produced (ESPHome prints the path at the end) and upload it with <strong>Upload firmware</strong> below.</li>
+          </ol>
           <pre style={{ background: "var(--color-bg)", padding: "0.75rem", borderRadius: "6px", overflowX: "auto", fontSize: "0.8rem" }}>{command.text}</pre>
           <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
             <button id="btn-copy-build" className="primary-btn" type="button" onClick={async () => {
@@ -288,7 +298,7 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
                 <div style={{ display: "flex", gap: "0.4rem", flexWrap: "wrap" }}>
                   {!r.hasFirmware && (
                     <button id={`btn-build-${r.id}`} className="primary-btn" type="button" disabled={busy}
-                      onClick={() => act(r.id, "newClaim")}>Build it</button>
+                      onClick={() => act(r.id, "newClaim")}>Get build command</button>
                   )}
                   {r.hasFirmware && (
                     <button id={`btn-flash-${r.id}`} className="primary-btn" type="button" disabled={busy}
