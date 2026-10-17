@@ -1,5 +1,7 @@
 "use client";
 
+import ScreensPanel from "./ScreensPanel";
+
 import { useSession } from "next-auth/react";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
@@ -16,8 +18,11 @@ import UpdateModal from "./UpdateModal";
 import { formatTimeOfDay, defaultHour12 } from "@/lib/update-time";
 import {
   SKIP_VISIBILITY_OPTIONS,
+  SKIP_VISIBILITY_SCREENS_OPTIONS,
   parseSkipVisibility,
+  parseSkipVisibilityScreens,
   type SkipVisibility,
+  type SkipVisibilityScreens,
 } from "@/lib/skipvisibility";
 import { parseStillListening, validateStillListening, STILL_LISTENING_KEYS } from "@/lib/still-listening";
 
@@ -93,6 +98,11 @@ export default function AdminPage() {
   const [streamMode, setStreamMode] = useState<"relay" | "direct">("relay");
     // Who listeners get the Skip button. Admins always see it regardless.
     const [skipVisibility, setSkipVisibility] = useState<SkipVisibility>("solo");
+  // A SEPARATE setting, on purpose. SkipVisibility governs the listener
+  // experience, and changing it must not silently change what a public display
+  // in a cafe can do — those are two decisions by two different people, and
+  // folding them together makes one of them unmakeable.
+  const [skipVisibilityScreens, setSkipVisibilityScreens] = useState<SkipVisibilityScreens>("follow");
   // "Are you still listening?" Idle streams stop instead of playing to an
   // empty room. Loaded with the rest of the settings, saved by the section.
   const [slEnabled, setSlEnabled] = useState(false);
@@ -100,6 +110,11 @@ export default function AdminPage() {
   const [slReminder, setSlReminder] = useState("10");
   const [slMsg, setSlMsg] = useState("");
   const [slBusy, setSlBusy] = useState(false);
+  // Station coordinates for the astronomical theme (day/night on the screen).
+  const [stationLat, setStationLat] = useState("");
+  const [stationLon, setStationLon] = useState("");
+  const [coordMsg, setCoordMsg] = useState("");
+  const [coordBusy, setCoordBusy] = useState(false);
   const [backendListeners, setBackendListeners] = useState<number | null>(null);
   const [backendBuffer, setBackendBuffer] = useState<number | null>(null);
   const [googleClientId, setGoogleClientId] = useState("");
@@ -145,11 +160,11 @@ export default function AdminPage() {
   const [brandTab, setBrandTab] = useState<"logo" | "icon" | "background">("logo");
   const [brandVersion, setBrandVersion] = useState(0);
   // Tab rail: one screen per job. Persisted so a refresh lands back here.
-  type AdminTab = "stats" | "people" | "station" | "services" | "system" | "database";
+  type AdminTab = "stats" | "people" | "station" | "screens" | "services" | "system" | "database";
   const [activeTab, setActiveTab] = useState<AdminTab>(() => {
     try {
       const t = localStorage.getItem("admin-tab");
-      return t === "people" || t === "station" || t === "services" || t === "system" || t === "database" ? t : "stats";
+      return t === "people" || t === "station" || t === "screens" || t === "services" || t === "system" || t === "database" ? t : "stats";
     } catch { return "stats"; }
   });
   // "out" while the current panel fades, "in" once the new one should rise.
@@ -335,7 +350,9 @@ export default function AdminPage() {
         const sm = settings.find((s: any) => s.key === "streamMode");
         if (sm) setStreamMode(sm.value === "direct" ? "direct" : "relay");
           const sv = settings.find((s: any) => s.key === "skipVisibility");
+          const svs = settings.find((s: any) => s.key === "skipVisibilityScreens");
           if (sv) setSkipVisibility(parseSkipVisibility(sv.value));
+          if (svs) setSkipVisibilityScreens(parseSkipVisibilityScreens(svs.value));
           const sl = parseStillListening({
             enabled: settings.find((s: any) => s.key === STILL_LISTENING_KEYS.enabled)?.value,
             minutes: settings.find((s: any) => s.key === STILL_LISTENING_KEYS.minutes)?.value,
@@ -344,6 +361,10 @@ export default function AdminPage() {
           setSlEnabled(sl.enabled);
           setSlMinutes(String(sl.minutes));
           setSlReminder(String(sl.reminderMinutes));
+          const lat = settings.find((s: any) => s.key === "stationLat");
+          const lon = settings.find((s: any) => s.key === "stationLon");
+          if (lat) setStationLat(lat.value);
+          if (lon) setStationLon(lon.value);
         if (STATION.backendUrl) {
           fetch(`${STATION.backendUrl}/api/now-playing`)
             .then(r => r.json())
@@ -780,6 +801,40 @@ export default function AdminPage() {
     }
   };
 
+  const saveCoordinates = async () => {
+    const lat = Number(stationLat);
+    const lon = Number(stationLon);
+    if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+      setCoordMsg("Latitude must be between -90 and 90");
+      return;
+    }
+    if (!Number.isFinite(lon) || lon < -180 || lon > 180) {
+      setCoordMsg("Longitude must be between -180 and 180");
+      return;
+    }
+    setCoordBusy(true);
+    setCoordMsg("");
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "stationLat", value: String(lat) }),
+      });
+      if (!res.ok) throw new Error("could not save stationLat");
+      const res2 = await fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "stationLon", value: String(lon) }),
+      });
+      if (!res2.ok) throw new Error("could not save stationLon");
+      setCoordMsg("Saved — screens will switch day/night on their next poll");
+    } catch (e) {
+      setCoordMsg(`Could not save: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setCoordBusy(false);
+    }
+  };
+
   const saveStreamMode = async (mode: "relay" | "direct") => {    setStreamMode(mode);
     await fetch("/api/admin/settings", {
       method: "POST",
@@ -815,6 +870,14 @@ export default function AdminPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "skipVisibility", value: mode }),
+    });
+  };
+  const saveSkipVisibilityScreens = async (mode: SkipVisibilityScreens) => {
+    setSkipVisibilityScreens(mode);
+    await fetch("/api/admin/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "skipVisibilityScreens", value: mode }),
     });
   };
   const testServer = async () => {
@@ -1195,6 +1258,7 @@ export default function AdminPage() {
             ["stats", "Stats", streamingUsers.length > 0 ? `${streamingUsers.length} live` : null],
             ["people", "People", pendingCount > 0 ? `${pendingCount} waiting` : null],
             ["station", "Station", null],
+            ["screens", "Screens", null],
             ["services", "Services", null],
             ["system", "System", null],
             ["database", "Database", null],
@@ -1929,6 +1993,8 @@ export default function AdminPage() {
 
         {/* Diagnostics */}
         {/* Database — engine, permissions, copy, switch */}
+        <ScreensPanel hidden={activeTab !== "screens"} />
+
         <section className="card" id="section-database" style={activeTab === "database" ? undefined : { display: "none" }}>
           <DatabasePanel />
         </section>
@@ -2612,6 +2678,37 @@ export default function AdminPage() {
             <span>{SKIP_VISIBILITY_OPTIONS.find((o) => o.value === skipVisibility)?.blurb}</span>
             <span>Admins always see Skip — this only governs listeners. Takes effect on their next page load.</span>
           </div>
+
+          {/* Wall screens. A SEPARATE control, because "who gets Skip in the
+              browser" and "may a screen in the hallway cut the music" are two
+              different decisions by two different people, and one shared control
+              makes one of them unmakeable. */}
+          <div style={{ marginTop: "1.25rem", paddingTop: "1.25rem", borderTop: "1px solid var(--color-border)" }}>
+            <p style={{ margin: "0 0 0.5rem", fontWeight: 600 }}>Wall screens</p>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              {SKIP_VISIBILITY_SCREENS_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  id={`btn-skip-screens-${opt.value}`}
+                  onClick={() => saveSkipVisibilityScreens(opt.value)}
+                  aria-pressed={skipVisibilityScreens === opt.value}
+                  className="primary-btn"
+                  style={{
+                    width: "auto",
+                    padding: "0.5rem 1.25rem",
+                    background: skipVisibilityScreens === opt.value ? "var(--color-text)" : "rgba(255,255,255,0.08)",
+                    color: skipVisibilityScreens === opt.value ? "var(--color-bg)" : "var(--color-text)",
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              <span>{SKIP_VISIBILITY_SCREENS_OPTIONS.find((o) => o.value === skipVisibilityScreens)?.blurb}</span>
+              <span>A screen decides for itself from this, and never registers as a listener while doing it — so the counts on this page never include a wall.</span>
+            </div>
+          </div>
         </CollapsibleSection>
 
         {/* Idle listening cutoff. The player stops itself after the window and
@@ -2677,6 +2774,75 @@ export default function AdminPage() {
               </button>
             </div>
             {slMsg && <div id="still-listening-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{slMsg}</div>}
+          </div>
+        </CollapsibleSection>
+
+        {/* Station coordinates. The wall screen uses the station's latitude
+            and longitude to calculate sunrise/sunset and switch its theme
+            automatically. Without coordinates it falls back to night (the safe
+            direction — a dim screen is fixable from the app; a bright one at
+            3am is not). The device setup portal also asks for these, but the
+            admin can set or correct them here without re-flashing the screen. */}
+        <CollapsibleSection
+          id="section-station-coordinates"
+          title={<>Station Coordinates</>}
+          summary={<>Latitude and longitude for the astronomical day/night theme on wall screens.</>}
+          hidden={activeTab !== "station"}
+        >
+          <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+              <div>
+                <label htmlFor="input-station-lat" style={{ display: "block", marginBottom: "0.5rem" }}>Latitude</label>
+                <input
+                  id="input-station-lat"
+                  type="number"
+                  inputMode="numeric"
+                  step="0.000001"
+                  min={-90}
+                  max={90}
+                  value={stationLat}
+                  onChange={(e) => setStationLat(e.target.value)}
+                  className="input-field"
+                  style={{ width: "200px" }}
+                  placeholder="-42.8821"
+                />
+              </div>
+              <div>
+                <label htmlFor="input-station-lon" style={{ display: "block", marginBottom: "0.5rem" }}>Longitude</label>
+                <input
+                  id="input-station-lon"
+                  type="number"
+                  inputMode="numeric"
+                  step="0.000001"
+                  min={-180}
+                  max={180}
+                  value={stationLon}
+                  onChange={(e) => setStationLon(e.target.value)}
+                  className="input-field"
+                  style={{ width: "200px" }}
+                  placeholder="147.3272"
+                />
+              </div>
+            </div>
+            <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>
+              The screen uses these to calculate sunrise and sunset for its day/night
+              theme. Without them it defaults to night (the safe direction — a dim
+              screen is fixable from the app; a bright one at 3am is not). The device
+              setup portal also asks for these during provisioning; entering them here
+              saves a re-flash.
+            </div>
+            <div>
+              <button
+                id="btn-save-coordinates"
+                className="primary-btn"
+                style={{ width: "150px", padding: "0.5rem" }}
+                onClick={saveCoordinates}
+                disabled={coordBusy}
+              >
+                {coordBusy ? "Saving…" : "Save"}
+              </button>
+            </div>
+            {coordMsg && <div id="coord-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{coordMsg}</div>}
           </div>
         </CollapsibleSection>
         </div>

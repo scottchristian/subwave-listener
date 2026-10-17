@@ -98,6 +98,7 @@ function publicEntryFor(routePath: string) {
 const OPEN_BY_DESIGN: Record<string, string> = {
   "/api/links": "returns track metadata for a signed-in listener; the proxy is the only check, which is correct because a signed-out visitor must not see the track at all",
   "/brand": "public brand artwork with nothing behind it; it reads no session and exposes no station state, so there is nothing for a check to protect",
+  "/firmware": "serves a compiled binary behind an HMAC-signed URL expiring in ten minutes rather than a session, because the browser flasher fetches the manifest part itself and does not send cookies. The path is unguessable and short-lived, the manifest that mints it is admin-gated, and revoking a screen deletes the file — so the only thing it exposes is the exact bytes that operator was already about to flash",
 };
 
 const SELF_CHECKS: { name: string; re: RegExp }[] = [
@@ -108,6 +109,12 @@ const SELF_CHECKS: { name: string; re: RegExp }[] = [
   { name: "adminFetch", re: /await\s+adminFetch\s*\(/ },
   { name: "verifyHmac", re: /verifyHmac\s*\(/ },
   { name: "isSetupComplete", re: /isSetupComplete\s*\(\s*\)/ },
+  // Wall screens authenticate with a bearer token, not a session. Without this
+  // the gate check would read every device route as unauthenticated and demand
+  // it be added to OPEN_BY_DESIGN — which is capped at five and already holds
+  // two entries, and which would be exactly the wrong place for a route that
+  // really does refuse every caller it cannot authenticate.
+  { name: "deviceAuth", re: /await\s+deviceAuth\s*\(/ },
 ];
 
 // -------------------------------------------------------- the routes

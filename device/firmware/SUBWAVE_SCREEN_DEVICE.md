@@ -355,12 +355,18 @@ string, because ESPHome script parameters are typed.
 ## Gate checks
 
 All pass (read-only, no compiler, no hardware):
-- `check:panel-init` — 21/21 (new). Verified to fail on the real fault shapes:
+- `check:panel-init` — 21/21. Verified to fail on the real fault shapes:
   appending to a model's sequence, bare-number delays, truncated sequence, wrong
   sequence file vs panel variant.
+- `check:screen-layout` — 40/40. The setup screen's geometry, which is the one
+  thing about this device that cannot be verified from this bench — there is no
+  camera, and the panel is bolted to a wall. Verified to fail on six fault
+  shapes: a widget past y=800, the keyboard covering the field it types into,
+  the closing move deleted, the resting y drifting in one file only, the Done
+  button removed, a character-set mode button removed.
 - `check:device-firmware` — 29/29
 - `check:firmware-bindings` — 7/7
-- `check:device-hosts` — 153/153 (was crashing on a dangling symlink
+- `check:device-hosts` — 165/165 (was crashing on a dangling symlink
   `device/firmware/.esphome/idf/penvs/5.5.4/bin/python`; fixed `walkTs` to use
   `statSync(..., {throwIfNoEntry: false})` and skip `.esphome`)
 - `check:device-capabilities` — 125/125
@@ -368,7 +374,15 @@ All pass (read-only, no compiler, no hardware):
 - `check:device-routes`, `check:device-skip`, `check:device-cutover`, etc. — pass
 - `tsc --noEmit` — clean
 
-`check:panel-init` is wired into `check:unit` via package.json.
+`check:panel-init` and `check:screen-layout` are wired into `check:unit`.
+
+### The duplicated y values are a known, checked liability
+
+The password field's resting y (700) is declared in `setup.yaml` and written
+again in `scripts.yaml` when the keyboard closes. That duplication is what makes
+the keyboard/field collision possible at all, so `check:screen-layout` asserts
+the two agree rather than trusting them to. **If you move the field, move it in
+both files** — and the gate will tell you if you did not.
 
 ## If this unit dies and another Guition arrives
 

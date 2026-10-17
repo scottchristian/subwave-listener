@@ -9,7 +9,7 @@ generator client {
 // rewrites this block alongside DATABASE_URL and DB_PROVIDER; gen-schema.mjs
 // performs the same swap for one-off copies.
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -72,6 +72,11 @@ model User {
   pushSubscriptions PushSubscription[]
   presenceHeartbeat PresenceHeartbeat?
   skillRuns      SkillRun[]
+  // Screens this person set up, and screens whose firmware they uploaded.
+  // Audit only — never read in an authorisation branch. SetNull, not Cascade,
+  // so removing a staff account does not brick a wall display.
+  devicesCreated Device[] @relation("DeviceCreatedBy")
+  devicesUploaded Device[] @relation("DeviceUploadedBy")
 }
 
 model VerificationToken {
@@ -236,4 +241,118 @@ model SkillRun {
   // The worker claims the oldest queued row; the poll path reads one row by id.
   @@index([status, queuedAt])
   @@index([userId, queuedAt])
+}
+
+
+// A wall-mounted ESP32-P4 screen.
+//
+// A device is NOT a user. It has its own row, its own credential, and its own
+// auth helper, and no path at any privilege level resolves a device request to a
+// User. Admin permissions on PROVISIONING are separate from device permissions:
+// an admin can create this row, and that authorises the creation and nothing
+// after it. See device/capabilities.md for the full reasoning and the five ways
+// a device drifts into being a person.
+//
+// The device's entire persistent state is its WiFi credentials and its token.
+// Everything else it knows — branding, schedule, settings, artwork, window
+// position — is cache, re-fetchable from the server at will.
+//
+// Every enum-shaped field here is a String, because this schema must generate for
+// SQLite as well as Postgres and Prisma enums are Postgres-only (see SkillRun).
+model Device {
+  id String @id @default(cuid())
+
+  // Stable hardware id, minted by the firmware and COMPILED INTO IT as an ESPHome
+  // substitution. Null until a build completes: the row exists before its binary
+  // does, which is what makes "flash didn't complete" a visible state rather than
+  // a half-registered ghost.
+  deviceId String? @unique
+
+  // Operator-visible name. Nothing reads it for authorisation.
+  name  String
+  model String @default("jc8012p4a1")
+
+  // ---- credentials -------------------------------------------------------
+  // Single-use, 7-day TTL, minted at row creation and compiled into the firmware.
+  // Seven days rather than minutes because the developer builds locally and may
+  // not touch it for a day; regenerating invalidates any binary built against
+  // the old value, and the panel says so rather than letting it fail at claim.
+  claimToken   String?
+  claimExpires DateTime?
+
+  // sha256 of the long-lived bearer token. The raw token is returned exactly once,
+  // at claim, and is never retrievable afterwards.
+  tokenHash   String?
+  rotatedAt   DateTime?
+
+  // Rotation grace window. A device authenticates WITH the token being replaced,
+  // so it cannot be handed a new one unless the old one keeps working long enough
+  // to deliver it — a single-field write would strand the device permanently.
+  // Both are accepted inside the window; the heartbeat response carries the new
+  // token and the device swaps it into NVS.
+  //
+  // The cost is real and bounded: a stolen old token stays usable for the window.
+  // Fifteen minutes is generous for a device that heartbeats every 60 seconds.
+  prevTokenHash    String?
+  prevTokenExpires DateTime?
+
+  // ---- lifecycle ---------------------------------------------------------
+  //   building  row exists, binary not uploaded yet
+  //   claimed   claimed, not yet heard from
+  //   active    heartbeating
+  //   offline   lastSeenAt past the stale window
+  //   revoked   credentials dead, row kept for the audit trail
+  status String @default("building")
+
+  buildStatus String    @default("building") // building | built | failed
+  buildLog    String?
+  firmwareSha String?
+  builtAt     DateTime?
+  firmwareVer String?
+  lastSeenAt  DateTime?
+  ip          String?
+  rssi        Int?
+
+  // ---- settings ----------------------------------------------------------
+  // bumped by every admin change; the device reports what it actually applied.
+  // The higher revision wins, and the admin panel shows the reported value, so
+  // a device and an admin can never disagree without it being visible.
+  settingsRev Int       @default(1)
+  appliedRev  Int?
+  orientation String    @default("landscape") // landscape | portrait
+  themeMode   String    @default("auto")      // auto | day | night
+  brightness  Int       @default(70)
+  idleMode    String    @default("dim")       // stay | dim | off
+  idleMin     Int       @default(15)
+  idlePct     Int       @default(20)
+  skipEnabled String    @default("1")
+
+  // Server capability only, and off. A wall display rotates only when pressed,
+  // so there is deliberately no device-facing control for this.
+  rotateViews String @default("0")
+
+  // ---- location and timezone ---------------------------------------------
+  // timezone is captured automatically from the setup browser's
+  // Intl.DateTimeFormat zone. lat/lon come from a one-tap geolocation prompt on
+  // the same page, because a timezone gives solar noon but NOT latitude, and
+  // sunrise needs latitude.
+  timezone String @default("")
+  lat      Float?
+  lon      Float?
+
+  // ---- audit only --------------------------------------------------------
+  // Never read in an authorisation branch. SetNull rather than Cascade so
+  // deleting a staff account does not take its screens with it.
+  createdById  String?
+  uploadedById String?
+  createdBy    User?   @relation("DeviceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  uploadedBy   User?   @relation("DeviceUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // The admin list filters by status; the offline sweep asks for rows whose
+  // lastSeenAt is older than the stale window, in that order.
+  @@index([status])
+  @@index([lastSeenAt])
 }

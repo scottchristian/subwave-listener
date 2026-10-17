@@ -41,6 +41,13 @@ const PUBLIC = [
   // render crash to a local file. It is publicly WRITABLE, so the route caps
   // every field, truncates the entry, and stops appending at LOG_MAX_BYTES.
   { path: "/api/client-error", why: "crash reporter; writes a capped line to local disk, reads nothing" },
+  // Wall-mounted screens. They have no browser, no session and no account, so the
+  // auth gate could never answer for them — the gate would 401 every request
+  // from a screen that is working perfectly. Each route authenticates itself
+  // with a bearer token issued at claim, and the same rule the listener player
+  // uses decides what a screen may do. None of it reads a cookie or touches the
+  // presence map; check-device-isolation.mts fails the build if that changes.
+  { path: "/api/devices", why: "wall screen self-authenticates with a bearer token; no session exists to check" },
 ];
 
 const isPublic = (pathname: string) =>

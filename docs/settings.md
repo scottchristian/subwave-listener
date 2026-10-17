@@ -107,6 +107,34 @@ button, and the server separately decides whether to act on it, and both read th
 same rule. That is deliberate: a Skip button that the server ignores is worse
 than no button at all.
 
+#### Wall screens — applies on the screen's next poll
+
+**What it does.** Decides the same thing, separately, for wall-mounted screens.
+
+| Option | What a screen may do |
+|---|---|
+| Like a listener | Offered Skip on exactly the terms a listener would be — **the default** |
+| Always like a listener | Treated as a listener for this rule even when Skip is off for listeners |
+| Never on a screen | No wall screen ever shows the button |
+
+**Why it is a separate setting.** "Who gets Skip in the browser" and "may a screen
+in the hallway cut the music" are two different decisions by two different
+people, and one shared control makes one of them unmakeable. Changing the
+listener setting will not change what your screens can do, and vice versa.
+
+**What "Like a listener" usually means in practice.** With "Show when solo"
+above, a screen in a room where somebody is listening is not offered the button —
+which is usually what you want. A screen in an empty room is, because the screen
+is never counted as a listener and nobody is there to be rude to.
+
+**A screen can also hide Skip for itself**, from its own settings screen, without
+touching this setting or affecting any other screen.
+
+**Screens are not listeners.** A screen never signs in, never appears in the
+signed-in count, and never opens the stream — so the counts on this page never
+include a wall. That is enforced by a build-time check rather than by good
+intentions.
+
 ### Maintenance Mode — applies immediately
 
 **What it does.** Replaces the player with a notice and a message you write.

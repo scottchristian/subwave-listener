@@ -60,6 +60,16 @@ DEPLOY.md
 *.tsbuildinfo
 next-env.d.ts
 
+# Device working documents — design spec, capability rule, API contract,
+# provisioning runbook, hardware notes, task list. These are the thinking space
+# for the ESP32-P4 screen component, not deliverables: they change weekly, they
+# reference half-built code, and nothing reads them but us. Same reasoning as
+# DEPLOY.md and deploy.sh above.
+#
+# Only *.md is ignored. device/firmware/ is real source and WILL be committed —
+# the specs graduate into docs/ when the component works.
+/device/*.md
+
 # check-script artifacts (throwaway sqlite client + generated test schema).
 # The scripts remove these on exit; this covers interrupted runs.
 /.test-client

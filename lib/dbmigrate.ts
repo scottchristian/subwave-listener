@@ -59,11 +59,20 @@ function generateFor(provider: DbProvider): string {
   return dir;
 }
 
-/** Parents first: every child references User, and Donation.userId is optional. */
+/**
+ * Parents first: every child references User, and Donation.userId is optional.
+ *
+ * device is last because its createdById and uploadedById both point at User, so
+ * it has to be copied after the users it names. Leaving it out would not fail a
+ * copy — it would fail SILENTLY, and a station that cut over from SQLite to
+ * Postgres would come back with no wall screens and no error to explain it.
+ * check-dbmigrate asserts this list against the schema, in both directions: a
+ * model missing here fails the build, and an entry here with no model fails too.
+ */
 export const MODEL_ORDER = [
   "user", "account", "session", "streamSession", "songRequest", "songLike",
   "pushSubscription", "presenceHeartbeat", "verificationToken",
-  "setting", "songLinkCache", "donation", "skillRun",
+  "setting", "songLinkCache", "donation", "skillRun", "device",
 ] as const;
 
 export type TableReport = {
@@ -94,7 +103,20 @@ export const hash = (rows: unknown[]) =>
  * `generateFor`, so their paths are not knowable at build time. Without the
  * ignore hint the bundler tries to resolve the computed path and fails the build.
  */
-async function connectClient(provider: DbProvider, url: string): Promise<any> {
+/**
+ * A Prisma client for ONE provider, generated into its own directory.
+ *
+ * Exported because a provider-specific client is the only correct way to talk to
+ * a database whose flavour differs from the one the running app was built for. The
+ * ambient @prisma/client is generated from prisma/schema.prisma, so pointing it
+ * at a `file:` URL while it was built for Postgres fails with "the URL must start
+ * with the protocol postgresql://" — a message about the wrong thing entirely,
+ * since the URL was fine and the CLIENT was not.
+ *
+ * Anything that reads or writes across a cutover boundary has to come through
+ * here rather than constructing PrismaClient directly.
+ */
+export async function connectClient(provider: DbProvider, url: string): Promise<any> {
   const dir = generateFor(provider);
   const { PrismaClient } = await import(/* turbopackIgnore: true */ path.join(dir, "index.js"));
   return new PrismaClient({ datasources: { db: { url } } });
