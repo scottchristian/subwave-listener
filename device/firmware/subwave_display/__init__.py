@@ -61,10 +61,29 @@ async def to_code(config):
     # is an ID. Did you forget to register the variable?", which reads as a
     # missing declaration rather than a removed method.
     await cg.register_parented(var, config[http_request.CONF_HTTP_REQUEST_ID])
-    var.set_server_url(config[CONF_SERVER_URL])
-    var.set_device_id(config[CONF_DEVICE_ID])
-    var.set_claim_token(config[CONF_CLAIM_TOKEN])
-    var.set_setup_ap_ssid(config[CONF_SETUP_AP_SSID])
+
+    # EVERY SETTER IS WRAPPED IN cg.add(), AND THAT IS NOT A STYLE POINT.
+    #
+    # `var.set_server_url(...)` on its own is an EXPRESSION whose value is
+    # discarded. Nothing is written into main.cpp, so the call does not exist as
+    # far as the firmware is concerned — and the build still succeeds, because
+    # generating no code is not an error.
+    #
+    # This file shipped that way for the device's whole identity: server URL,
+    # device id, claim token and setup AP SSID were all set by calls that were
+    # never emitted. The screen therefore had an empty station URL, no device id
+    # and no claim token, and could never have reached the station or claimed
+    # itself. Everything that appeared to work — the panel, the WiFi scan, the
+    # setup wizard — depends on none of those four, which is exactly why it went
+    # unnoticed for so long.
+    #
+    # `check:firmware-setters` fails on an unwrapped setter in any external
+    # component, so this cannot come back.
+    cg.add(var.set_server_url(config[CONF_SERVER_URL]))
+    cg.add(var.set_device_id(config[CONF_DEVICE_ID]))
+    cg.add(var.set_claim_token(config[CONF_CLAIM_TOKEN]))
+    cg.add(var.set_setup_ap_ssid(config[CONF_SETUP_AP_SSID]))
+
     await cg.register_component(var, config)
     cg.add(var.set_artwork_size(config[CONF_ARTWORK_SIZE]))
     cg.add(var.set_art_buffer_bytes(config[CONF_ART_BUFFER_BYTES]))

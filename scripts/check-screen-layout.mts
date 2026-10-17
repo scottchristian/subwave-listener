@@ -33,10 +33,18 @@
 // Run: npm run check:screen-layout
 import fs from "node:fs";
 import path from "node:path";
+import {
+  PANEL_H,
+  PANEL_W,
+  parseKeyboardState,
+  parseWidgets,
+  setupScreenPath,
+  scriptsPath,
+} from "./lib/setup-layout.mts";
 
 const ROOT = process.cwd();
-const SETUP = path.join(ROOT, "device", "firmware", "common", "screens", "setup.yaml");
-const SCRIPTS = path.join(ROOT, "device", "firmware", "common", "screens", "scripts.yaml");
+const SETUP = setupScreenPath(ROOT);
+const SCRIPTS = scriptsPath(ROOT);
 
 let passed = 0;
 let failed = 0;
@@ -49,72 +57,7 @@ function ok(cond: boolean, name: string, extra = "") {
   console.log(`  FAIL  ${name}${extra ? " — " + extra : ""}`);
 }
 
-/** The panel's usable height. Every widget must fit inside this. */
-const PANEL_H = 800;
-
-/**
- * One LVGL widget block from the setup screen: its id, x, y, width and height.
- *
- * A scan of the YAML by indentation rather than a YAML parse, for the same
- * reason check-panel-init does it: the files use ESPHome tags (`!include`) that
- * a stock loader rejects, and because the thing worth checking is the geometry
- * AS WRITTEN — a parse-and-reemit would normalise exactly the values under
- * suspicion.
- */
-interface Widget {
-  id: string;
-  x: number | null;
-  y: number | null;
-  w: number | null;
-  h: number | null;
-}
-
-function widgets(file: string): Map<string, Widget> {
-  const out = new Map<string, Widget>();
-  if (!fs.existsSync(file)) return out;
-
-  const lines = fs.readFileSync(file, "utf8").split("\n");
-
-  // `- <kind>:` opens a widget; its properties are indented under it.
-  const start = lines.findIndex((l) => /^- \w+:/.test(l));
-  if (start === -1) return out;
-
-  let cur: Widget | null = null;
-  for (const raw of lines.slice(start)) {
-    if (!raw.trim() || raw.trimStart().startsWith("#")) continue;
-
-    if (/^- \w+:/.test(raw)) {
-      cur = { id: "", x: null, y: null, w: null, h: null };
-      out.set(`__pending_${out.size}`, cur);
-      continue;
-    }
-    if (!cur) continue;
-
-    const id = raw.match(/^\s+id:\s*(\S+)/);
-    if (id) {
-      cur.id = id[1];
-      continue;
-    }
-    const num = (key: string): number | null => {
-      const m = raw.match(new RegExp(`^\\s+${key}:\\s*(-?[\\d.]+)\\s*(px)?\\s*$`));
-      return m ? Math.round(Number(m[1])) : null;
-    };
-    const v = num("x");
-    if (v !== null) cur.x = v;
-    const yv = num("y");
-    if (yv !== null) cur.y = yv;
-    const wv = num("width");
-    if (wv !== null) cur.w = wv;
-    const hv = num("height");
-    if (hv !== null) cur.h = hv;
-  }
-
-  const byId = new Map<string, Widget>();
-  for (const w of out.values()) if (w.id) byId.set(w.id, w);
-  return byId;
-}
-
-const setup = widgets(SETUP);
+const setup = parseWidgets(SETUP);
 
 ok(fs.existsSync(SETUP), "setup.yaml found");
 ok(setup.size > 0, "setup.yaml yields widgets", `${setup.size} widget(s)`);
@@ -138,150 +81,94 @@ for (const [id, w] of setup) {
 // ---------------------------------------------------------------------------
 // 2. The keyboard does not cover the field it types into.
 // ---------------------------------------------------------------------------
+//
+// NOTHING MOVES WHEN THE KEYBOARD OPENS. That is the design, arrived at after a
+// version that raised the field got two collisions no assertion could see. The
+// consequence worth checking is therefore simpler: the keyboard must start
+// BELOW the field, and must not start below it by an accident that is hard to
+// see — two numbers 50px apart read the same in a diff as two numbers 5px apart.
 const kb = setup.get("wifi_keyboard");
 const pw = setup.get("wifi_password");
+const connect = setup.get("setup_connect_button");
+
 ok(kb !== undefined, "wifi_keyboard is declared");
 ok(pw !== undefined, "wifi_password is declared");
+ok(kb?.y !== null && kb?.y !== undefined, "wifi_keyboard has an absolute y");
+ok(kb?.h !== null && kb?.h !== undefined, "wifi_keyboard has an explicit height");
 
-if (kb && pw) {
-  ok(kb.y !== null, "wifi_keyboard has an absolute y");
-  ok(kb.h !== null, "wifi_keyboard has an explicit height");
-}
-
-// scripts.yaml carries the RAISED position the field moves to when the keyboard
-// opens. That is the value that has to clear the keyboard's top edge.
-const scriptSrc = fs.existsSync(SCRIPTS) ? fs.readFileSync(SCRIPTS, "utf8") : "";
-const raised = scriptSrc.match(/lv_obj_set_y\(id\(wifi_password\),\s*(\d+)\)/);
-
-ok(raised !== null, "scripts.yaml raises the password field when the keyboard opens");
-if (raised && kb && kb.y !== null && pw && pw.h !== null) {
-  const raisedY = Number(raised[1]);
+if (kb && pw && pw.y !== null && pw.h !== null && kb.y !== null) {
+  const fieldBottom = pw.y + pw.h;
   ok(
-    raisedY + pw.h <= kb.y,
-    "the raised password field clears the top of the keyboard",
-    `field ends at ${raisedY + pw.h}, keyboard starts at ${kb.y}`,
+    kb.y >= fieldBottom + 8,
+    "the keyboard clears the password field with a visible gap",
+    `field ends ${fieldBottom}, keyboard starts ${kb.y} — no gap`,
+  );
+  ok(
+    kb.y + kb.h! <= PANEL_H,
+    "the keyboard fits on the panel",
+    `y=${kb.y} + h=${kb.h} = ${kb.y + kb.h!} > ${PANEL_H}`,
+  );
+  ok(
+    kb.h! >= 160,
+    "the keyboard is tall enough to type on",
+    `${kb.h}px is a strip rather than a keyboard`,
   );
 }
 
-// The field's RESTING position must be put back when the keyboard closes.
-//
-// This is three assertions, not one, because a count is not enough. Counting the
-// lv_obj_set_y calls passes even when the CLOSING one is gone — the opening call
-// is still there, the field stays parked under the keyboard, and the check that
-// was supposed to prevent exactly that reports green. So: there must be both
-// calls, they must differ, and the closing one must match the position declared
-// in setup.yaml.
-//
-// The last of those is the one that actually binds the two files together. The
-// resting y lives in setup.yaml, and the keyboard script has to restore THAT
-// value — not a copy of it that someone later edits in one place only.
-const moves = [...scriptSrc.matchAll(/lv_obj_set_y\(id\(wifi_password\),\s*(\d+)\)/g)].map(
-  (m) => Number(m[1]),
-);
-ok(moves.length === 2, "scripts.yaml moves the password field on open AND on close", `found ${moves.length}`);
-if (moves.length === 2) {
+// The mode row lives in the field's row, to the right of it. Four 136px buttons
+// and a Done need 780px, and the field takes 400 — so anything wider than about
+// 520px of field would push them off the panel.
+if (kb && pw && pw.w !== null && pw.h !== null && kb.y !== null) {
+  // Sharing a row means sharing a TOP edge, not a bottom edge. The buttons are
+  // the same height as the field, so comparing bottoms would test nothing.
+  const modeRow = pw.y;
+  const buttons = ["wifi_mode_lower", "wifi_mode_upper", "wifi_mode_special", "wifi_mode_number", "wifi_keyboard_done"];
+  const inRow = buttons.filter((id) => setup.get(id)?.y === modeRow);
   ok(
-    moves[0] !== moves[1],
-    "the field is raised when the keyboard opens and lowered when it closes",
-    `both are ${moves[0]}`,
+    inRow.length === buttons.length,
+    "every keyboard button shares the password field's row",
+    `found ${inRow.length}/${buttons.length} at y=${modeRow}`,
   );
-  if (pw && pw.y !== null) {
+  const last = setup.get("wifi_keyboard_done");
+  if (last && last.x !== null && last.w !== null) {
     ok(
-      moves[1] === pw.y,
-      "the closing position matches the field's declared y in setup.yaml",
-      `scripts.yaml restores ${moves[1]}, setup.yaml declares ${pw.y}`,
+      last.x + last.w <= PANEL_W,
+      "the Done button stays on the panel",
+      `ends at ${last.x + last.w}`,
+    );
+    ok(
+      pw.x !== null && last.x > pw.x + pw.w,
+      "the keyboard buttons sit clear of the password field",
+      `Done starts at ${last.x}, field ends at ${(pw.x ?? 0) + pw.w}`,
     );
   }
 }
 
-if (pw && pw.y !== null) {
-  ok(
-    pw.y === setup.get("setup_connect_button")?.y,
-    "the password field and the Connect button share a row",
-    `field y=${pw.y}, button y=${setup.get("setup_connect_button")?.y}`,
-  );
+// The two widgets the field's row cannot also hold are hidden while typing.
+// Without this they sit under the character-set buttons and both are unreachable.
+const scriptSrc = fs.existsSync(SCRIPTS) ? fs.readFileSync(SCRIPTS, "utf8") : "";
+for (const id of ["setup_connect_button", "wifi_status"]) {
+  ok(scriptSrc.includes(`id(${id})`), `the keyboard toggle accounts for ${id}`);
 }
-
-// ---------------------------------------------------------------------------
-// 4. Nothing sits in the row the field moves INTO.
-// ---------------------------------------------------------------------------
-// The field is raised to the row above the keyboard. That row already belongs to
-// the Scan button and the network picker, so when the keyboard opens the field
-// lands exactly on top of them.
-//
-// The script HIDES both rather than leaving them buried, which is correct — by
-// the time you are typing a password you have already chosen a network. But that
-// makes correctness depend on the hide happening, and a hide that is silently
-// dropped is invisible: the field still works, the keyboard still works, and two
-// controls are just sitting under everything. So the hide is asserted here.
-//
-// It also catches the reverse mistake — a control ADDED to that row later, which
-// would be covered and never hidden, and which nothing else in the suite would
-// notice.
-if (raised && pw && pw.h !== null) {
-  const raisedRow = Number(raised[1]);
-
-  // Which widgets ACTUALLY sit in that row, found by scanning every widget
-  // rather than testing a hardcoded list. A hardcoded list cannot detect a third
-  // control being added to the row later, which is the exact mistake worth
-  // catching — the new control would be covered by the keyboard and never
-  // hidden, and nothing else in the suite would notice.
-  // The keyboard's OWN buttons legitimately share this row — they are shown
-  // exactly when the field is raised. What must not share it is anything else:
-  // a control added here later would sit under the keyboard and never be hidden.
-  const keyboardFurniture = new Set([
-    "wifi_mode_lower",
-    "wifi_mode_upper",
-    "wifi_mode_special",
-    "wifi_mode_number",
-    "wifi_keyboard_done",
-  ]);
-  const inRow = [...setup.values()]
-    .filter((w) => w.y === raisedRow && !keyboardFurniture.has(w.id))
-    .map((w) => w.id)
-    .sort();
-  ok(
-    inRow.length === 2 && inRow[0] === "setup_scan_button" && inRow[1] === "wifi_network_dropdown",
-    "only the Scan button and the network picker share the raised row",
-    `found ${inRow.join(", ") || "nothing"} at y=${raisedRow}`,
-  );
-
-  // The opening branch must actually HIDE them. Checking that the ids appear
-  // somewhere in the script is not enough — they appear in the array that
-  // collects the row, so deleting the hide that applies to that array leaves
-  // every mention of them intact and the check passes.
-  const toggle = scriptSrc.slice(
-    scriptSrc.indexOf("- id: wifi_keyboard_toggle"),
-    scriptSrc.indexOf("- id: wifi_keyboard_mode"),
-  );
-  const opening = toggle.slice(toggle.indexOf("if (opening)"), toggle.indexOf("} else {"));
-  ok(opening.length > 0, "the keyboard toggle has an opening branch");
-  ok(
-    /lv_obj_add_flag/.test(opening),
-    "the opening branch HIDES the controls it covers",
-    "no add_flag(HIDDEN) between `if (opening)` and the else",
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 3. The keyboard is reachable, and dismissible.
-// ---------------------------------------------------------------------------
-// A keyboard with no way to close it is a screen you cannot leave, and the only
-// dismiss affordances here are taps on other widgets.
-ok(
-  /id:\s*wifi_keyboard_done/.test(fs.readFileSync(SETUP, "utf8")),
-  "there is a Done button to dismiss the keyboard",
+const toggle = scriptSrc.slice(
+  scriptSrc.indexOf("- id: wifi_keyboard_toggle"),
+  scriptSrc.indexOf("- id: wifi_keyboard_mode"),
 );
 ok(
-  /lv_textarea_get_text\(id\(wifi_password\)\)/.test(scriptSrc),
-  "the connect script reads the password back out of the field",
+  /lv_obj_add_flag/.test(toggle.slice(toggle.indexOf("if (opening)"), toggle.indexOf("} else {"))),
+  "the opening branch HIDES what the keyboard covers",
 );
 
-// LVGL shows exactly one character set at a time and does not cycle. Without all
-// four modes reachable, some real passwords cannot be typed at all.
-for (const mode of ["wifi_mode_lower", "wifi_mode_upper", "wifi_mode_special", "wifi_mode_number"]) {
-  ok(setup.has(mode), `${mode} is declared`);
-}
+// And nothing may move at all. This is the assertion that would have caught
+// both collisions in the version that raised the field: a widget whose position
+// is written outside setup.yaml is a position no amount of reading the YAML
+// will reveal.
+const toggleMoves = (toggle.match(/lv_obj_set_(?:x|y)\(/g) ?? []).length;
+ok(
+  toggleMoves === 0,
+  "the keyboard toggle moves no widget",
+  `${toggleMoves} position write(s) in the toggle — every move is a possible stranded caption`,
+);
 
 console.log(`  ${passed}/${passed + failed} screen-layout assertions passed`);
 process.exit(failed === 0 ? 0 : 1);

@@ -196,6 +196,16 @@ void now_refresh() {
   lv_label_set_text(OBJ(byline_presenter), b.presenter.c_str());
   lv_label_set_text(OBJ(byline_show), b.show.c_str());
 
+  // THE QUIET LINE. SubwaveDisplay::last_error_ was written in eight places and
+  // read by nobody — a refused claim, a removed screen, a skip somebody else got
+  // first, a malformed response. Every one of those was an event the screen had
+  // decided was worth explaining, explained into an empty buffer.
+  //
+  // Cleared on an empty error rather than left to time out, so a transient
+  // refusal does not sit on the wall for the rest of the broadcast.
+  const char *err = c->last_error().c_str();
+  lv_label_set_text(OBJ(status_line), err);
+
   char runway[32];
   // -1 is the "not known" sentinel; see Byline in client().h.
   if (b.ends_in_sec > 0) {

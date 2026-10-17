@@ -80,6 +80,98 @@ sync: `panel_vendor.yaml` includes `jc8012p4a1_init.yaml` (198 commands, 2
 delays, includes command `0x4A`); `panel_vendor_new.yaml` includes
 `jc8012p4a1_init_new.yaml` (204 commands, 2 delays).
 
+## THE DEVICE HAD NO IDENTITY (1.8.0) — the worst bug in this firmware
+
+Four setters in `subwave_display/__init__.py` were called **without `cg.add()`**:
+
+```python
+var.set_server_url(config[CONF_SERVER_URL])   # expression, discarded
+var.set_device_id(config[CONF_DEVICE_ID])
+var.set_claim_token(config[CONF_CLAIM_TOKEN])
+var.set_setup_ap_ssid(config[CONF_SETUP_AP_SSID])
+```
+
+ESPHome codegen is expression-based. A setter call builds a C++ expression and
+returns it; **nothing is written into main.cpp until it is passed to `cg.add()`**.
+So those four calls emitted no code at all, and the build still succeeded —
+generating no code is not an error.
+
+The screen therefore booted with an empty station URL, no device id, no claim
+token and no AP SSID. It could never have reached the station or claimed itself.
+
+**Why it survived so long, which is the part worth keeping:** everything that was
+ever tested depends on none of those four. The panel rendered. The WiFi scan
+worked. The wizard answered on the access point. Every visible behaviour was
+correct and the entire identity was missing.
+
+### The companion bug, in YAML rather than Python
+
+`server_url: ${server_url}` was **unquoted**. ESPHome substitutes text before it
+parses YAML, so `https://causewayfm.com` had its `//` read as the start of a
+comment and the value silently became `https:`. Nothing warned — `https:` is
+still a valid URL as far as `cv.url` is concerned.
+
+Same silent failure from the opposite direction: no code emitted, versus a value
+mangled before codegen runs. Both are checked now.
+
+Every `${...}` substitution whose value is a string is quoted. Numeric ones are
+exempt and must stay bare, or `cv.int_range` rejects the string.
+
+### `check:firmware-setters`
+
+Fails on an unwrapped setter in any external component, and on an unquoted
+substitution. Verified to fail on both original faults.
+
+It tracks paren depth, because a line-only scan reports
+
+```python
+cg.add(
+    var.set_on_scan_script(   # <-- "unwrapped", wrongly
+```
+
+as a bug — and a false positive on a check this serious gets ignored. It also
+carries sentinels asserting its regexes still match something, because a check
+that quietly stops matching reports success forever.
+
+## The connectivity ladder (1.8.0)
+
+`device/provisioning.md` specified it; nothing implemented it. There was no gate
+at all, so setup was demanded regardless of whether the WiFi worked.
+
+Four steps, each because it fails differently:
+
+| Step | Test | Fails when |
+|---|---|---|
+| `NO_WIFI` | `wifi.connected` | no association, or wrong password |
+| `NO_ROUTE` | TCP to a **literal** public resolver address | guest network with no route out |
+| `NO_DNS` | resolve the station's host | captive portal intercepting DNS |
+| `NO_SERVER` | TCP to the station's host:port | misconfigured station address |
+
+**The route step uses a literal address, not a name.** Resolving first would make
+it depend on DNS — the step after it — so a device with broken DNS would report
+"no route out" and send somebody to sign in to a guest portal that was never the
+problem. The canary is a public DNS resolver rather than an HTTP port so the test
+depends on nothing the station happens to run; the specific address is in
+`route_exists()` and is not a deployment detail worth recording here.
+
+**The station step is PROBED, not read from `server_reachable_`.** That flag is
+set by the API client's responses, so on an unprovisioned screen no request has
+completed and it is still `false` — the first version read it and reported a
+working station as unreachable, on a device that had not even claimed yet. A TCP
+connect needs no token and no prior state.
+
+Runs **once**, 18 s after boot. Re-running means a cafe router that stops routing
+at 4pm turns a wall screen into a Wi-Fi prompt with no warning, for a problem the
+person standing there cannot fix. `NO_SERVER` never demands setup at all — the
+password was never wrong, and a wall screen cannot edit a server address.
+
+The quiet line on the now-playing window carries the message. `last_error_` was
+written in eight places and read by nobody, so a refused claim, a removed screen
+and a skip somebody else got first were all explained into an empty buffer; it is
+rendered now.
+
+Verified on hardware: `Connectivity: all four steps pass. Not asking for setup.`
+
 ## Flashing
 
 **FLASH ON THE NATIVE USB PORT, READ LOGS ON THE CH340.** The two ports are not
@@ -367,6 +459,96 @@ inherited class paths and never mentions a braced list — `auto` cannot be dedu
 from a braced-init-list at all. Write the type out: `lv_obj_t *row[] = {...}`.
 That is fine even though `lv_obj_t` is incomplete there; a pointer to an
 incomplete type may be declared, just not dereferenced.
+
+### Connect does NOT reboot (1.7.0)
+
+`wifi_connect` used to end in `App.safe_reboot()`. On a wall-mounted screen that
+is the wrong thing in the most visible way available: it blanked the panel for
+four seconds and came back, **including on every failed attempt** — which is
+exactly when somebody is standing in front of it.
+
+The reboot was never necessary. `save_wifi_sta()` already does both jobs that
+matter:
+
+- persists the credentials (`pref_.save()` then `global_preferences->sync()`), and
+- registers them with the runtime network list via `set_sta()`.
+
+All that is left is to start the association, and `retry_connect()` does that
+through `start_connecting()`, which moves the state machine to
+`STA_CONNECTING`.
+
+`retry_connect()` has to be called **explicitly**. `save_wifi_sta()` ends in
+`connect_soon()`, which only fires from `COOLDOWN` — and this device sits in
+`WIFI_COMPONENT_STATE_AP`, because an unprovisioned screen has no `sta:` network.
+From AP it is a no-op, which is the same reason the original code rebooted rather
+than connected.
+
+### The access point cannot come back by itself — and that is why a restart survives on the failure path
+
+`WiFiComponent::loop()` restarts the fallback access point under
+`if (this->has_ap() && !this->ap_setup_)`. But **`ap_setup_` is assigned exactly
+once in the whole component** — in `setup_ap_config_()` — and is never cleared.
+Not on `WIFI_EVENT_AP_STOP`, not anywhere else. So that branch can never be true
+again after first setup and the 90-second `ap_timeout` fallback is unreachable
+on this build.
+
+That matters because starting a connection **drops** the access point:
+`wifi_sta_connect_` calls `wifi_mode_(true, {})`, which is STA-only. A wrong
+password therefore leaves the screen with no network *and* no access point,
+retrying in silence, until somebody physically power-cycles a panel on a wall.
+
+So `wifi_connect_watchdog` exists: if there is no association 45 s after Connect,
+the device restarts. That is not a workaround, it is the recovery — at boot
+`setup_wifi_ap()` starts the access point unconditionally and only declines to
+leave the AP state when no station network is configured. The restart puts the
+wizard back where it was, with the bad credentials still on flash to correct.
+
+## Drawing the screen (`npm run render:setup`)
+
+`scripts/render-setup-screen.mts` renders the setup screen to PNG from the same
+parser the gate uses, in both states, into `.preview/`.
+
+**Why this exists.** The panel is on a wall, there is no camera on this bench,
+and `check:screen-layout` can prove the geometry is *sound* without being able to
+say whether it is any *good*. It can check that eight networks fit inside 800px.
+It cannot tell you they are readable at two metres. A gate and a preview that
+parsed the YAML their own way would eventually check one thing and draw another,
+so both read `scripts/lib/setup-layout.mts`.
+
+Both states are drawn, because the interesting bugs are in the transition. The
+keyboard-open state **is not in the YAML at all** — which widgets appear and
+disappear lives in a lambda in `scripts.yaml`.
+
+Geometry, colours, text and visibility are exact. **Typefaces are not** — the real
+Newsreader and Archivo are baked into the firmware by the build and are not
+available here, so a system serif and sans stand in at the right sizes. Every
+image says so. Text wrapping is therefore indicative, not authoritative.
+
+### What drawing it found, that no assertion could
+
+Every one of these passed `check:screen-layout` at the time:
+
+- The title and the instruction **overlapped** — both inside the panel, neither
+  overlapping anything else.
+- With the keyboard open, the raised field's **caption sat below its own box**
+  and **Connect dropped out of the row** it shared with the field.
+- Two of the four character-set buttons were **underneath Connect**.
+- The network picker had **no explicit height**, so LVGL sized it from its own
+  label and its position relative to the Scan button beside it was not knowable
+  from the YAML at all. The preview drew it with no height and no outline,
+  which is what a zero-height box looks like.
+
+The first version of the keyboard raised the field into the row above it, which
+required the caption, the Connect button and two hidden controls all to move
+together. They collided twice anyway. **Nothing moves now** — the keyboard sits
+under the password field, and opening it only changes which widgets are visible.
+`check:screen-layout` asserts that directly: the toggle may contain no position
+writes at all.
+
+The arrays in the toggle are named `hidden_while_typing[]` and
+`shown_while_typing[]` for the same reason. They were `row[]` and `keys[]`, and
+the preview's reader silently stopped finding the first one after a rename —
+which drew a screen that does not exist.
 
 ## Setup screen layout (1.6.0)
 

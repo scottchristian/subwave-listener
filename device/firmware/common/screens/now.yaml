@@ -226,4 +226,28 @@
           text_color: 0xF2F2F2
           align: CENTER
 
+# ---- the quiet line -----------------------------------------------------
+#
+# ONE line, below everything, in the muted colour, and it is empty most of the
+# time. It carries whatever the screen needs to say that is not the music: what
+# is going wrong with the network, and that the station refused a skip.
+#
+# It was carrying nothing at all before. SubwaveDisplay::last_error_ was written
+# in eight places — a refused claim, a removed screen, a skip somebody else got
+# first, a malformed response — and read by nobody. Every one of those was an
+# event the screen had decided was worth explaining and then explained to an
+# empty buffer.
+#
+# x=64 lines it up with the byline column rather than centring it: the screen
+# has one left margin and this is not a place to introduce a second.
+- label:
+    id: status_line
+    text: ""
+    text_font: font_small
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 64px
+    y: 500px
+    width: 1100px
+
 

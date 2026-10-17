@@ -132,6 +132,48 @@ class SubwaveDisplay
   std::string state_station_name() const { return station_name_; }
   std::string state_logo_url() const { return logo_url_; }
 
+  // -------------------------------------------------------------------------
+  // The connectivity ladder.
+  //
+  // WHY NOT JUST ASK WHETHER THE DEVICE IS CONNECTED. Because `wifi.connected`
+  // is true on a guest network with no route out, and on a network whose
+  // captive portal has answered the DHCP request but intercepts every DNS
+  // query after it. Both look exactly like a working network to anything that
+  // only checks the link, and both leave a screen that will never show a song.
+  // The reference firmware infers connectivity from the link plus a Home
+  // Assistant API this device does not have.
+  //
+  // The four results, in the order they are tested. Each one exists because it
+  // fails for a different reason and the fix differs — "it doesn't work" would
+  // leave somebody holding a phone stuck.
+  enum class Connectivity : uint8_t {
+    UNKNOWN,   // not checked yet
+    NO_WIFI,   // no association, or wrong password
+    NO_ROUTE,  // associated, has an IP, nothing gets out
+    NO_DNS,    // a route exists, but names do not resolve
+    NO_SERVER, // the internet works, the station does not answer
+    OK,        // all four passed
+  };
+
+  /** Run the ladder. Blocking — a few seconds. Call it from a script delay. */
+  Connectivity check_connectivity();
+
+  /** The result of the last run. */
+  Connectivity connectivity() const { return this->connectivity_; }
+
+  /**
+   * What to tell the person standing in front of the screen.
+   *
+   * Names the CAUSE, because the cause is invisible from the screen's side. The
+   * guest-network cases in particular: the device has an IP and looks fine, and
+   * the only thing that tells you is that something is intercepting traffic.
+   * A message that says which one saves somebody twenty minutes.
+   */
+  const char *connectivity_message(Connectivity c) const;
+
+  /** True when setup should be demanded rather than merely offered. */
+  bool needs_setup() const { return this->connectivity_ != Connectivity::OK; }
+
   /** Fetch the cover. Decoded into PSRAM, never on the tick that swaps windows. */
   void request_artwork(const std::string &url);
   /** The Skip button. Refused by the server under the same policy as a listener's. */
@@ -199,6 +241,7 @@ class SubwaveDisplay
 
   bool claimed_{false};
   bool server_reachable_{false};
+  Connectivity connectivity_{Connectivity::UNKNOWN};
   bool stream_idle_{false};
   bool is_night_{true};
   int signed_in_{0};

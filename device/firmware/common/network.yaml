@@ -13,7 +13,7 @@ wifi:
   power_save_mode: none          # a screen that sleeps through a track change is worse than one that draws more current
   reboot_timeout: 15min
   ap:
-    ssid: ${setup_ap_ssid}
+    ssid: "${setup_ap_ssid}"
     password: ""
 
   # These live on `wifi:`, not on `esphome:`. They moved there upstream, and

@@ -23,7 +23,7 @@ substitutions:
   device_id: "unprovisioned"
   claim_token: "unprovisioned"
   server_url: "https://causewayfm.com"
-  firmware_version: "1.6.0"
+  firmware_version: "1.9.0"
 
   # The panel is natively 800x1280 portrait and driven as 1280x800 landscape.
   # Getting this backwards is the single most common mistake with this board.
@@ -53,8 +53,8 @@ substitutions:
   setup_ap_password: "D2P2K7FF"
 
 esphome:
-  name: ${name}
-  friendly_name: ${friendly_name}
+  name: "${name}"
+  friendly_name: "${friendly_name}"
   # The panel id is compiled in and what identifies this screen to the station.
   # It is minted at first boot and held in flash, not built in — the build only
   # carries the claim token, which the station swaps for a long-lived one.
@@ -75,6 +75,9 @@ esphome:
       # the list threw away. The log answers that; the on-screen list alone
       # cannot, because both cases look identical on the glass.
       - script.execute: wifi_scan_log
+      # Ask whether setup is needed at all. Runs once, 18s in, and does nothing
+      # when the network is fine — which is the case this exists for.
+      - script.execute: check_connectivity
 
 packages:
   hardware: !include ../common/hardware.yaml
@@ -117,10 +120,14 @@ external_components:
 subwave_display:
   id: display_client
   http_request_id: shared_http
-  server_url: ${server_url}
-  device_id: ${device_id}
-  claim_token: ${claim_token}
-  setup_ap_ssid: ${setup_ap_ssid}
+  # QUOTED, and it has to be. ESPHome substitutes text into the YAML BEFORE it
+  # parses it, so an unquoted https://... has its `//` read as the start of a
+  # YAML comment and the value silently becomes `https:`. Nothing warns: the
+  # string is still a valid URL as far as cv.url is concerned.
+  server_url: "${server_url}"
+  device_id: "${device_id}"
+  claim_token: "${claim_token}"
+  setup_ap_ssid: "${setup_ap_ssid}"
   artwork_size: ${artwork_size}
   art_buffer_bytes: ${art_buffer_bytes}
 
@@ -143,13 +150,13 @@ subwave_display:
 # confusing way to be told that ESPHome will not guess.
 http_request:
   id: shared_http
-  timeout: ${http_timeout}
+  timeout: "${http_timeout}"
   verify_ssl: true
 
 wifi:
   ap:
-    ssid: ${setup_ap_ssid}
-    password: ${setup_ap_password}
+    ssid: "${setup_ap_ssid}"
+    password: "${setup_ap_password}"
     # WPA2 password, auto-generated per device at build time. Displayed on the
     # screen and in the QR code so a phone can join without typing.
     # Regenerate with: python3 device/firmware/tools/gen_setup_password.py
@@ -169,7 +176,7 @@ wifi:
 # `web_server`.
 subwave_setup_web:
   id: setup_web
-  ap_ssid: ${setup_ap_ssid}
+  ap_ssid: "${setup_ap_ssid}"
   station_name: "SUB/WAVE"
   # Fills the on-screen network list the moment a scan lands, rather than on a
   # timer. The list is the only place someone at the wall can see the result.

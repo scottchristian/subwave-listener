@@ -63,7 +63,7 @@
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 40px
-    y: 48px
+    y: 64px
     width: 1200px
 
 - qrcode:
@@ -71,7 +71,7 @@
     size: 280
     align: TOP_LEFT
     x: 40px
-    y: 96px
+    y: 112px
     light_color: 0xE8EDF3
     dark_color: 0x0B1A2B
     text: "WIFI:T:WPA;S:SUBWAVE-SCREEN;P:D2P2K7FF;;"
@@ -86,12 +86,12 @@
 # to scan the code, so they belong opposite it.
 - label:
     id: setup_hint
-    text: "Scan with your phone to join the screen's Wi-Fi. The setup page opens by itself."
+    text: "Scan with your phone to join. The setup page opens by itself."
     text_font: font_body
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 380px
-    y: 96px
+    y: 112px
     width: 860px
 
 # LABELS AND VALUES ARE NOT THE SAME VOICE. Both were font_body in full-contrast
@@ -106,7 +106,7 @@
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 380px
-    y: 200px
+    y: 216px
     width: 300px
 
 - label:
@@ -116,7 +116,7 @@
     text_color: 0xDCE8F5
     align: TOP_LEFT
     x: 380px
-    y: 228px
+    y: 244px
     width: 400px
 
 - label:
@@ -126,7 +126,7 @@
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 380px
-    y: 276px
+    y: 292px
     width: 300px
 
 - label:
@@ -136,7 +136,7 @@
     text_color: 0xDCE8F5
     align: TOP_LEFT
     x: 380px
-    y: 304px
+    y: 320px
     width: 300px
 
 # A HAIRLINE, NOT A DIVIDER FOR ITS OWN SAKE. The two routes have nothing to do
@@ -150,7 +150,7 @@
     height: 1px
     align: TOP_LEFT
     x: 40px
-    y: 404px
+    y: 420px
     bg_color: 0x1A3050
     bg_opa: COVER
     border_width: 0
@@ -164,7 +164,7 @@
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 40px
-    y: 424px
+    y: 440px
     width: 400px
 
 - button:
@@ -189,6 +189,13 @@
     x: 160px
     y: 468px
     width: 1080px
+    # EXPLICIT, and it has to be. Left to LVGL a dropdown sizes its own height
+    # from its label and symbol, which means the box's vertical position — and
+    # therefore its alignment with the Scan button beside it — is not knowable
+    # from the YAML at all. The layout preview drew it with no height and no
+    # outline, which is what a zero-height box looks like. Matching the button's
+    # 44px makes the row a row.
+    height: 44px
     options:
       - "Scanning…"
     symbol: "›"
@@ -238,8 +245,8 @@
     text: "abc"
     align: TOP_LEFT
     x: 460px
-    y: 468px
-    width: 72px
+    y: 568px
+    width: 136px
     height: 44px
     bg_color: 0x0D1F35
     border_width: 0
@@ -254,9 +261,9 @@
     id: wifi_mode_upper
     text: "ABC"
     align: TOP_LEFT
-    x: 540px
-    y: 468px
-    width: 72px
+    x: 604px
+    y: 568px
+    width: 136px
     height: 44px
     bg_color: 0x0D1F35
     border_width: 0
@@ -271,9 +278,9 @@
     id: wifi_mode_special
     text: "#+="
     align: TOP_LEFT
-    x: 620px
-    y: 468px
-    width: 72px
+    x: 748px
+    y: 568px
+    width: 136px
     height: 44px
     bg_color: 0x0D1F35
     border_width: 0
@@ -288,9 +295,9 @@
     id: wifi_mode_number
     text: "123"
     align: TOP_LEFT
-    x: 700px
-    y: 468px
-    width: 72px
+    x: 892px
+    y: 568px
+    width: 136px
     height: 44px
     bg_color: 0x0D1F35
     border_width: 0
@@ -305,9 +312,9 @@
     id: wifi_keyboard_done
     text: "Done"
     align: TOP_LEFT
-    x: 790px
-    y: 468px
-    width: 100px
+    x: 1036px
+    y: 568px
+    width: 104px
     height: 44px
     bg_color: 0x0D1F35
     border_width: 0
@@ -322,9 +329,9 @@
     id: wifi_keyboard
     align: TOP_LEFT
     x: 40px
-    y: 520px
+    y: 620px
     width: 1200px
-    height: 268px
+    height: 180px
     textarea: wifi_password
     # Lower case first: most WiFi passwords are mostly lower case, and starting
     # in upper case means the first character typed is wrong half the time.

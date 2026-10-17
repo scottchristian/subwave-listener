@@ -14,6 +14,19 @@
 #include "esphome/components/web_server_idf/web_server_idf.h"
 #include "esphome/components/web_server_base/web_server_base.h"
 
+// The connectivity ladder needs a socket and a resolver. These are the IDF's,
+// not lwIP's headers directly, and getting the names wrong here fails at link
+// time with an undefined reference to getaddrinfo rather than anything that
+// points at this file.
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <sys/select.h>
+#include <netdb.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <cerrno>
+
 namespace subwave_display {
 
 static const char *const TAG = "subwave.display";
@@ -536,6 +549,237 @@ void SubwaveDisplay::register_web_handler_() {
 
   auto *handler = new SetupWizardHandler();  // NOLINT(cppcoreguidelines-owning-memory)
   server->addHandler(handler);
+}
+
+// ---------------------------------------------------------------------------
+// The connectivity ladder.
+//
+// FOUR STEPS, AND EACH ONE EXISTS BECAUSE IT FAILS DIFFERENTLY.
+//
+//   NO_WIFI    no association, or the password was refused
+//   NO_ROUTE   associated and holding an IP, and nothing gets out
+//   NO_DNS     a route exists, but names do not resolve
+//   NO_SERVER  the internet works and the station does not answer
+//
+// The two middle ones are the reason this is not a single check. A guest network
+// hands out an address and then intercepts traffic: `wifi.connected` is TRUE, the
+// screen is convinced it is online, and it will never fetch a song. The only
+// thing that distinguishes it from a working network is opening a socket to
+// something outside and finding nothing there.
+//
+// The DNS step is separate again, and deliberately. A captive portal commonly
+// answers DHCP and then answers DNS itself, with an intercept page instead of an
+// address — so a TCP connect to a literal IP can succeed while every name fails.
+// Merging the two would report "no internet" for both and send somebody to sign
+// in to a guest portal that was never the problem.
+//
+// NOT PERFORMED IN PIECES. Each probe gets its own deadline and they run in
+// order, so the first failure is the one reported rather than whichever happened
+// to fail last.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** How long any one probe may take before it counts as a failure. */
+constexpr uint16_t PROBE_TIMEOUT_MS = 4000;
+
+/**
+ * Can we open a TCP connection to a literal address?
+ *
+ * A LITERAL, not a name — that is the whole test. Resolving a name first would
+ * make this depend on DNS, which is the step after it, and a device with broken
+ * DNS would report "no route out" and send somebody to sign in to a guest portal
+ * that was never the problem.
+ *
+ * 1.1.1.1:53 is used rather than an HTTP port so the test does not depend on
+ * anything the server runs. Port 53 is open on essentially every network on earth,
+ * which is the property wanted from a canary.
+ */
+bool route_exists() {
+  const struct {
+    const char *ip;
+    uint16_t port;
+  } CANARY{"1.1.1.1", 53};
+
+  struct sockaddr_in addr {};
+  addr.sin_family = AF_INET;
+  addr.sin_port = htons(CANARY.port);
+  if (inet_pton(AF_INET, CANARY.ip, &addr.sin_addr) != 1)
+    return false;
+
+  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0)
+    return false;
+
+  // Non-blocking, because a connect() to a black hole otherwise sits in the
+  // kernel for the TCP retransmit timeout — which is minutes, and would hold the
+  // main loop long enough to trip the task watchdog.
+  int flags = ::fcntl(fd, F_GETFL, 0);
+  ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+  bool ok = false;
+  if (::connect(fd, reinterpret_cast<struct sockaddr *>(&addr), sizeof(addr)) == 0) {
+    ok = true;
+  } else if (errno == EINPROGRESS) {
+    fd_set wr;
+    FD_ZERO(&wr);
+    FD_SET(fd, &wr);
+    struct timeval tv{PROBE_TIMEOUT_MS / 1000, (PROBE_TIMEOUT_MS % 1000) * 1000};
+    ok = ::select(fd + 1, nullptr, &wr, nullptr, &tv) > 0;
+  }
+
+  ::close(fd);
+  return ok;
+}
+
+/** The bare host and port from a URL, for the resolver and the station probe. */
+void split_url(const std::string &url, std::string *host, uint16_t *port) {
+  // The URL carries a scheme and a path; the resolver wants a bare host. Take
+  // the authority and stop at the first '/', '?' or '#'.
+  std::string h = url;
+  const size_t scheme = h.find("://");
+  const bool https = scheme != std::string::npos && h.compare(scheme, 6, "https:") == 0;
+  if (scheme != std::string::npos)
+    h = h.substr(scheme + 3);
+  const size_t cut = h.find_first_of("/?#");
+  if (cut != std::string::npos)
+    h = h.substr(0, cut);
+
+  // An explicit port wins over the scheme's default.
+  uint16_t p = https ? 443 : 80;
+  const size_t colon = h.rfind(':');
+  if (colon != std::string::npos && h.find(']') == std::string::npos) {
+    p = (uint16_t) atoi(h.c_str() + colon + 1);
+    h = h.substr(0, colon);
+  }
+
+  *host = h;
+  *port = p;
+}
+
+/** Resolve to an IPv4 address. Returns false when the name does not resolve. */
+bool resolve_host(const std::string &host, struct in_addr *out) {
+  if (host.empty())
+    return false;
+
+  struct addrinfo hints {};
+  hints.ai_family = AF_INET;  // A record only. AAAA on a v4-only radio is a false negative.
+  hints.ai_socktype = SOCK_STREAM;
+
+  struct addrinfo *res = nullptr;
+  const int rc = ::getaddrinfo(host.c_str(), nullptr, &hints, &res);
+  if (rc != 0 || res == nullptr)
+    return false;
+  *out = ((struct sockaddr_in *) res->ai_addr)->sin_addr;
+  ::freeaddrinfo(res);
+  return true;
+}
+
+/** Can we open a TCP connection to an address we already hold? */
+bool connects_to(struct in_addr addr, uint16_t port) {
+  struct sockaddr_in sa {};
+  sa.sin_family = AF_INET;
+  sa.sin_port = htons(port);
+  sa.sin_addr = addr;
+
+  int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+  if (fd < 0)
+    return false;
+
+  int flags = ::fcntl(fd, F_GETFL, 0);
+  ::fcntl(fd, F_SETFL, flags | O_NONBLOCK);
+
+  bool ok = false;
+  if (::connect(fd, reinterpret_cast<struct sockaddr *>(&sa), sizeof(sa)) == 0) {
+    ok = true;
+  } else if (errno == EINPROGRESS) {
+    fd_set wr;
+    FD_ZERO(&wr);
+    FD_SET(fd, &wr);
+    struct timeval tv{PROBE_TIMEOUT_MS / 1000, (PROBE_TIMEOUT_MS % 1000) * 1000};
+    ok = ::select(fd + 1, nullptr, &wr, nullptr, &tv) > 0;
+  }
+
+  ::close(fd);
+  return ok;
+}
+
+}  // namespace
+
+SubwaveDisplay::Connectivity SubwaveDisplay::check_connectivity() {
+  // 1. THE LINK. Without an association there is nothing else to test, and every
+  //    later probe would report a misleading failure.
+  if (esphome::wifi::global_wifi_component == nullptr || !esphome::wifi::global_wifi_component->is_connected()) {
+    this->connectivity_ = Connectivity::NO_WIFI;
+    ESP_LOGW(TAG, "Connectivity: no association.");
+    return this->connectivity_;
+  }
+
+  // 2. THE ROUTE. A literal address, because this step must not depend on DNS.
+  if (!route_exists()) {
+    this->connectivity_ = Connectivity::NO_ROUTE;
+    ESP_LOGW(TAG, "Connectivity: associated, but nothing gets out. Guest network or captive portal.");
+    return this->connectivity_;
+  }
+
+  // 3. THE NAME. The route works, so this is DNS and nothing else.
+  std::string host;
+  uint16_t port = 443;
+  split_url(this->server_url_, &host, &port);
+
+  struct in_addr station_addr {};
+  if (host.empty() || !resolve_host(host, &station_addr)) {
+    this->connectivity_ = Connectivity::NO_DNS;
+    ESP_LOGW(TAG, "Connectivity: the route works but '%s' does not resolve. Station URL is '%s'.", host.c_str(),
+             this->server_url_.c_str());
+    return this->connectivity_;
+  }
+
+  // 4. THE STATION. Resolving is not reaching — the name can point somewhere the
+  //    device cannot get to, and a misconfigured server address looks exactly
+  //    like a healthy network from here.
+  //
+  //    PROBED, NOT READ FROM server_reachable_. That flag is set by the API
+  //    client's responses, so on a screen that has not yet claimed — or one whose
+  //    requests have not completed — it is still false, and reading it reported
+  //    a working station as unreachable. The first version of this ladder did
+  //    exactly that and told an unprovisioned screen to go and check its station
+  //    address, which is not a thing a wall screen can do. The TCP connect is to
+  //    the station's own host and port, which needs no token and no prior state.
+  if (!connects_to(station_addr, port)) {
+    this->connectivity_ = Connectivity::NO_SERVER;
+    ESP_LOGW(TAG, "Connectivity: the internet works, the station's name resolves, but %s:%u does not answer.",
+             host.c_str(), (unsigned) port);
+    return this->connectivity_;
+  }
+
+  this->connectivity_ = Connectivity::OK;
+  ESP_LOGI(TAG, "Connectivity: all four steps pass. Not asking for setup.");
+  return this->connectivity_;
+}
+
+const char *SubwaveDisplay::connectivity_message(Connectivity c) const {
+  switch (c) {
+    case Connectivity::OK:
+      return "";
+    case Connectivity::NO_WIFI:
+      // "That password did not work" is right for a re-provision and wrong for a
+      // first boot, and this screen cannot tell those apart — so it says the
+      // thing that is true either way and names the next action.
+      return "This screen is not on your network. Pick one below and enter its password.";
+    case Connectivity::NO_ROUTE:
+      return "Connected, but nothing gets out. A guest network needs a sign-in page — "
+             "open the page your network opened, sign in, then try again.";
+    case Connectivity::NO_DNS:
+      return "Connected, but names do not resolve. Your network may need a sign-in page "
+             "before it will let this screen online.";
+    case Connectivity::NO_SERVER:
+      return "Connected to the internet, but this screen cannot reach your station. "
+             "Check the station address in the app.";
+    case Connectivity::UNKNOWN:
+    default:
+      return "Still checking your network.";
+  }
 }
 
 }  // namespace subwave_display

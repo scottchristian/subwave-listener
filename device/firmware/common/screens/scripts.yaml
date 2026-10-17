@@ -244,16 +244,14 @@ script:
   # it. Nothing else on the screen opens it, because there is nothing else that
   # needs it.
   #
-  # THE FIELD MOVES UP RATHER THAN THE KEYBOARD MOVING DOWN. The keyboard has to
-  # cover the bottom of the screen — at arm's length on a wall, a keyboard
-  # squeezed beside a list leaves neither one usable. So the keyboard rises over
-  # the bottom, the field steps up to the row above it, and the two controls that
-  # shared that row are hidden rather than left buried underneath.
-  #
-  # The y values are duplicated between setup.yaml and here. That is the cost of
-  # a panel this full; the alternative is a layout pass in C++ for two numbers.
-  # 468 is above the keyboard's top edge of 520, which is the only constraint
-  # that actually matters. check:screen-layout asserts both files agree.
+  # NOTHING MOVES WHEN IT OPENS. The keyboard sits UNDER the password field, so
+  # opening it only changes which widgets are visible. An earlier version raised
+  # the field into the row above the keyboard, which needed the field's caption,
+  # the Connect button and two hidden controls all to move together — and they
+  # collided twice anyway. Neither collision was detectable by an assertion:
+  # every widget was still inside the panel and nothing overlapped anything
+  # still visible. They were found by drawing the screen (npm run render:setup),
+  # which is the argument for drawing it.
   # ---------------------------------------------------------------------------
   - id: wifi_keyboard_toggle
     mode: single
@@ -262,10 +260,28 @@ script:
           auto *kb = id(wifi_keyboard)->obj;
           bool opening = lv_obj_has_flag(kb, LV_OBJ_FLAG_HIDDEN);
 
-          // The controls that share the field's raised row. They are hidden while
-          // the keyboard is up rather than left underneath it: by the time anyone
-          // is typing a password they have already chosen a network, and the
-          // field needs somewhere to go that is not on top of the picker.
+          // NOTHING MOVES. THIS IS THE SECOND TIME, AND THE FIRST TIME LOST.
+          //
+          // The first version raised the password field into the row above the
+          // keyboard. That needed three things to go right at once: the field's
+          // caption travelled with it, the Connect button travelled with it, and
+          // the two controls the field landed on were hidden. All three were
+          // implemented and all three were still wrong — the caption landed on
+          // the section heading, and two of the four character-set buttons
+          // landed underneath Connect.
+          //
+          // NEITHER COLLISION IS DETECTABLE BY AN ASSERTION. Every widget was
+          // still inside the panel; nothing overlapped anything still visible.
+          // They were found by drawing the screen, which is the whole argument
+          // for drawing it.
+          //
+          // A 1200x180 keyboard tucked UNDER the password field does the same
+          // job with none of that: nothing is raised, nothing travels, nothing
+          // is covered, and no caption can end up above its own box.
+          //
+          // What is hidden is the two things that act on a FINISHED password —
+          // Connect and the status line. Both share the field's row, which is
+          // where the character-set buttons go while typing.
           //
           // The type is spelled out rather than `auto`, and not because the two
           // differ — they are both `lv_obj_t *`. It is that `auto *row[] = {...}`
@@ -274,27 +290,24 @@ script:
           // braced list. Declaring `lv_obj_t *` is fine even though the type is
           // incomplete: a pointer to an incomplete type may be declared, just
           // not dereferenced.
-          lv_obj_t *row[] = {id(setup_scan_button), id(wifi_network_dropdown)->obj};
-          lv_obj_t *keys[] = {id(wifi_mode_lower), id(wifi_mode_upper), id(wifi_mode_special),
-                              id(wifi_mode_number), id(wifi_keyboard_done)};
+          lv_obj_t *hidden_while_typing[] = {id(setup_connect_button), id(wifi_status)};
+          lv_obj_t *shown_while_typing[] = {id(wifi_mode_lower), id(wifi_mode_upper), id(wifi_mode_special),
+                                   id(wifi_mode_number), id(wifi_keyboard_done)};
 
           if (opening) {
             lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
-            for (auto *o : row)
+            for (auto *o : hidden_while_typing)
               lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
-            for (auto *o : keys)
+            for (auto *o : shown_while_typing)
               lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_y(id(wifi_password), 468);
           } else {
             lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
-            for (auto *o : row)
+            for (auto *o : hidden_while_typing)
               lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
-            for (auto *o : keys)
+            for (auto *o : shown_while_typing)
               lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_y(id(wifi_password), 568);
           }
           lv_obj_invalidate(kb);
-          lv_obj_invalidate(id(wifi_password));
 
   # Switch the keyboard's character set.
   #
@@ -343,9 +356,128 @@ script:
             lv_label_set_text(id(wifi_status), "No network selected.");
             return;
           }
-          wifi::global_wifi_component->save_wifi_sta(ssid, psk == nullptr ? "" : psk);
+          if (psk == nullptr)
+            psk = "";
           lv_label_set_text(id(wifi_status), ("Connecting to " + ssid + "...").c_str());
+
+          // NO REBOOT ON THE HAPPY PATH. This is what the button used to do, and
+          // it was wrong in the way a wall-mounted screen makes wrong things
+          // obvious: tapping Connect blanked the panel for four seconds and came
+          // back — including on every FAILED attempt, which is exactly when
+          // somebody is standing in front of it wondering what they did.
+          //
+          // The reboot was never necessary. save_wifi_sta already does both jobs
+          // that matter: it writes the credentials to flash (pref_.save followed
+          // by global_preferences->sync) and it registers them with the runtime
+          // network list via set_sta(). All that is left is to start the
+          // association, and retry_connect() does that through
+          // start_connecting(), which moves the state machine to
+          // STA_CONNECTING and begins associating on the next loop.
+          //
+          // retry_connect() is called explicitly because save_wifi_sta's own
+          // connect_soon() only fires from COOLDOWN, and this device sits in
+          // WIFI_COMPONENT_STATE_AP — no configured station network, because it
+          // has not been provisioned yet. From AP it is a no-op, which is the
+          // same reason the original code rebooted instead of connecting.
+          auto *wifi = wifi::global_wifi_component;
+          wifi->save_wifi_sta(ssid, psk);
+          wifi->retry_connect();
+          wifi_connect_watchdog->execute();
+
+  # The failure path, and why a reboot is still the right answer THERE.
+  #
+  # THE ACCESS POINT CANNOT COME BACK BY ITSELF. WiFiComponent::loop() restarts
+  # the fallback access point under `if (this->has_ap() && !this->ap_setup_)` —
+  # but ap_setup_ is assigned exactly once in the entire component, in
+  # setup_ap_config_(), and is never cleared: not on WIFI_EVENT_AP_STOP, not
+  # anywhere else. So that branch can never be true again after first setup, and
+  # the 90-second ap_timeout fallback is unreachable on this build.
+  #
+  # That matters because starting a connection DROPS the access point:
+  # wifi_sta_connect_ calls wifi_mode_(true, {}), which is STA-only. A wrong
+  # password therefore leaves the screen with no network AND no access point,
+  # retrying in silence, until somebody physically power-cycles a panel bolted to
+  # a wall.
+  #
+  # A reboot is not a workaround here; it IS the recovery. At boot,
+  # setup_wifi_ap() starts the access point unconditionally and only declines to
+  # leave the AP state when no station network is configured — so restarting puts
+  # the wizard back exactly where it was, with the bad credentials still on flash
+  # for the person to correct from the screen or the wizard.
+  #
+  # 45 seconds is longer than a healthy association takes on any ordinary network
+  # and short enough that somebody watching the screen sees it resolve one way or
+  # the other rather than standing in front of it.
+  - id: wifi_connect_watchdog
+    mode: restart
+    then:
+      - delay: 45s
+      - lambda: |-
+          if (wifi::global_wifi_component->is_connected())
+            return;
+          ESP_LOGW("subwave.setup",
+                   "No association after 45s. Restarting so the setup access point comes back.");
+          lv_label_set_text(id(wifi_status), "Could not join that network. Restarting...");
+          delay(1500);
           App.safe_reboot();
+
+  # ---------------------------------------------------------------------------
+  # The connectivity ladder, run ONCE at boot.
+  #
+  # THE POINT OF THIS SCRIPT IS THAT IT CAN DO NOTHING. A screen whose WiFi works
+  # comes up, checks, finds nothing wrong, and goes about its business. Setup is
+  # demanded only when a step actually fails — which is the whole reason the
+  # ladder exists rather than a single "is it connected" boolean.
+  #
+  # WHY IT RUNS ONCE. Re-running it means a cafe router that stops routing at 4pm
+  # turns a wall screen into a Wi-Fi prompt with no warning, for a problem the
+  # person standing there cannot fix. The station's own error state is the right
+  # thing to show when the network drops mid-session, and the person who CAN fix
+  # it should be the one who chose the network — which is what the Settings row
+  # is for.
+  #
+  # WHY 18 SECONDS. Long enough for an association to have settled and for the
+  # server to have answered at least one heartbeat, so step four has something to
+  # judge. Short enough that nobody notices they were waiting. The ladder blocks
+  # for a few seconds itself; that is a script action, not the main loop.
+  #
+  # The quiet line on the now-playing window says what is being checked while
+  # this runs, so the screen is doing something legible rather than sitting blank.
+  # ---------------------------------------------------------------------------
+  - id: check_connectivity
+    mode: single
+    then:
+      - delay: 18s
+      - lambda: |-
+          auto *c = id(display_client);
+          auto result = c->check_connectivity();
+          const char *message = c->connectivity_message(result);
+
+          if (result == subwave_display::SubwaveDisplay::Connectivity::OK) {
+            lv_label_set_text(id(status_line), "");
+            ESP_LOGI("subwave.setup", "Network is fine. Not asking for setup.");
+            return;
+          }
+
+          // NO_SERVER is the one failure that setup cannot fix. The network is
+          // fine and the station is not answering — a server address problem, and
+          // the address is not editable from a wall screen. Showing a Wi-Fi picker
+          // would send somebody to re-enter a password that was never wrong.
+          //
+          // So this branch says what is wrong on the main window and stops. It is
+          // not "setup is needed", and logging that was the first version's
+          // mistake: the log then claimed a Wi-Fi prompt was on its way when none
+          // was, which is the kind of thing that sends you looking for a bug that
+          // is not there.
+          if (result == subwave_display::SubwaveDisplay::Connectivity::NO_SERVER) {
+            lv_label_set_text(id(status_line), message);
+            ESP_LOGW("subwave.setup", "Staying on the main screen. %s", message);
+            return;
+          }
+
+          ESP_LOGW("subwave.setup", "Setup IS needed: %s", message);
+          lv_label_set_text(id(status_line), "");
+          window_go->execute(3);
 
   # ---------------------------------------------------------------------------
   # Window switching (moved from window.yaml to avoid duplicate script: key).

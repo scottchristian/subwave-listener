@@ -32,6 +32,10 @@ script:
       # diagnostic that existed only to prove the panel could be switched on.
       - lambda: |-
           ESP_LOGI("subwave.ui", "panel awake; binding widgets");
+          // The only thing on the glass until the ladder finishes. Said BEFORE the
+          // check rather than only after it fails, so a screen that is working
+          // shows it and watches it clear away, rather than never showing anything.
+          lv_label_set_text(id(status_line), "Checking your network...");
       - lambda: |-
           using subwave_display::bind_object;
           using subwave_display::bind_int;
@@ -54,6 +58,7 @@ script:
           bind_object("count_listening_label", id(count_listening_label));
           bind_object("btn_skip", id(btn_skip));
           bind_object("btn_skip_label", id(btn_skip_label));
+          bind_object("status_line", id(status_line));
 
           // ---- ----------------------------------------------------- the show list
           bind_object("live_lamp_shows", id(live_lamp_shows));
