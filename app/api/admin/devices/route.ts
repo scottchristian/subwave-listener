@@ -72,7 +72,17 @@ export async function POST(req: NextRequest) {
   });
 
   const claim = await mintClaimToken(row);
-  const serverUrl = new URL(req.url).origin;
+  // The device connects to THIS host from out in the world, so the URL has to
+  // be the public one, not the loopback address the Next.js server hears on
+  // internally (which is what `new URL(req.url).origin` gave: localhost:3000,
+  // and a firmware built with that URL could never reach the station). The
+  // public origin is rebuilt from the forwarded headers, the same way the
+  // Sub/Wave controller does it for its own tune-in URLs.
+  const forwardedProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+  const forwardedHost = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+  const host = forwardedHost || req.headers.get("host") || "localhost:3000";
+  const proto = forwardedProto || (req.url.startsWith("https") ? "https" : "http");
+  const serverUrl = `${proto}://${host}`;
 
   // Quoted values: a cuid or a base64url token containing a colon will otherwise
   // produce a substitutions file that does not parse, and the failure surfaces as
