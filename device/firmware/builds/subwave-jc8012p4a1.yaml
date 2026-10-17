@@ -1,0 +1,244 @@
+# The Guition ESP32-P4 JC8012P4A1, running SUB/WAVE.
+#
+# Built PER DEVICE, not once per station: `device_id` and `claim_token` are
+# compiled in, so the binary a screen flashes is the binary that screen can
+# claim with. There is no second credential part and no partition table to get
+# the offset of wrong — which is what buying a slower build actually bought.
+#
+# server_url is the app's OWN public URL. Never the station backend: a screen
+# knows exactly one host, and everything it needs is proxied. See
+# device/api.md for the domain policy, and check-device-hosts.mts for the gate
+# that keeps a foreign hostname out of this file.
+#
+#   esphome compile \
+#     -s device_id '<cuid>' -s claim_token '<token>' \
+#     -s server_url 'https://causewayfm.com' -s firmware_version '1.0.0' \
+#     device/firmware/builds/subwave-jc8012p4a1.yaml
+#
+# Output to upload from: .esphome/build/subwave-jc8012p4a1/.pioenvs/
+#   subwave-jc8012p4a1.factory.bin
+substitutions:
+  name: subwave-screen
+  friendly_name: SUB/WAVE Screen
+  device_id: "unprovisioned"
+  claim_token: "unprovisioned"
+  server_url: "https://causewayfm.com"
+  firmware_version: "1.5.0"
+
+  # The panel is natively 800x1280 portrait and driven as 1280x800 landscape.
+  # Getting this backwards is the single most common mistake with this board.
+  display_rotation: "90"
+  # Which file defines the panel. Only the panel block moves; touch, LVGL and the
+  # whole widget tree refer to `tft_display` and are unaffected.
+  #
+  # panel.yaml         - ESPHome's stock JC8012P4A1 model.
+  # panel_vendor.yaml  - model: CUSTOM with the vendor's own 198-command sequence.
+  #
+  # Kept as a substitution so that changing which panel this build targets is a
+  # one-token edit here rather than an edit to a file every other part of the
+  # display setup includes.
+  #
+  # EDIT THIS LINE to switch. NOT `-s panel_include=...` on the command
+  # line: ESPHome resolves `!include ${panel_include}` while loading YAML,
+  # before CLI substitution overrides are applied. The override arrives too
+  # late and the stock model is built silently - no warning, no error.
+  # Verified, and worth writing down precisely because it fails quietly.
+  panel_include: panel_vendor_new.yaml
+  artwork_size: "640"
+  art_buffer_bytes: "65536"
+  http_timeout: "12s"
+  setup_ap_ssid: "SUBWAVE-SCREEN"
+  # Setup AP password — auto-generated, easy to type, different per device.
+  # Regenerate with: python3 device/firmware/tools/gen_setup_password.py
+  setup_ap_password: "D2P2K7FF"
+
+esphome:
+  name: ${name}
+  friendly_name: ${friendly_name}
+  # The panel id is compiled in and what identifies this screen to the station.
+  # It is minted at first boot and held in flash, not built in — the build only
+  # carries the claim token, which the station swaps for a long-lived one.
+  project:
+    name: causewayfm.subwave-screen
+    version: "${firmware_version}"
+  on_boot:
+    priority: -100
+    then:
+      # Just bind widgets - let the page load naturally. window_0 is first child of window_stack so visible by default.
+      # Setup screen visibility is handled by the display client based on claimed() state.
+      - script.execute: bind_widgets
+      # Scan on boot and print every result to the console.
+      #
+      # Not a convenience. A screen that shows an empty picker is a screen you
+      # cannot diagnose over the air, and the one question that always needs
+      # answering is whether the radio reported nothing or reported something
+      # the list threw away. The log answers that; the on-screen list alone
+      # cannot, because both cases look identical on the glass.
+      - script.execute: wifi_scan_log
+
+packages:
+  hardware: !include ../common/hardware.yaml
+  display: !include ../common/display.yaml
+  network: !include ../common/network.yaml
+  theme: !include ../common/theme.yaml
+  # The chrome AND all four window slots.
+  window_chrome: !include ../common/screens/window.yaml
+  screen_scripts: !include ../common/screens/scripts.yaml
+  bindings: !include ../common/binding.yaml
+  # now.yaml / shows.yaml / settings.yaml / setup.yaml are NOT listed here. They
+  # are bare lists of widgets included by window.yaml, because a widget's parent
+  # is now the `widgets:` list it sits in and only the enclosing file can supply
+  # that. Including them here as well would put every widget on the page twice.
+
+external_components:
+  - source:
+      type: local
+      # `..`, not `../subwave_display`. ESPHome treats this as the ROOT it searches
+      # and appends the component name itself, so pointing it straight at the
+      # component directory makes it look for subwave_display/subwave_display/.
+      path: ..
+    components: [subwave_display, subwave_setup_web]
+
+  # The GSL3680 touch controller driver is not in ESPHome core. It is taken from
+  # the reference project for this panel, which is the only thing known to drive
+  # this screen.
+  #
+  # PINNED TO A COMMIT, not to `main` the way the reference uses it. A wall screen
+  # is flashed once and then runs unattended for months; a build that resolves
+  # "whatever main was at the time" means the binary on the wall is not
+  # reproducible from the source in this repo, and a driver change lands on a
+  # device nobody is standing next to. The pin is deliberate — bump it knowingly.
+  - source:
+      type: git
+      url: https://github.com/jtenniswood/esphome-media-player
+      ref: 8ab172b688861893db0cedc93abdb150932eccfc
+    components: [gsl3680]
+
+subwave_display:
+  id: display_client
+  http_request_id: shared_http
+  server_url: ${server_url}
+  device_id: ${device_id}
+  claim_token: ${claim_token}
+  setup_ap_ssid: ${setup_ap_ssid}
+  artwork_size: ${artwork_size}
+  art_buffer_bytes: ${art_buffer_bytes}
+
+# Declared TOP-LEVEL, not nested inside subwave_display.
+#
+# subwave_display registers itself as an http_request consumer, but that only
+# makes it a USER of the component — ESPHome still requires `http_request:` to be
+# present in the config for anything else to depend on it, and `online_image`
+# does. Nested under subwave_display the key is silently ignored and the build
+# stops at "Component online_image requires component http_request".
+#
+# The single 12s timeout serves the artwork, the avatars, the state poll and the
+# captive-portal fetches, so there is exactly one number to reason about when a
+# cafe wifi is slow rather than down.
+#
+# NAMED, and every online_image points at it by name, because there are in fact
+# TWO HttpRequestComponents in this firmware: this one, and subwave_display, which
+# registers itself as one. Without an explicit id the artwork fetches fail
+# validation with "Too many candidates found for 'http_request_id'" — which is a
+# confusing way to be told that ESPHome will not guess.
+http_request:
+  id: shared_http
+  timeout: ${http_timeout}
+  verify_ssl: true
+
+wifi:
+  ap:
+    ssid: ${setup_ap_ssid}
+    password: ${setup_ap_password}
+    # WPA2 password, auto-generated per device at build time. Displayed on the
+    # screen and in the QR code so a phone can join without typing.
+    # Regenerate with: python3 device/firmware/tools/gen_setup_password.py
+  reboot_timeout: 15min
+
+# `captive_portal:` IS DELIBERATELY ABSENT.
+#
+# It cannot be configured. ESPHome's CaptivePortal::canHandle() is
+#   `return this->active_ && request->method() == HTTP_GET;`
+# — it claims EVERY GET on the device, so it cannot be made to yield "/" to
+# anything else — and the page it serves is ESPHome's, which is the specific
+# thing this project set out to replace.
+#
+# `subwave_setup_web` below takes over the routes instead: "/" and the captive
+# detection probes, which is what makes a phone pop its "Sign in to Wi-Fi?"
+# sheet. Everything else (dashboard, REST API, /update for OTA) still goes to
+# `web_server`.
+subwave_setup_web:
+  id: setup_web
+  ap_ssid: ${setup_ap_ssid}
+  station_name: "SUB/WAVE"
+  # Fills the on-screen network list the moment a scan lands, rather than on a
+  # timer. The list is the only place someone at the wall can see the result.
+  on_scan_script: wifi_scan_landed
+
+logger:
+  level: DEBUG
+  hardware_uart: UART0
+  baud_rate: 115200
+
+api:
+  # No Home Assistant. This screen is a thin client of the station, not of a
+  # home automation hub, and nothing about the station's state should be able to
+  # depend on one being present.
+
+# Safe mode disabled to prevent reboot loops on display-heavy builds.
+# Reference: esphome-media-player/common/device/base.yaml
+safe_mode:
+  disabled: true
+
+ota:
+  # `esphome`, not `esp32_ota` — that platform was removed upstream and this
+  # firmware targets 2026.7. On esp-idf this is the IDF OTA path, not the
+  # Arduino one, which is the point: the screen is a wall device and updating it
+  # must not mean carrying a USB cable across the room.
+  - platform: esphome
+    on_begin:
+      # Flash state must hit the flash chip BEFORE the OTA overwrites it. Skipping
+      # this rolls the screen back to its previous settings after every update,
+      # which on a provisioned screen means an unprovisioned one.
+      - lambda: global_preferences->sync();
+
+# ESP32-C6 coprocessor firmware update.
+# The C6 runs the WiFi/BT stack and must be flashed with network_adapter_esp32c6.bin.
+# This component checks at boot and updates the C6 if the firmware differs.
+# Reference: esphome-media-player/builds/guition-esp32-p4-jc8012p4a1.factory.yaml
+#
+# `network_adapter_esp32c6.bin` MUST sit next to this file and it is a 1.1 MB
+# binary, so it is worth being deliberate about it: it is committed rather than
+# fetched, because the build command fetches nothing, and a build that silently
+# depends on a file someone happened to have is not reproducible. That is also
+# what the reference project does — its own board doc records hitting exactly this
+# error ("missing network_adapter_esp32c6.bin") because the file is not tracked
+# there either. Same sha256 as the reference, so the two builds match.
+update:
+  - platform: esp32_hosted
+    id: c6_firmware_update
+    type: embedded
+    path: network_adapter_esp32c6.bin
+    sha256: "3ccfbc4feb0be29c7f5dbe50b0c5a7f0862f0b0c30fb28e5f5a4e1c2891c53f4"
+
+globals:
+  - id: c6_boot_checked
+    type: bool
+    initial_value: 'false'
+
+interval:
+  - interval: 10s
+    then:
+      - if:
+          condition:
+            lambda: 'return !id(c6_boot_checked);'
+          then:
+            - lambda: 'id(c6_boot_checked) = true;'
+            - if:
+                condition:
+                  update.is_available: c6_firmware_update
+                then:
+                  - logger.log: "Updating ESP32-C6 co-processor firmware..."
+                  - update.perform: c6_firmware_update
+                  - delay: 5s
+                  - lambda: 'App.safe_reboot();'

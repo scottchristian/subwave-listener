@@ -1,8 +1,12 @@
 # SUB/WAVE Screen — device firmware doc
 
 This file is the working knowledge base for the Guition ESP32-P4 JC8012P4A1 wall
-screen running SUB/WAVE. It is NOT committed to git. It exists so future agents
-don't repeat the investigation that produced it.
+screen running SUB/WAVE. It is committed so future agents don't repeat the
+investigation that produced it.
+
+Two things in here are load-bearing and were expensive to find: **the panel
+revision mismatch** below, and **the WiFi scan fault** further down. Both
+present as a clean boot and an empty screen.
 
 ## What this device is
 
@@ -34,7 +38,10 @@ don't repeat the investigation that produced it.
 | `device/firmware/common/jc8012p4a1_init_new.yaml` | New revision vendor init sequence, 204 commands. |
 | `device/firmware/tools/gen_jc8012p4a1_init.py` | Generator: parses both vendor sequences out of `jc8012p4a1.cc`, cross-checks against ESPHome's model list, emits YAML. |
 | `device/firmware/common/web_setup.yaml` | DELETED. Was the failed inline handler approach (fabricated API names, never worked). Do not recreate. |
-| `device/firmware/subwave_setup_web/` | Custom web wizard component (`__init__.py`, `setup_web.h`, `setup_web.cpp`). Serves the setup page, captive-detection probes, `/scan`, `/save`. |
+| `device/firmware/subwave_setup_web/` | Custom web wizard component (`__init__.py`, `setup_web.h`, `setup_web.cpp`). Serves the setup page, captive-detection probes, `/scan`, `/save`. Also owns the WiFi scan: `request_scan()`, `log_radio_state()`, and the `WiFiScanResultsListener` that fills the on-screen list. |
+| `device/firmware/tools/capture_log.py` | Boot-log capture over the CH340. Handles the auto-download DTR/RTS latch, which is the thing you will otherwise get wrong. |
+| `device/firmware/tools/gen_setup_password.py` | Generates the per-device AP password into `common/ap_password.{yaml,txt}`. |
+| `device/firmware/common/screens/scripts.yaml` | Screen scripts and globals, including the WiFi scan/populate/connect path and the keyboard toggle. |
 | `device/firmware/common/binding.yaml` | LVGL widget bindings, runs after LVGL tree exists (1s delay). |
 | `device/firmware/common/screens/*.yaml` | Window bodies (now/shows/settings/setup), bare widget lists. |
 | `device/firmware/subwave_display/` | HTTP client / LVGL UI bindings. |
@@ -65,7 +72,7 @@ wasn't.
 
 **1.1.0 is running `panel_vendor_new.yaml`:** `model: CUSTOM`, the new
 revision's 204-command sequence at 70 MHz, vsync back 10 / front 30. The panel
-now renders the setup screen, QR code, and URL at `http://192.168.4.1`.
+now renders the setup screen and QR code.
 
 Never change `panel_include` or the vendor sequence files without regenerating
 and re-running `scripts/check-panel-init.mts`. The two files must stay in
@@ -75,20 +82,35 @@ delays, includes command `0x4A`); `panel_vendor_new.yaml` includes
 
 ## Flashing
 
-Native USB1 port: `/dev/cu.usbmodem1101`. Baud 921600. The port **vanishes
-mid-session** and needs a physical unplug/replug. The CH340 bridge
-`/dev/cu.usbserial-214220` wedges on write — do not use it for flashing.
+**FLASH ON THE NATIVE USB PORT, READ LOGS ON THE CH340.** The two ports are not
+interchangeable and using either for the wrong job wastes a cycle:
 
+| Port | Job | Why |
+|---|---|---|
+| `/dev/cu.usbmodem*` (native USB1) | **flash only** | Fast (2.7 MB in ~43 s) and reliable, but the device RE-ENUMERATES on every reset, so macOS hands it a new number. It is usually gone by the time you go to read the log. |
+| `/dev/cu.usbserial-*` (CH340) | **log capture only** | Stable port. But it WEDGES on write — reliably around 67% of the image — and never recovers without a physical replug. |
+
+If the native port is missing, pulse the CH340's DTR/RTS to reset the chip and
+wait ~5s for the native port to reappear:
+```python
+import serial, time
+s = serial.Serial('/dev/cu.usbserial-214220', 115200, timeout=0.3)
+s.dtr = False; s.rts = True; time.sleep(0.2); s.dtr = True; s.rts = False
+time.sleep(3); s.close()
 ```
-python3 -m esptool --chip esp32p4 -p /dev/cu.usbmodem1101 --baud 921600 \
+
+Flash (460800 works reliably; 921600 has also succeeded but is no faster):
+```
+python3 -m esptool --chip esp32p4 -p /dev/cu.usbmodem1101 --baud 460800 \
   --before default_reset --after hard_reset write_flash -z \
   --flash_mode dio --flash_freq 40m --flash_size 16MB \
-  0x0 /Users/scott/GitHub/subwave-listener/device/firmware/builds/.esphome/build/subwave-screen/build/firmware.factory.bin
+  0x0 builds/.esphome/build/subwave-screen/build/firmware.factory.bin
 ```
 
-The trailing `hard_reset` frequently throws `OSError: Device not configured`
-after the hash check — **the write already succeeded**. `Hash of data verified.`
-is the real signal.
+**`Hash of data verified.` is the only success signal.** After it you may get
+`termios.error: (6, 'Device not configured')` or `OSError: Device not
+configured` from the trailing `hard_reset` — that is the port disappearing under
+the tool as the chip resets. The write already succeeded.
 
 Build (never touch the binary by hand):
 ```
@@ -99,17 +121,17 @@ Always bump `firmware_version` in `builds/subwave-jc8012p4a1.yaml` before
 flashing, so the boot log proves a new image landed:
 `[app:153]: Project causewayfm.subwave-screen version X.Y.Z`
 
-Log capture (non-TTY environment):
+### Log capture
+
+Use the script — the DTR/RTS lines are the auto-download circuit, not a reset,
+and getting them backwards produces four lines of ROM output and silence:
+
 ```
-python3 -c "
-import serial, time
-ser = serial.Serial('/dev/cu.usbserial-214220', 115200, timeout=1)
-time.sleep(1)
-ser.setDTR(True); ser.setRTS(True); time.sleep(0.15)
-ser.setDTR(False); ser.setRTS(False); time.sleep(4)
-# read pyserial loop ...
-"
+python3 device/firmware/tools/capture_log.py 45
 ```
+
+Asserting DTR and RTS puts the chip in ROM download mode (`waiting for
+download`); deasserting both releases the strap and lets the app run.
 
 ## Panel timing specifics (the other half of the root cause)
 
@@ -132,21 +154,25 @@ the only correct way to supply a whole sequence.
 `init_sequence` delays require an explicit unit: `- delay 120` fails
 validation; `- delay 120ms` works. `map_sequence` rejects bare numbers.
 
-## Web setup wizard
+The QR code on the setup screen encodes WiFi connection info
+(`WIFI:T:WPA;S:SUBWAVE-SCREEN;P:<password>;;`). A phone scanning it joins the
+access point directly using WPA2; the captive portal serves the setup wizard
+automatically, like a public Wi-Fi login portal.
 
-ESPHome's captive portal was removed entirely:
-```cpp
-CaptivePortal::canHandle() = return active_ && method == HTTP_GET;
-```
-It claims every GET on the device and cannot yield `/`. The custom component
-`subwave_setup_web` takes `/`, `/scan`, `/save` and the captive-detection
-probes (`/generate_204`, `/hotspot-detect.html`, etc.). Everything else
-(`/update`, `/api`, dashboard) stays with `web_server`.
+The AP uses a WPA2 password, auto-generated per device at build time
+(`device/firmware/tools/gen_setup_password.py`). The password is displayed on
+the screen and in the QR code so a phone can join without typing manually.
 
-The wizard page is self-contained — no CDN, no webfonts. It polls `/scan` every
-8s and shows the AP list, plus the browser's timezone. `/save` takes ssid/psk
-and defers `save_wifi_sta` via `App.scheduler.set_timeout` (NVS write must not
-run on the HTTP task).
+## On-screen setup
+
+The setup screen (`setup.yaml`) works from the display itself:
+
+- **QR code** — encodes WiFi connection info (SSID + password), scannable by phone
+- **Network** — shows the AP SSID (SUBWAVE-SCREEN)
+- **Password** — shows the AP WPA2 password
+- **"Connect"** — reboots the device so it picks up any credentials configured
+  via the web wizard and claims itself
+- **Status label** — shows connection progress messages
 
 WiFi scan results are retained because removing `captive_portal` removed the
 only thing calling `needs_full_scan_results_()`. The fix:
@@ -157,8 +183,114 @@ placed in `subwave_setup_web`'s `setup()` at priority 260 (`WIFI + 10`), which
 wins over `web_server`'s 249 under ESPHome's descending-priority sort. This runs
 before wifi's own setup at 250, so the boot scan retains everything.
 
-Do **not** call `start_scanning()` from the wizard — it assigns
-`WIFI_COMPONENT_STATE_STA_SCANNING` and disturbs the access point.
+## THE SECOND ROOT CAUSE — the network list was always empty
+
+Same shape as the panel fault: clean boot, working wizard, nothing on the glass.
+The picker said "Scanning…" forever and never listed a single network.
+
+### Two faults, and both had to be fixed
+
+**(a) The C6 coprocessor's STATION interface was never brought up.**
+
+This device has no `sta:` network configured — it is an access point until
+somebody provisions it. So `WiFiComponent::has_sta()` is false, and ESPHome's
+entire WiFi state machine is gated behind `if (this->has_sta())`. Nothing ever
+puts the coprocessor into APSTA with a live station interface. A coprocessor in
+that state answers a scan request with a bare **`ESP_FAIL`** — and `ESP_FAIL` is
+exactly what `rpc_rsp_callback()` returns for any slave failure it cannot map to
+a named `esp_err`, so the one error that mattered carried no information at all.
+
+**(b) The radio was left mid-scan, permanently.**
+
+ESPHome runs a scan of its own during `wifi:` setup. On this device it never
+completes, so the radio stays in the scanning state. While that is true:
+
+- `esp_wifi_scan_start()` returns **`ESP_ERR_WIFI_STATE`** ("WiFi internal state
+  error"), and
+- **`esp_wifi_scan_stop()` ALSO returns `ESP_ERR_WIFI_STATE`.**
+
+That second one is what made this nearly impossible to read. Stopping the stuck
+scan is the fix, and the one call that performs the fix reports the same error
+as the call that fails. ESPHome logs both at `ESP_LOGV`, which is below the
+device's DEBUG level, so neither ever appeared in the log at all.
+
+### The fix, in three timed steps
+
+`SetupWebComponent::request_scan()` + `loop()`. The steps are separated by 2 s
+scheduler timers, and **the separation is load-bearing** — doing them together
+fails:
+
+1. `wifi->start_scanning()` — its first act is `wifi_mode_(true, {})`, which is
+   what brings the station interface up. Fixes (a). It unavoidably also starts a
+   scan, which begins (b).
+2. `esp_wifi_scan_stop()` — clears the stuck scan. Fixes (b).
+3. `esp_wifi_scan_start()` directly — a clean scan.
+
+Step 3 is done by hand rather than left to `start_scanning()` because
+`start_scanning()` stops nothing, so it inherits whatever state the radio is in.
+Driving the radio directly also makes it idempotent: tapping **Scan** twice
+replaces the running scan instead of being refused.
+
+Measured on the device: `ap_num` 0 → 12 → 16, sixteen networks, collapsed to
+seven unique SSIDs.
+
+### Two things that cost time and will cost it again
+
+- **A blocking `delay()` inside a component method reboots the device.** The
+  5 s task watchdog wins. Any multi-step radio sequence must be a state machine
+  spread across `loop()`, never a sequence with a `delay()` in the middle.
+- **A retry bound needs its timer cancelled on the give-up path.** The last
+  retry arms a timer; if the give-up branch does not cancel it, the timer
+  re-arms the work and the whole sequence restarts from zero forever. The log
+  fills with the same failure and it never stops.
+
+### Do not read the empty list as "no networks here"
+
+The three states — scan never started, scan started and heard nothing, scan heard
+plenty and the result was lost on the way in — are indistinguishable from the
+dropdown. `SetupWebComponent::log_radio_state()` asks the RADIO
+(`esp_wifi_scan_get_ap_num`) rather than ESPHome, and logs the difference. It
+goes quiet once a scan lands.
+
+## `id()` returns different types depending on the widget
+
+This is the single most confusing thing about writing ESPHome LVGL lambdas in
+2026.7, and it produced a long compile-failure loop that was never a real bug in
+the widget code.
+
+ESPHome wraps a widget in a typed C++ class **only for the handful of widget
+kinds that expose a typed API**. In this build that is exactly two widgets:
+`main_page` (`LvPageType`) and `wifi_network_dropdown` (`LvDropdownType`). The
+other 141 — every `label`, every `obj`, the `textarea` — are emitted as a bare
+`lv_obj_t *`, and `lv_obj_t` is only ever **forward-declared** before a lambda,
+so it is an incomplete type there.
+
+Consequences, both of which are hard errors:
+
+| Write | Result |
+|---|---|
+| `id(wifi_status).set_text("x")` | **fails** — calling a member on a pointer to an incomplete type needs the complete type |
+| `id(window_0)->obj` | **fails** — there is no `.obj` member; `id(window_0)` *is* the pointer |
+
+What works:
+
+- Raw widgets → the LVGL **C API**, which takes `lv_obj_t *` by value and never
+  dereferences it at the call site: `lv_label_set_text(id(wifi_status), "x")`,
+  `lv_textarea_get_text(id(wifi_password))`, `lv_obj_set_x(wins[i], 0)`.
+- The dropdown → its real class: `id(wifi_network_dropdown)->set_options(v)` and
+  `->get_selected_text()`.
+- **An array of pointers to an incomplete type is legal.** `lv_obj_t *wins[4] =
+  {...}` compiles; only dereferencing it would not.
+
+Read the generated source to settle any of this. It is on disk and it is
+unambiguous:
+`builds/.esphome/build/subwave-screen/src/main.cpp`.
+
+### `lv_obj_t` is not the same as `lv_obj_t *`
+
+Declaring a pointer to an incomplete type is fine. Passing one to a function is
+fine. So `lv_obj_t *wins[4]` and `lv_obj_set_x(wins[i], n)` both compile, while
+`id(x).method()` does not.
 
 ## LVGL / display
 
@@ -174,8 +306,51 @@ reset GPIO22, interrupt GPIO21.
 
 Backlight: `restore_mode: ALWAYS_OFF`, default transition 800ms. `CONFIG_LV_DISP_DEF_REFR_PERIOD=10` for smooth 650ms crossfades.
 
-Window switching: `window_go` slides 1280px at 8px steps with `lv_obj_invalidate`.
-Skip is 1:1 with the web app including solo-mode behaviour.
+Window switching: `window_go` slides the two adjacent slots across `window_stack`
+at 24px steps, ~570ms total, with a 2 s gap in the API. Skip is 1:1 with the web
+app including solo-mode behaviour.
+
+There are four window slots in `window_stack`: window_0 (now), window_1 (shows),
+window_2 (settings), setup_screen (setup). The rail has four segments matching.
+`window_draw_rail` script highlights the active segment.
+
+### `dropdown` and `textarea` do NOT crash LVGL — an earlier note here was wrong
+
+This file previously claimed those widgets "crash on this ESPHome version". That
+was a **suspicion recorded as a finding**, from one Guru Meditation observed with
+those widgets present and never isolated. It was wrong: both are in the build and
+working. `wifi_network_dropdown` is filled with eight real SSIDs and the setup
+screen's `wifi_password` textarea reads back correctly.
+
+What actually caused the crash is not established. Do not re-add the claim, and do
+not avoid these widgets on the strength of it.
+
+The setup screen uses: `qrcode` (WiFi connection string), `label` (text),
+`button`, `dropdown` (network picker), `textarea` (password), `keyboard`.
+
+### The on-screen keyboard, and why it covers the network list
+
+Tapping the password field opens an LVGL `keyboard`; tapping it again, or Done,
+closes it. `lv_keyboard_set_textarea()` is wired by ESPHome from the widget's
+`textarea:` key — no LVGL group needed.
+
+The keyboard rises over the **bottom** of the screen (y 520–788) and covers the
+network picker while it is up. That is deliberate. The panel is 800px tall and
+already full, and at arm's length on a wall a keyboard squeezed beside a list
+leaves neither usable — and anyone typing a password has already picked a
+network. The password field steps **up** to y=468 so it stays visible above the
+keyboard's top edge; that is the only hard layout constraint, and it is why the
+field's y changes rather than the keyboard's.
+
+**Four mode buttons are not optional.** LVGL's keyboard shows exactly one
+character set at a time and does not cycle. Its modes are `TEXT_LOWER`,
+`TEXT_UPPER`, `SPECIAL`, `NUMBER` (`SPECIAL`, not `TEXT_SPECIAL` — a wrong name
+here fails validation). A WiFi password commonly needs all four, so `abc` / `ABC`
+/ `#+=` / `123` call `lv_keyboard_set_mode`. Without them the keyboard is stuck
+in one case and most passwords cannot be typed at all.
+
+The mode parameter is an `int` index into a `lv_keyboard_mode_t[4]` rather than a
+string, because ESPHome script parameters are typed.
 
 ## Gate checks
 
@@ -209,6 +384,11 @@ stay distinct; do not merge them.
   idle_mode/skip_enabled — add latitude/longitude/timezone there, persist via
   `global_preferences` (fixed-size buffer, see `save_token_()`), and push to the
   server. The server's device-types contract would need matching fields.
+- **The on-screen list has not been verified by eye.** The scan, the dedupe and
+  the dropdown fill are all confirmed in the log (17 results → 8 unique SSIDs,
+  `home_automation` present). That the eight are *legible on an 800px panel*,
+  and that the keyboard covers what it should, has not — there is no camera on
+  this bench. Treat the layout as reasoned, not seen.
 - `panel_vendor.yaml` (old revision) exists but is not the default; it has not
   been verified on hardware.
 - The light bleed around the top/right edges is physical backlight bleed on
@@ -217,12 +397,41 @@ stay distinct; do not merge them.
 
 ## Ports and tooling
 
-- Flash: `/dev/cu.usbmodem1101` (native USB1, 921600). Vanishes mid-session;
-  unplug/replug physically.
-- Log: `/dev/cu.usbserial-214220` (CH340, 115200). Wedges on write — never flash
-  over it.
-- AP SSID: `SUBWAVE-SCREEN`, open, IP 192.168.4.1 while unclaimed.
+- **Flash:** `/dev/cu.usbmodem*` (native USB1). Re-enumerates on every reset, so
+  the number changes and it is usually absent when you want to read the log.
+- **Log:** `/dev/cu.usbserial-*` (CH340, 115200) via
+  `device/firmware/tools/capture_log.py`. Stable port; never flash over it — it
+  wedges on write at ~67%.
+- AP SSID: `SUBWAVE-SCREEN`, **WPA2**, password auto-generated per device by
+  `tools/gen_setup_password.py` and shown on the screen and in the QR code. On
+  ESPHome's softAP default subnet while unclaimed. The wizard is reached by
+  captive-portal auto-surfacing, so the address never has to be typed.
 - Docker: `esphome/esphome:2026.7.0`, never `latest`.
 - The vendor source tree lives in `~/Downloads/JC8012P4A1C_I_W_Y/` — not in
   this repo. `gen_jc8012p4a1_init.py` takes it as an argument; do not bake that
   path into anything.
+
+## ESPHome external-component notes
+
+Cost real time; all four are one-liners once known.
+
+- **No `#ifdef USE_<COMPONENT>` guard** on an external component's header.
+  ESPHome only generates those defines for CORE components, so a guard compiles
+  the header to nothing and main.cpp then fails with
+  `'subwave_setup_web' has not been declared`.
+- **`new_Pvariable()` allocates; `cg.register_component()` registers.** Without
+  the second call `setup()` never runs and nothing anywhere complains.
+- **`WiFiComponent::add_scan_results_listener()` does not exist until a component
+  calls `request_wifi_scan_results_listener()`** in `to_code`. The method is
+  behind `#ifdef USE_WIFI_SCAN_RESULTS_LISTENERS`, and that define is generated
+  from a COUNT of components that asked — not from whether anything uses the
+  interface. The error names `wifi_component.h` and nothing wrong with yours.
+- **`cv.use_id()`, not `cv.declare_id()`, for referencing an existing id.**
+  `declare_id` *registers* a new one, so pointing it at a script that already
+  exists gives `ID <name> redefined!` — which reads as a duplicate in your
+  scripts file when the real fault is in the schema.
+- `Script::execute()` returns void, so it cannot be passed to a
+  `std::function<void()>`. Wrap it: `cg.RawExpression("[](void){ s->execute(); }")`.
+  `cg.add` needs an Expression; `cg.RawStatement` is a Statement and raises
+  "Object is not an expression". There is no `cg.Lambda` in 2026.7.
+

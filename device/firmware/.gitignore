@@ -1,0 +1,13 @@
+# ESPHome's downloaded toolchains and build cache for this device.
+#
+# 5.2 GB of esp-idf and platformio trees, created on first compile and never
+# useful again. It is NOT source and must never be committed.
+#
+# The per-build output is already ignored by builds/.gitignore; this covers the
+# toolchain cache, which lands beside builds/ rather than inside it.
+/.esphome/
+
+# Python bytecode from the external components. ESPHome imports these packages
+# during codegen, so __pycache__ appears next to every one of them.
+/__pycache__/
+*.pyc

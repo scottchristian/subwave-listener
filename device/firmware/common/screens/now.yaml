@@ -1,0 +1,229 @@
+# Window 1 of 3 — what is playing.
+#
+# THREE TIERS, READ TOP TO BOTTOM, WHICH IS EXACTLY HOW A RADIO STATION WORKS:
+# who is on, what is playing, and how many people are here.
+#
+# TIER 1 IS AT THE TOP BECAUSE *WHO'S ON* IS THE FIRST QUESTION ANYBODY ASKS. The
+# byline is not a caption on the record — it is the most important thing on the
+# screen, and putting it underneath the track title would be the wrong hierarchy
+# for this medium specifically.
+#
+# EVERYTHING IS LEFT-ALIGNED. Centred would fight the grid and make the artwork
+# crossfade feel like a slideshow, which is the opposite of what a 650ms dissolve
+# is for.
+#
+# ALL OF IT IS BUILT AT BOOT and then only shown or hidden. A screen that builds
+# a tree on switch and destroys the old one fragments PSRAM a little every time,
+# and one switched every twenty seconds fails after a day or two in a way that
+# looks nothing like a memory problem.
+
+# The CONTENT of window now — the widgets only.
+#
+# The slot that holds these (id, size, and the fact that it slides inside
+# window_stack) is declared in ../window.yaml, because the sliding mechanism
+# belongs to neither this screen nor the others. Since ESPHome dropped the
+# `parent:` key, a widget's parent is simply the `widgets:` list it sits in,
+# and a list can only come from the file that encloses it.
+#
+# Anything this screen used to declare BESIDE its widgets — scripts, globals —
+# is now in ./scripts.yaml, because a bare list cannot have siblings.
+
+# DEBUG: Static test label to verify display pipeline
+- label:
+    id: now_test
+    text: "NOW PLAYING WINDOW ACTIVE"
+    text_font: font_title
+    text_color: 0x4E9FD4
+    align: TOP_LEFT
+    x: 64px
+    y: 48px
+    width: 1000px
+
+# ---- tier 1: the voice --------------------------------------
+# A 12px lamp, not a badge. Presence is a light, which is what it is
+# on real broadcast equipment, and it goes muted when the stream is
+# idle rather than disappearing.
+- obj:
+    id: live_lamp
+    width: 12px
+    height: 12px
+    radius: 6px
+    align: TOP_LEFT
+    x: 64px
+    y: 120px
+    bg_color: 0x4E9FD4
+    bg_opa: COVER
+
+- label:
+    id: byline_presenter
+    text: "Test Presenter"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 88px
+    y: 116px
+    width: 520px
+
+- label:
+    id: byline_show
+    text: "Test Show"
+    text_font: font_body
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 88px
+    y: 150px
+    width: 520px
+
+- label:
+    id: byline_runway
+    text: "Test Runway"
+    text_font: font_small
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 88px
+    y: 182px
+    width: 520px
+
+# ---- the record ----------------------------------------------
+# Two image widgets, never one. The outgoing cover sits underneath at
+# full opacity while the incoming one decodes, so there is never a
+# frame with no artwork on it — see theme.yaml's art_swap for why this
+# matters more here than it does on the web.
+- image:
+    id: art_out
+    src: art_out_image
+    width: 520px
+    height: 520px
+    align: TOP_LEFT
+    x: 64px
+    y: 150px
+    bg_color: 0x0D1F35
+    bg_opa: COVER
+    clickable: false
+    hidden: true
+
+- image:
+    id: art_in
+    src: art_in_image
+    width: 520px
+    height: 520px
+    align: TOP_LEFT
+    x: 64px
+    y: 150px
+    bg_color: 0x0D1F35
+    bg_opa: COVER
+    clickable: false
+    hidden: true
+
+# Newsreader at 48. A screen is read from across a room, not from 40
+# centimetres, and a serif display face at this size is the one place
+# the station's voice is allowed to come through typographically.
+- label:
+    id: track_title
+    text: "Test Track Title"
+    text_font: font_title
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 624px
+    y: 48px
+    width: 592px
+    long_mode: DOT
+    text_line_space: 0
+
+- label:
+    id: track_artist
+    text: "Test Artist"
+    text_font: font_body
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 624px
+    y: 172px
+    width: 592px
+    long_mode: DOT
+
+# ---- the station ----------------------------------------------
+# The ONE rule on the whole screen, and it earns its place: it
+# separates what is playing from what the station is doing. Everything
+# above is the record; everything below is the station.
+- obj:
+    id: now_rule
+    width: 592px
+    height: 1px
+    align: TOP_LEFT
+    x: 624px
+    y: 230px
+    bg_color: 0x1A3050
+    bg_opa: COVER
+
+- label:
+    id: count_signed_in
+    text: "42"
+    text_font: font_title
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 624px
+    y: 262px
+    width: 280px
+
+- label:
+    id: count_signed_label
+    text: "signed in"
+    text_font: font_small
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 624px
+    y: 314px
+    width: 280px
+
+- label:
+    id: count_listening
+    text: "128"
+    text_font: font_title
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 936px
+    y: 262px
+    width: 280px
+
+- label:
+    id: count_listening_label
+    text: "listening"
+    text_font: font_small
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 936px
+    y: 314px
+    width: 280px
+
+# ---- Skip -------------------------------------------------------
+# The ONLY control on this window, and the only control-shaped element
+# anywhere in the design. Sized for a finger on glass rather than for
+# a mouse: 260x72, against 14px of icon on the web.
+#
+# Styled verbatim from app/page.tsx — red fill, light text, pill. A
+# mirrored control should look like the mirrored control, and the
+# content-has-no-radius rule does not apply to something that IS the
+# web's control at a different size.
+- button:
+    id: btn_skip
+    width: 260px
+    height: 72px
+    radius: 36px
+    align: TOP_LEFT
+    x: 624px
+    y: 372px
+    bg_color: 0x1A1214
+    bg_opa: COVER
+    border_width: 1
+    border_color: 0xEF4444
+    border_opa: COVER
+    checkable: false
+    widgets:
+      - label:
+          id: btn_skip_label
+          text: "Skip track"
+          text_font: font_body
+          text_color: 0xF2F2F2
+          align: CENTER
+
+

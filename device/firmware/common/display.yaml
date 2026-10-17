@@ -1,0 +1,576 @@
+# Panel, touch, and LVGL.
+#
+# The panel block itself lives in panel.yaml (or whatever `panel_include`
+# names) so that it can be swapped without touching anything below.
+#
+# THE PANEL IS 800x1280 PORTRAIT. The UI is 1280x800 landscape, driven by a
+# rotation rather than by the panel being landscape. Getting that backwards
+# produces a screen that is alive, responsive, and mirrored — so it is worth
+# knowing before you spend an afternoon on it.
+display: !include ${panel_include}
+
+touchscreen:
+  - platform: gsl3680
+    id: tft_touch
+    display: tft_display
+    reset_pin: GPIO22
+    interrupt_pin: GPIO21
+    transform:
+      mirror_x: true
+      # VERIFIED IN PHASE 2 BEFORE ANYTHING ELSE. A wrong touch transform makes
+      # every later step unverifiable: you cannot tell a layout bug from a
+      # coordinate bug, and both look like "the button does nothing".
+      mirror_y: false
+
+# WiFi is a SEPARATE ESP32-C6 on SPI, so the display and the network are
+# coupled only by the fact that they share a board.
+#
+# NO SEPARATE `spi:` BLOCK. An earlier version of this file declared one with
+# clk/mosi/miso AND passed `spi_id:` here — which double-declared GPIO16 and
+# GPIO17 as both SPI data and the C6's d2/d3, and `spi_id` is not an option this
+# component accepts at all. The pins are declared once, here, exactly as the
+# reference board config for this panel does it.
+esp32_hosted:
+  variant: esp32c6
+  reset_pin: GPIO54
+  cmd_pin: GPIO19
+  clk_pin: GPIO18
+  d0_pin: GPIO14
+  d1_pin: GPIO15
+  d2_pin: GPIO16
+  d3_pin: GPIO17
+  active_high: true
+
+lvgl:
+  id: main_lvgl
+  # 6% is the reference project's value for this panel and it is deliberate.
+  buffer_size: 6%
+  # The P4 software rotation path uses PPA/DMA, so rotated draw chunks want a
+  # cache-line-friendly RGB565 boundary rather than LVGL's 2-pixel default.
+  # Do not change this without measuring.
+  draw_rounding: 32
+  byte_order: little_endian
+  rotation: ${display_rotation}
+
+  # The reference project has this on_boot sequence to initialize LVGL properly.
+  # Without it, the display may not initialize properly and remain blank.
+  on_boot:
+    - lambda: |
+        id(lvgl_ready) = true;
+    - script.execute: apply_screen_rotation
+
+  pages:
+    - id: main_page
+      scrollbar_mode: "off"
+      scrollable: false
+      width: 100%
+      height: 100%
+      bg_color: 0x000000
+      pad_top: 0
+      pad_bottom: 0
+      pad_left: 0
+      pad_right: 0
+
+      widgets:
+        # Colored backdrop behind artwork (visible for non-square TV art)
+        - obj:
+            id: artwork_bg_panel
+            x: 0
+            y: 0
+            width: 800px
+            height: 800px
+            bg_color: 0x000000
+            bg_opa: 100%
+            radius: 0
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+
+        # Full-height artwork (square, left side of screen) - crossfade uses two images
+        - image:
+            id: art_out_widget
+            x: 0
+            y: 0
+            width: 800px
+            height: 800px
+            src: art_out_image
+            opa: 100%
+
+        - image:
+            id: art_in_widget
+            x: 0
+            y: 0
+            width: 800px
+            height: 800px
+            src: art_in_image
+            opa: 0%
+            hidden: true
+
+        # Error label: shown when album art download fails
+        - label:
+            id: artwork_error_label
+            text: "Artwork unavailable"
+            x: 200
+            y: 380
+            width: 400px
+            height: 30px
+            text_font: font_body
+            text_color: 0x888888
+            text_align: center
+            hidden: true
+
+        # Accent color background (right side, behind track info)
+        - obj:
+            id: accent_overlay
+            x: 800
+            y: 0
+            width: 480px
+            height: 800px
+            bg_color: 0x000000
+            bg_opa: 100%
+            radius: 0
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+
+        # Track info panel (flex column on right side)
+        - obj:
+            id: track_info_panel
+            x: 840
+            y: 40
+            width: 400px
+            height: 720px
+            bg_opa: 0%
+            border_width: 0
+            pad_all: 0
+            scrollable: false
+            scrollbar_mode: "off"
+            layout:
+              type: flex
+              flex_flow: COLUMN
+              pad_row: 0
+            widgets:
+              - label:
+                  id: media_title_label
+                  text: "—"
+                  width: 100%
+                  max_height: 506px
+                  long_mode: wrap
+                  text_font: font_title
+                  text_color: 0xDCE8F5
+                  text_align: left
+                  text_line_space: 0
+
+              - label:
+                  id: media_artist_label
+                  text: ""
+                  pad_top: 4
+                  width: 100%
+                  long_mode: wrap
+                  text_font: font_body
+                  text_color: 0x6A8BA8
+                  text_opa: 80%
+                  text_align: left
+                  hidden: true
+
+              - label:
+                  id: media_time_label
+                  text: "0:00"
+                  pad_top: 12
+                  width: 100%
+                  text_font: font_small
+                  text_color: 0x6A8BA8
+                  text_opa: 80%
+                  text_align: left
+
+        # Play/pause button (bottom-right corner)
+        - button:
+            id: media_play_pause_button
+            align: bottom_right
+            x: -40
+            y: -40
+            width: 96px
+            height: 96px
+            radius: 48
+            bg_color: 0x0D1F35
+            bg_opa: 100%
+            border_width: 0
+            widgets:
+              - label:
+                  id: media_play_icon
+                  text_font: font_title
+                  align: center
+                  text: "▶"
+                  text_color: 0xDCE8F5
+                  hidden: false
+              - label:
+                  id: media_pause_icon
+                  text_font: font_title
+                  align: center
+                  text: "⏸"
+                  text_color: 0xDCE8F5
+                  hidden: true
+            on_click:
+              - script.execute: skip_toggle
+
+        # Progress bar at the very bottom
+        - bar:
+            id: media_progress_bar
+            align: bottom_mid
+            y: 0
+            width: 1280
+            height: 4
+            bg_color: 0x000000
+            bg_opa: 100%
+            radius: 0
+            min_value: 0
+            max_value: 100
+            value: 0
+            indicator:
+              bg_color: 0x4E9FD4
+              radius: 0
+
+        # Station logo (top-right)
+        - image:
+            id: station_logo
+            src: station_logo_image
+            width: 200px
+            height: 48px
+            align: TOP_RIGHT
+            x: -64px
+            y: 48px
+
+        # ---- the sliding stack (three windows + setup + sleep hint) ----
+        - obj:
+            id: window_stack
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            scrollable: false
+            widgets:
+              # 1 of 3 — what is playing.
+              - obj:
+                  id: window_0
+                  width: 100%
+                  height: 100%
+                  align: TOP_LEFT
+                  scrollable: false
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  widgets: !include screens/now.yaml
+
+              # 2 of 3 — the show list.
+              - obj:
+                  id: window_1
+                  width: 100%
+                  height: 100%
+                  align: TOP_LEFT
+                  scrollable: false
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  widgets: !include screens/shows.yaml
+
+              # 3 of 3 — the screen's own settings.
+              - obj:
+                  id: window_2
+                  width: 100%
+                  height: 100%
+                  align: TOP_LEFT
+                  scrollable: false
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  widgets: !include screens/settings.yaml
+
+              # The provisioning screen. A fourth slot in the same stack.
+              - obj:
+                  id: setup_screen
+                  width: 100%
+                  height: 100%
+                  align: TOP_LEFT
+                  scrollable: false
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  widgets: !include screens/setup.yaml
+
+              # The asleep notice — the last slot, bare label.
+              - label:
+                  id: sleep_hint
+                  width: 100%
+                  height: 100%
+                  align: TOP_LEFT
+                  text_color: 0x6A8BA8
+                  text_font: font_body
+                  text_align: CENTER
+                  hidden: true
+
+        # ---- chrome: arrows and rail, outside every window ----
+        - obj:
+            id: chrome
+            width: 100%
+            height: 72px
+            align: BOTTOM_LEFT
+            scrollable: false
+            bg_color: 0x06101E
+            bg_opa: COVER
+            widgets:
+              - button:
+                  id: btn_prev
+                  width: 88px
+                  height: 72px
+                  align: LEFT_MID
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  border_width: 0
+                  radius: 0
+                  on_click:
+                    - script.execute: window_prev
+              - label:
+                  id: glyph_prev
+                  text: "‹"
+                  text_font: font_title
+                  text_color: 0x6A8BA8
+                  align: CENTER
+
+              # Four segments. Filled means "you are here".
+              - obj:
+                  id: rail
+                  width: 96px
+                  height: 4px
+                  align: CENTER
+                  bg_color: 0x1A3050
+                  bg_opa: COVER
+                  radius: 2px
+                  widgets:
+                    - obj:
+                        id: rail_0
+                        align: LEFT_MID
+                        x: 0px
+                        width: 22px
+                        height: 4px
+                        bg_color: 0x4E9FD4
+                        bg_opa: COVER
+                        radius: 2px
+                    - obj:
+                        id: rail_1
+                        align: LEFT_MID
+                        x: 26px
+                        width: 22px
+                        height: 4px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        radius: 2px
+                    - obj:
+                        id: rail_2
+                        align: LEFT_MID
+                        x: 52px
+                        width: 22px
+                        height: 4px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        radius: 2px
+                    - obj:
+                        id: rail_3
+                        align: LEFT_MID
+                        x: 78px
+                        width: 22px
+                        height: 4px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        radius: 2px
+
+              - button:
+                  id: btn_next
+                  width: 88px
+                  height: 72px
+                  align: RIGHT_MID
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  border_width: 0
+                  radius: 0
+                  on_click:
+                    - script.execute: window_next
+              - label:
+                  id: glyph_next
+                  text: "›"
+                  text_font: font_title
+                  text_color: 0x6A8BA8
+                  align: CENTER
+
+# ---------------------------------------------------------------------------
+# Artwork.
+#
+# `online_image` rather than a baked-in `image:`, because the cover changes every
+# few minutes and a wall screen cannot be reflashed each time. It also ships
+# `online_image.set_url` and `online_image.release`, which is what theme.yaml's
+# art_swap needs to hold the outgoing cover until the incoming one has actually
+# decoded.
+#
+# RGB565, BINARY, resized at decode. The panel is RGB565 and resizing on the
+# device rather than asking the station for a 520px cover keeps the download
+# buffer small — which on hex-mode PSRAM is not a detail.
+#
+# THE INITIAL URL IS DELIBERATELY A 404. There is no artwork until the station
+# says what is playing, and pointing these at a placeholder file that does not
+# exist gets the same result — an empty surface — without shipping a placeholder
+# and without pretending the screen has a cover it does not.
+# ---------------------------------------------------------------------------
+online_image:
+  - id: art_out_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/art/none.jpg"
+    format: JPEG
+    type: BINARY
+    resize: 520x520
+    buffer_size: ${art_buffer_bytes}
+    update_interval: never
+    on_error:
+      - logger.log: "art_out: nothing to show yet"
+
+  - id: art_in_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/art/none.jpg"
+    format: JPEG
+    type: BINARY
+    resize: 520x520
+    buffer_size: ${art_buffer_bytes}
+    update_interval: never
+    on_error:
+      - logger.log: "art_in: nothing to show yet"
+
+  # The station logo. Tiny, so it gets a small buffer and downloads in a
+  # fraction of a second — it is the one image that must be right immediately.
+  - id: station_logo_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/brand/logo.png"
+    format: PNG
+    type: BINARY
+    resize: 200x48
+    buffer_size: 16384
+    update_interval: 1h
+
+  # ---- presenter avatars, one per schedule row ----------------------------
+  #
+  # FIVE SEPARATE BUFFERS, and that is the point rather than an oversight. An
+  # avatar belongs to one row and only ever appears on that row's expanded tray,
+  # so five 56x56 buffers cost about 30KB together — which buys the thing that
+  # matters: showing a face never delays the row it sits on. One shared buffer
+  # would make five rows fight over it, and a schedule that reflows while you are
+  # reading it is worse than one with no faces at all.
+  - id: row_0_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: BINARY
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    on_error:
+      - logger.log: "row_0: no avatar"
+
+  - id: row_1_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: BINARY
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    on_error:
+      - logger.log: "row_1: no avatar"
+
+  - id: row_2_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: BINARY
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    on_error:
+      - logger.log: "row_2: no avatar"
+
+  - id: row_3_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: BINARY
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    on_error:
+      - logger.log: "row_3: no avatar"
+
+  - id: row_4_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: BINARY
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    on_error:
+      - logger.log: "row_4: no avatar"
+
+# ---------------------------------------------------------------------------
+# LVGL initialization state.
+globals:
+  - id: lvgl_ready
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+# ---------------------------------------------------------------------------
+# Screen rotation script.
+script:
+  - id: apply_screen_rotation
+    mode: restart
+    then:
+      - lambda: |-
+          // Apply the orientation from device settings using native LVGL rotation
+          const char* orient = id(display_client)->settings().orientation.c_str();
+          if (strcmp(orient, "portrait") == 0) {
+            id(tft_display).set_rotation(esphome::display::DISPLAY_ROTATION_0_DEGREES);
+          } else if (strcmp(orient, "landscape") == 0) {
+            id(tft_display).set_rotation(esphome::display::DISPLAY_ROTATION_90_DEGREES);
+          }
+
+# ---------------------------------------------------------------------------
+# Fonts.
+#
+# THREE, AND THREE IS THE BUDGET. 16MB of flash holds one merged factory image
+# and there is not much room to be generous. Adding a fourth is a decision, not a
+# detail.
+#
+# Newsreader for the track title, Archivo for everything else. Deliberately NOT
+# the web app's Outfit: a serif display face is the voice of a radio station, and
+# a wall screen seen from across a room is the one place that voice is legible.
+# See device/design.md.
+#
+# ONE GLYPH SET, SHARED BY ALL THREE. These are subsets, not full Latin: the
+# fold across two lines produces exactly one space glyph, which is the whole
+# trick to keeping a 4bpp face small enough to ship three of.
+# ---------------------------------------------------------------------------
+font:
+  - file: "gfonts://Newsreader@Semi-bold"
+    id: font_title
+    size: 48
+    bpp: 4
+    glyphs: >-
+      !"#$%&()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`
+      abcdefghijklmnopqrstuvwxyz{|}~©°·—'…
+
+  - file: "gfonts://Archivo@Medium"
+    id: font_body
+    size: 26
+    bpp: 4
+    glyphs: >-
+      !"#$%&()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`
+      abcdefghijklmnopqrstuvwxyz{|}~©°·—'…
+
+  - file: "gfonts://Archivo@Medium"
+    id: font_small
+    size: 18
+    bpp: 4
+    glyphs: >-
+      !"#$%&()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`
+      abcdefghijklmnopqrstuvwxyz{|}~©°·—'…

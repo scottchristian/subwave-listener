@@ -1,0 +1,90 @@
+# The board, verbatim from the reference project for this exact panel.
+#
+# These values are not tuned and not guessed — they are the ones the panel is
+# known to work with. Change them and the screen either does not light or does
+# not respond to touch, and neither failure explains itself.
+#
+# WiFi is a SEPARATE ESP32-C6 on SPI. If WiFi is dead after a successful flash,
+# check the coprocessor before suspecting the P4.
+esp32:
+  variant: ESP32P4
+  flash_size: 16MB
+  flash_mode: dio
+  engineering_sample: true
+  framework:
+    type: esp-idf
+    sdkconfig_options:
+      # 256 is enough for our URLs. The stock 512 costs RAM for no benefit and
+      # the PSRAM budget on this board is not generous.
+      CONFIG_HTTPD_MAX_URI_LEN: "256"
+      # Required by the reference build for this panel. Without it LVGL drops to
+      # a path this board does not use well, and colours come out wrong rather
+      # than absent — which reads as "the theme is broken", not "a flag is off".
+      CONFIG_LV_DRAW_SW_SUPPORT_RGB565: "y"
+    advanced:
+      # Increase the main loop task stack size to avoid stack overflow during
+      # LVGL/display initialization. The default 8192 is too small for the display
+      # init sequence which uses significant stack during flash operations with
+      # caches disabled. 16384 provides enough headroom for the stack watermark check
+      # in ESP-IDF v5.5+ (esp_task_stack_is_sane_cache_disabled).
+      loop_task_stack_size: 16384
+      enable_idf_experimental_features: true
+
+# The DSI PHY power rail. This is the single most consequential line in the file.
+#
+# WITHOUT IT THE PANEL IS BLACK, and nothing else in the config says why: the
+# build succeeds, the backlight ramps, the firmware runs, the logs are clean, and
+# there are no pixels. It is on the reference board config for this exact panel
+# and it was missing here.
+esp_ldo:
+  - channel: 3
+    id: dsi_phy_enable
+    voltage: 2.5V
+    adjustable: True
+
+psram:
+  # Hex mode at 100MHz. External RAM, not internal — see device/hardware.md for
+  # the budget, which is tight enough that every window tree is pre-allocated
+  # at boot rather than built on demand.
+  mode: hex
+  speed: 100MHz
+
+i2c:
+  - id: bus_a
+    sda: GPIO7
+    scl: GPIO8
+    scan: false
+    frequency: 400kHz
+
+output:
+  - platform: ledc
+    id: backlight_output
+    pin: GPIO23
+    inverted: false
+
+light:
+  - platform: monochromatic
+    id: backlight
+    name: Backlight
+    output: backlight_output
+    restore_mode: ALWAYS_OFF
+    default_transition_length: 800ms
+    internal: true
+
+esphome:
+  build_flags:
+    # 10ms instead of LVGL's 33ms default refresh period. The panel is a wall
+    # display running a 650ms crossfade, and at 33ms the blend visibly steps.
+    # From the reference build for this panel.
+    - "-DCONFIG_LV_DISP_DEF_REFR_PERIOD=10"
+    - "-Wno-deprecated-declarations"
+  on_boot:
+    priority: -10
+    then:
+      # 2s delay lets the C6 come up before we try to use WiFi/LVGL heavily.
+      # Reference build for this panel does exactly this.
+      - delay: 2s
+      - light.turn_on:
+          id: backlight
+          brightness: 100%
+          transition_length: 500ms

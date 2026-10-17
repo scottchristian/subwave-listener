@@ -1,0 +1,81 @@
+# WiFi, and the on-screen instructions that go with it.
+#
+# THE ORDER MATTERS MORE THAN IT LOOKS. A phone cannot load a page from a network
+# it is not on, so "join first, scan second" is the only sequence that works —
+# and getting it wrong is the single most common provisioning failure on every
+# device ever made. The screen says JOIN, THEN SCAN, in those words.
+wifi:
+  # Named, because update_setup_label reads the interface to show the screen its
+  # OWN address rather than assuming 192.168.4.1 — which is only true while the
+  # access point is up. An unnamed wifi component compiles fine and fails at
+  # runtime with "id(my_wifi) does not exist".
+  id: my_wifi
+  power_save_mode: none          # a screen that sleeps through a track change is worse than one that draws more current
+  reboot_timeout: 15min
+  ap:
+    ssid: ${setup_ap_ssid}
+    password: ""
+
+  # These live on `wifi:`, not on `esphome:`. They moved there upstream, and
+  # ESPHome's error for the old spelling is "[on_connect] is an invalid option
+  # for [esphome]" — which says the shape is wrong without saying where it went.
+  on_connect:
+    - delay: 1500ms
+    # The WiFi wizard screen stays up until the device is actually claimed, not
+    # merely until it has an IP. A screen that hides its own QR the moment it
+    # associates leaves somebody standing in a room with no way to finish.
+    - if:
+        condition:
+          lambda: return !id(device_claimed);
+        then:
+          - script.execute: show_setup_screen
+  on_disconnect:
+    - script.execute: show_setup_screen
+
+# captive_portal removed - we serve our own setup wizard via custom web handler
+# in subwave_display component. The captive portal component overrides our / route.
+
+web_server:
+  port: 80
+  version: 3
+  include_internal: false
+  log: false
+
+globals:
+  - id: device_claimed
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: wifi_joined
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+script:
+  - id: show_setup_screen
+    mode: restart
+    then:
+      - lambda: id(wifi_joined) = false;
+      - script.execute: update_setup_label
+
+  - id: update_setup_label
+    mode: restart
+    then:
+      # The address is read from the interface rather than hardcoded to
+      # 192.168.4.1, because that is only true while the access point is up and
+      # a screen on a real network must show its real address instead.
+      - lambda: |-
+          // has_ip_address() and get_ip_address() are both gone; the component
+          // exposes every interface it holds and you take the first set one.
+          // Reading the interface rather than hardcoding 192.168.4.1 is the whole
+          // point — that address is only true while the access point is up.
+          auto *wifi = id(my_wifi);
+          if (wifi != nullptr && wifi->is_connected()) {
+            for (const auto &addr : wifi->get_ip_addresses()) {
+              if (addr.is_set()) {
+                id(wifi_joined) = true;
+                lv_label_set_text(id(setup_address), addr.str().c_str());
+                break;
+              }
+            }
+          }

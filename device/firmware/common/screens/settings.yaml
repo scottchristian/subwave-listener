@@ -1,0 +1,135 @@
+# Window 3 of 3 — the screen's own settings.
+#
+# OPERATOR-FACING, so this is the one place brass (#c8a76a) is allowed, and only
+# for warnings. It is not a second brand colour anywhere else in the product: in
+# app/globals.css it appears solely in admin surfaces, which makes it a MEANING —
+# operator attention — rather than a palette entry.
+#
+# STEPPERS AND SEGMENT BARS, NOT SLIDERS. Finger precision against glass on a
+# panel somebody may be standing in front of is poor. Discrete taps are reliable,
+# and a ten-segment brightness bar you tap directly is glanceable and exact with
+# no drag required. A slider here would be precise on a desk and useless on a wall.
+#
+# READ-ONLY FACTS BELOW THE RULE — WiFi, address, server, model, firmware,
+# uptime. They are there because somebody WILL ask which network this thing is on
+# and the answer should not require a serial cable and a laptop.
+#
+# IT FOLLOWS THE DAY/NIGHT THEME. A white flash at midnight when somebody presses
+# the right arrow would be genuinely awful.
+
+# The CONTENT of window settings — the widgets only.
+#
+# The slot that holds these (id, size, and the fact that it slides inside
+# window_stack) is declared in ../window.yaml, because the sliding mechanism
+# belongs to neither this screen nor the others. Since ESPHome dropped the
+# `parent:` key, a widget's parent is simply the `widgets:` list it sits in,
+# and a list can only come from the file that encloses it.
+#
+# Anything this screen used to declare BESIDE its widgets — scripts, globals —
+# is now in ./scripts.yaml, because a bare list cannot have siblings.
+
+- label:
+    id: settings_title
+    text: "SUBWAVE-SCREEN"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 64px
+    y: 44px
+    width: 700px
+
+- label:
+    id: settings_clock
+    text: ""
+    text_font: font_body
+    text_color: 0x6A8BA8
+    align: TOP_RIGHT
+    x: -64px
+    y: 44px
+    width: 300px
+
+- obj:
+    id: settings_body
+    width: 1152px
+    height: 640px
+    align: TOP_LEFT
+    x: 64px
+    y: 112px
+    scrollable: true
+    widgets:
+      # ---- brightness: ten segments, tapped directly ----------
+      - obj:
+          id: set_brightness
+          width: 1152px
+          height: 72px
+          widgets:
+            - label: { id: lbl_brightness, text: "Brightness", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, width: 300px }
+            - obj:
+                id: brightness_segments
+                width: 640px
+                height: 40px
+                align: RIGHT_MID
+                x: -80px
+                widgets:
+                  - obj: { id: seg_0, width: 56px, height: 40px, x: 0px,   bg_color: 0x4E9FD4, bg_opa: COVER, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 10 } } }
+                  - obj: { id: seg_1, width: 56px, height: 40px, x: 64px,  bg_color: 0x4E9FD4, bg_opa: COVER, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 20 } } }
+                  - obj: { id: seg_2, width: 56px, height: 40px, x: 128px, bg_color: 0x4E9FD4, bg_opa: COVER, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 30 } } }
+                  - obj: { id: seg_3, width: 56px, height: 40px, x: 192px, bg_color: 0x4E9FD4, bg_opa: COVER, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 40 } } }
+                  - obj: { id: seg_4, width: 56px, height: 40px, x: 256px, bg_color: 0x4E9FD4, bg_opa: COVER, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 50 } } }
+                  - obj: { id: seg_5, width: 56px, height: 40px, x: 320px, bg_color: 0x4E9FD4, bg_opa: COVER, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 60 } } }
+                  - obj: { id: seg_6, width: 56px, height: 40px, x: 384px, bg_color: 0x4E9FD4, bg_opa: COVER, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 70 } } }
+                  - obj: { id: seg_7, width: 56px, height: 40px, x: 448px, bg_color: 0x4E9FD4, bg_opa: COVER, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 80 } } }
+                  - obj: { id: seg_8, width: 56px, height: 40px, x: 512px, bg_color: 0x4E9FD4, bg_opa: COVER, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 90 } } }
+                  - obj: { id: seg_9, width: 56px, height: 40px, x: 576px, bg_color: 0x4E9FD4, bg_opa: COVER, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 100 } } }
+            - label:
+                id: lbl_brightness_value
+                text: "70%"
+                text_font: font_body
+                text_color: 0x6A8BA8
+                align: RIGHT_MID
+                x: -16px
+                width: 120px
+
+      - obj: { id: set_theme, width: "100%", height: 72px, clickable: true, on_click: { script.execute: theme_cycle }, widgets: [
+          { label: { text: "Theme", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, width: 300px } },
+          { label: { id: lbl_theme, text: "Follow the sun", text_font: font_body, text_color: 0x6A8BA8, align: RIGHT_MID, x: -16px, width: 400px } } ] }
+
+      - obj: { id: set_idle, width: "100%", height: 72px, clickable: true, on_click: { script.execute: idle_cycle }, widgets: [
+          { label: { text: "When idle", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, width: 300px } },
+          { label: { id: lbl_idle, text: "Dim, after 15 minutes", text_font: font_body, text_color: 0x6A8BA8, align: RIGHT_MID, x: -16px, width: 400px } } ] }
+
+      - obj: { id: set_orientation, width: "100%", height: 72px, clickable: true, on_click: { script.execute: orientation_cycle }, widgets: [
+          { label: { text: "Orientation", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, width: 300px } },
+          { label: { id: lbl_orientation, text: "Landscape", text_font: font_body, text_color: 0x6A8BA8, align: RIGHT_MID, x: -16px, width: 400px } } ] }
+
+      - obj: { id: set_skip, width: "100%", height: 72px, clickable: true, on_click: { script.execute: skip_toggle }, widgets: [
+          { label: { text: "Skip", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, width: 300px } },
+          { label: { id: lbl_skip, text: "Allowed", text_font: font_body, text_color: 0x6A8BA8, align: RIGHT_MID, x: -16px, width: 400px } } ] }
+
+      - obj: { id: set_setup, width: "100%", height: 72px, clickable: true, on_click: { script.execute: { id: window_go, target: 3 } }, widgets: [
+          { label: { text: "Set up Wi-Fi", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, width: 300px } },
+          { label: { id: lbl_setup, text: "Connect to a network", text_font: font_body, text_color: 0x6A8BA8, align: RIGHT_MID, x: -16px, width: 400px } } ] }
+
+      - obj:
+          id: settings_rule
+          width: 1152px
+          height: 1px
+          y: 400px
+          bg_color: 0x1A3050
+          bg_opa: COVER
+
+      - label: { id: lbl_wifi,   text: "Wi-Fi",   text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, y: 428px, width: 300px }
+      - label: { id: val_wifi,   text: "",       text_font: font_small, text_color: 0xDCE8F5, align: TOP_RIGHT, y: 428px, x: -16px, width: 700px }
+      - label: { id: lbl_addr,   text: "Address", text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, y: 466px, width: 300px }
+      - label: { id: val_addr,   text: "",       text_font: font_small, text_color: 0xDCE8F5, align: TOP_RIGHT, y: 466px, x: -16px, width: 700px }
+      - label: { id: lbl_model,  text: "Screen",  text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, y: 504px, width: 300px }
+      - label: { id: val_model,  text: "JC8012P4A1", text_font: font_small, text_color: 0xDCE8F5, align: TOP_RIGHT, y: 504px, x: -16px, width: 700px }
+      - label: { id: lbl_ver,    text: "Firmware", text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, y: 542px, width: 300px }
+      - label: { id: val_ver,    text: "",       text_font: font_small, text_color: 0xDCE8F5, align: TOP_RIGHT, y: 542px, x: -16px, width: 700px }
+      - label: { id: lbl_up,     text: "Uptime",  text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, y: 580px, width: 300px }
+      - label: { id: val_up,     text: "",       text_font: font_small, text_color: 0xDCE8F5, align: TOP_RIGHT, y: 580px, x: -16px, width: 700px }
+
+# ---------------------------------------------------------------------------
+# Settings actions. Every one pushes to the server, so the admin panel and the
+# screen cannot quietly disagree about how bright the kitchen is.
+# ---------------------------------------------------------------------------

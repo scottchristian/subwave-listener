@@ -1,0 +1,27 @@
+# Window switching globals.
+#
+# The window_stack and chrome are now defined in display.yaml as children of
+# main_page_root, because ESPHome's new LVGL schema requires a widget's parent
+# to be the YAML list it appears in. Top-level widgets in an !include'd package
+# cannot be children of a page defined in another file.
+#
+# The window switching scripts are in scripts.yaml to avoid a duplicate `script:`
+# key when both window.yaml and scripts.yaml are included as packages.
+
+globals:
+  - id: window_index
+    type: int
+    restore_value: no
+    initial_value: '0'
+  - id: window_queued
+    type: int
+    restore_value: no
+    initial_value: '-1'
+  - id: art_fading
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: art_primed
+    type: bool
+    restore_value: no
+    initial_value: 'false'

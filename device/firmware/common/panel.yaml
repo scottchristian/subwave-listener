@@ -1,0 +1,54 @@
+# The panel itself, and nothing else.
+#
+# Split out of display.yaml so it can be swapped wholesale via the
+# `panel_include` substitution. The panel definition is the one part of this
+# configuration that is genuinely in dispute — see the note at the top of
+# panel.yaml — and being able to change it without editing a file shared by
+# every other part of the display setup is the difference between running an
+# experiment and accidentally changing production.
+#
+# Everything downstream (touch, LVGL, the widget tree) refers to `tft_display`,
+# so any file in here must keep that id.
+#
+# A BARE LIST, not a `display:` mapping. display.yaml reads this as
+# `display: !include ${panel_include}`, so anything but the list itself
+# nests one level too deep and validation fails with a list that looks
+# correct and a complaint that 'display' has no 'platform' key. The same
+# trap the screen widget files are written around.
+- platform: mipi_dsi
+  model: JC8012P4A1
+  id: tft_display
+  reset_pin: GPIO27
+  auto_clear_enabled: false
+  color_order: RGB
+  # NO `init_sequence` OVERRIDE HERE.
+  #
+  # common/jc8012p4a1_init.yaml holds the vendor's own 198-command sequence,
+  # and ESPHome's model list is SIX commands short of it, which looks exactly
+  # like the missing piece. Verify the gap with tools/gen_jc8012p4a1_init.py,
+  # which prints the index-aligned diff.
+  #
+  # It is not wired in for two reasons:
+  #
+  #   1. `init_sequence` APPENDS to the model's sequence; it does not replace
+  #      it. Supplying the vendor's full list therefore sends all 391 commands,
+  #      and the duplicate run stalls ~9s inside esp_lcd_panel_io_tx_param
+  #      waiting on an ACK that never arrives. A 12.8s setup against a 5s task
+  #      watchdog is an instant boot loop. Measured, not theorised.
+  #   2. ESPHome already appends what the panel needs in order to wake up.
+  #      get_sequence() in components/mipi/__init__.py adds PIXFMT, MADCTL,
+  #      INVOFF, then `delay(0)` + SLPOUT + `delay(10)` + DISPON + `delay(10)`.
+  #      The three "Delay 0ms/10ms/10ms" lines in the boot log are those.
+  #
+  # So five of the six omissions are already covered, and the sixth —
+  # {0x4A, 0x35} at vendor index 32, mid driver-IC block — cannot be appended
+  # because by the end of the sequence the panel is in a different register
+  # page than index 32 expects.
+  #
+  # The way to actually USE the vendor sequence is `model: CUSTOM`, where the
+  # model contributes no default sequence and `init_sequence` becomes the whole
+  # thing. See panel_vendor.yaml, which does exactly that.
+  dimensions:
+    width: 800
+    height: 1280
+

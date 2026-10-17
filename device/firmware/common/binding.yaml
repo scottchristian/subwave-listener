@@ -1,0 +1,141 @@
+# ---------------------------------------------------------------------------
+# Handing the generated objects to the C++.
+#
+# EVERY id ESPHome generates is `static` in its own main.cpp, which is internal
+# linkage — so no other translation unit can name it, and there is no header to
+# include. `extern int c_bg;` in a component's own .cpp compiles perfectly and
+# then fails at LINK time with a page of undefined references, which is a long way
+# from the mistake.
+#
+# So the objects are passed across explicitly, once, here. Everything in
+# subwave_display/ui.cpp looks them up by name.
+#
+# WHY BY NAME RATHER THAN BY POSITION. A positional table would still compile if
+# this list and the C++ drifted apart, and would then paint one label's text into
+# another widget with nothing in the log. A name that fails to resolve is reported
+# by name at the moment it is used.
+#
+# This is the ONE place the widget list exists twice — a widget added to a screen
+# must be added here too, and the boot log says so if you forget.
+# ---------------------------------------------------------------------------
+script:
+  - id: bind_widgets
+    mode: single
+    then:
+      # One second, because LVGL creates its widget tree during its own setup and
+      # binding before that would hand over null pointers. A screen that boots in
+      # under a second — the normal case — pays nothing for this.
+      - delay: 1s
+      # A short, harmless splash so a screen that is mid-boot does not look
+      # dead: one and a half seconds of SUB/WAVE branding while the first state
+      # poll is still in flight. Previously this slot held a magenta-page
+      # diagnostic that existed only to prove the panel could be switched on.
+      - lambda: |-
+          ESP_LOGI("subwave.ui", "panel awake; binding widgets");
+      - lambda: |-
+          using subwave_display::bind_object;
+          using subwave_display::bind_int;
+          using subwave_display::bind_bool;
+          using subwave_display::bind_uint32;
+
+          // ---- -------------------------------------------- the now-playing window
+          bind_object("live_lamp", id(live_lamp));
+          bind_object("byline_presenter", id(byline_presenter));
+          bind_object("byline_show", id(byline_show));
+          bind_object("byline_runway", id(byline_runway));
+          bind_object("art_out", id(art_out));
+          bind_object("art_in", id(art_in));
+          bind_object("track_title", id(track_title));
+          bind_object("track_artist", id(track_artist));
+          bind_object("now_rule", id(now_rule));
+          bind_object("count_signed_in", id(count_signed_in));
+          bind_object("count_signed_label", id(count_signed_label));
+          bind_object("count_listening", id(count_listening));
+          bind_object("count_listening_label", id(count_listening_label));
+          bind_object("btn_skip", id(btn_skip));
+          bind_object("btn_skip_label", id(btn_skip_label));
+
+          // ---- ----------------------------------------------------- the show list
+          bind_object("live_lamp_shows", id(live_lamp_shows));
+          bind_object("shows_station", id(shows_station));
+          bind_object("shows_day", id(shows_day));
+          bind_object("shows_expanded", id(shows_expanded));
+          bind_object("expanded_host", id(expanded_host));
+          bind_object("expanded_tagline", id(expanded_tagline));
+          bind_object("row_0_time", id(row_0_time));
+          bind_object("row_0_name", id(row_0_name));
+          bind_object("row_0_host", id(row_0_host));
+          bind_object("row_0_rule", id(row_0_rule));
+          bind_object("row_1_time", id(row_1_time));
+          bind_object("row_1_name", id(row_1_name));
+          bind_object("row_1_host", id(row_1_host));
+          bind_object("row_1_rule", id(row_1_rule));
+          bind_object("row_2_time", id(row_2_time));
+          bind_object("row_2_name", id(row_2_name));
+          bind_object("row_2_host", id(row_2_host));
+          bind_object("row_2_rule", id(row_2_rule));
+          bind_object("row_3_time", id(row_3_time));
+          bind_object("row_3_name", id(row_3_name));
+          bind_object("row_3_host", id(row_3_host));
+          bind_object("row_3_rule", id(row_3_rule));
+          bind_object("row_4_time", id(row_4_time));
+          bind_object("row_4_name", id(row_4_name));
+          bind_object("row_4_host", id(row_4_host));
+          bind_object("row_4_rule", id(row_4_rule));
+
+          // ---- ----------------------------------------------- the settings window
+          bind_object("settings_title", id(settings_title));
+          bind_object("settings_clock", id(settings_clock));
+          bind_object("settings_rule", id(settings_rule));
+          bind_object("lbl_brightness", id(lbl_brightness));
+          bind_object("lbl_brightness_value", id(lbl_brightness_value));
+          bind_object("lbl_theme", id(lbl_theme));
+          bind_object("lbl_idle", id(lbl_idle));
+          bind_object("lbl_orientation", id(lbl_orientation));
+          bind_object("lbl_skip", id(lbl_skip));
+          bind_object("val_wifi", id(val_wifi));
+          bind_object("val_addr", id(val_addr));
+          bind_object("val_model", id(val_model));
+          bind_object("val_ver", id(val_ver));
+          bind_object("val_up", id(val_up));
+          bind_object("seg_0", id(seg_0));
+          bind_object("seg_1", id(seg_1));
+          bind_object("seg_2", id(seg_2));
+          bind_object("seg_3", id(seg_3));
+          bind_object("seg_4", id(seg_4));
+          bind_object("seg_5", id(seg_5));
+          bind_object("seg_6", id(seg_6));
+          bind_object("seg_7", id(seg_7));
+          bind_object("seg_8", id(seg_8));
+          bind_object("seg_9", id(seg_9));
+
+          // ---- ----------------------------------- the chrome and the setup screen
+          bind_object("window_0", id(window_0));
+          bind_object("window_1", id(window_1));
+          bind_object("window_2", id(window_2));
+          bind_object("setup_screen", id(setup_screen));
+          bind_object("sleep_hint", id(sleep_hint));
+
+          // ---- the palette and the window state -------------------------
+          #
+          // These are `globals:`, not objects. ESPHome's own id() overload for
+          // a GlobalsComponent already returns T&, so `&id(c_bg)` is an int* that
+          // stays valid for the life of the program — which is what the C++ needs,
+          // because the idle deadline and the asleep flag change underneath it.
+          //
+          // ONLY THE ONES ui.cpp actually reads. window_index, window_queued,
+          // art_fading, theme_is_day and device_claimed are read by YAML lambdas,
+          // which reach them through id() directly and never come through here —
+          // binding them looked like coverage without being any.
+          bind_int("c_bg", &id(c_bg));
+          bind_int("c_surface", &id(c_surface));
+          bind_int("c_text", &id(c_text));
+          bind_int("c_muted", &id(c_muted));
+          bind_int("c_rule", &id(c_rule));
+          bind_int("c_accent", &id(c_accent));
+          bind_bool("screen_asleep", &id(screen_asleep));
+          bind_uint32("idle_deadline_ms", &id(idle_deadline_ms));
+
+          subwave_display::bind_client(id(display_client));
+      - delay: 500ms
+      - lambda: subwave_display::bindings_report_missing();

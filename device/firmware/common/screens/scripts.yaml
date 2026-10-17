@@ -1,0 +1,411 @@
+# The screens' own scripts and state, separated from their widgets.
+#
+# These were the `script:` and `globals:` blocks that sat beside each screen's
+#
+# widget tree. Once a screen file became a bare list of widgets — because a
+#
+# widget's parent is now the `widgets:` list it sits in, and only the enclosing
+#
+# file can supply that — those blocks had nowhere to live.
+#
+# They are together rather than split back across the screens because a package
+#
+# file may declare each top-level key exactly once, and two files both wanting
+#
+# `script:` is only a problem once they are merged into one.
+#
+#
+
+globals:
+  - id: idle_deadline_ms
+    type: uint32_t
+    restore_value: no
+    initial_value: '0'
+  - id: screen_asleep
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+
+script:
+  - id: set_brightness_to
+    mode: restart
+    parameters:
+      value: int
+    then:
+      - lambda: |-
+          auto *c = id(display_client);
+          c->settings_draft().brightness = value;
+          auto draft = c->settings_draft();
+          c->push_settings(draft);
+          subwave_display::settings_refresh();
+          float v = (float) value / 100.0f;
+          auto *light = id(backlight);
+          auto call = light->make_call();
+          call.set_brightness(v);
+          call.set_transition_length(800);
+          call.perform();
+
+  - id: theme_cycle
+    mode: single
+    then:
+      - lambda: |-
+          auto *c = id(display_client);
+          std::string m = c->settings().theme_mode;
+          m = (m == "auto") ? "day" : (m == "day") ? "night" : "auto";
+          c->settings_draft().theme_mode = m;
+          auto draft = c->settings_draft();
+          c->push_settings(draft);
+          subwave_display::settings_refresh();
+
+  - id: idle_cycle
+    mode: single
+    then:
+      - lambda: |-
+          auto *c = id(display_client);
+          std::string m = c->settings().idle_mode;
+          m = (m == "stay") ? "dim" : (m == "dim") ? "off" : "stay";
+          c->settings_draft().idle_mode = m;
+          auto draft = c->settings_draft();
+          c->push_settings(draft);
+          subwave_display::settings_refresh();
+
+  - id: orientation_cycle
+    mode: single
+    then:
+      # REBOOTS. `display_rotation` is compile-time on this panel and there is no
+      # clean runtime path, so the setting applies and the screen restarts. The
+      # label says so, because a screen that silently restarts looks broken.
+      - lambda: |-
+          auto *c = id(display_client);
+          c->settings_draft().orientation =
+              (c->settings().orientation == "landscape") ? "portrait" : "landscape";
+          auto draft = c->settings_draft();
+          c->push_settings(draft);
+          subwave_display::settings_refresh();
+          ESP_LOGW("subwave.settings", "Orientation changed; the screen restarts to turn on its side.");
+          App.safe_reboot();
+
+  - id: skip_toggle
+    mode: single
+    then:
+      - lambda: |-
+          auto *c = id(display_client);
+          c->settings_draft().skip_enabled = !c->settings().skip_enabled;
+          auto draft = c->settings_draft();
+          c->push_settings(draft);
+          subwave_display::settings_refresh();
+
+  # ---------------------------------------------------------------------------
+  # ---------------------------------------------------------------------------
+  # WHY THE CALLS IN THIS FILE LOOK MIXED.
+  #
+  # ESPHome 2026.7 wraps a widget in a typed C++ class (`LvDropdownType`,
+  # `LvPageType`) ONLY for the handful of widget kinds that expose a typed API —
+  # two of them in this build. Every other widget — every label, every obj, the
+  # textarea — is emitted as a bare `lv_obj_t *`, and `lv_obj_t` is only ever
+  # forward-declared before a lambda, so it is an INCOMPLETE TYPE there.
+  #
+  # That has exactly two consequences, and this file obeys both:
+  #
+  #   - `id(wifi_status).set_text(...)` cannot compile. Calling a member on a
+  #     pointer to an incomplete type requires the complete type.
+  #   - `id(window_0)->obj` cannot compile, for the same reason. There is no
+  #     `.obj` member — `id(window_0)` IS the pointer.
+  #
+  # So: raw widgets are driven through the LVGL C API, which takes `lv_obj_t *`
+  # BY VALUE and never dereferences it at the call site. And the dropdown, which
+  # does have a real class, is driven through it. `->obj` appears only on typed
+  # widgets, and a bare `id(x)` only where a raw pointer is wanted.
+  #
+  # An array of pointers to an incomplete type is fine, so indexing `wins[]`
+  # below is legal.
+  # ---------------------------------------------------------------------------
+  # On-screen WiFi setup — scan, pick, connect.
+  #
+  # The WiFi credentials can also be set from a phone that has joined the
+  # SUBWAVE-SCREEN access point; the captive portal serves the wizard with no URL
+  # to type. The on-screen path is the fallback for when no phone is to hand:
+  # scan for networks, pick one, enter a password, connect.
+  - id: wifi_scan
+    mode: single
+    then:
+      - lambda: |-
+          id(setup_web)->request_scan();
+          lv_label_set_text(id(wifi_status), "Scanning…");
+
+  # Start a scan at boot, and watch it land.
+  #
+  # A list that only exists on glass cannot be debugged with a serial cable and
+  # no display — which is exactly the situation when a scan returns nothing. The
+  # per-network log lives in subwave_setup_web's scan listener, which fires at
+  # the one moment the results are valid. This script starts the scan and then
+  # reports whether it landed.
+  #
+  # WHY THERE IS NO WAIT BEFORE READING. An earlier version slept 10s and then
+  # read get_scan_result(), which reports zero results on a scan that is merely
+  # still running. ESPHome's own scan timeout is 31s, so a 10s read was reporting
+  # "nothing there" for two thirds of the time a scan is allowed to take. The
+  # screen now asks subwave_setup_web whether a scan has actually landed.
+  - id: wifi_scan_log
+    mode: restart
+    then:
+      - delay: 4s
+      - lambda: |-
+          ESP_LOGI("subwave.setup", "Starting a WiFi scan for the on-screen list.");
+          id(setup_web)->request_scan();
+      # Poll rather than sleep once, so the log says WHICH of three very
+      # different situations this is: the scan never started, it started and
+      # heard nothing, or it heard plenty and the completion event never
+      # reached ESPHome. Only the third is a lost event; the first two are the
+      # radio's own answer and should not be reported as a fault. The poll goes
+      # quiet on its own once a scan lands.
+      - repeat:
+          count: 20
+          then:
+            - delay: 2s
+            - lambda: |-
+                id(setup_web)->log_radio_state();
+      - lambda: |-
+          // Only reached if no scan landed. If one did, the listener in
+          // subwave_setup_web already logged every network it heard.
+          ESP_LOGW("subwave.setup", "No scan result after 40s. A scan that reports nothing "
+                                   "and a scan that never finished look identical from here.");
+          wifi_populate_dropdown->execute();
+
+  # Fill the picker.
+  #
+  # MESH NETWORKS REPORT THE SAME SSID FROM EVERY RADIO IN THE MESH, so a naive
+  # pass fills the dropdown with four copies of "home_automation" and the picker
+  # becomes unusable — and worse, the copies are in radio-discovery order, so the
+  # signal a phone would actually get from the one it picks is not the signal
+  # shown. So: dedupe by SSID, keep the strongest RSSI, then sort strongest
+  # first. One entry per network, and the top entry is the one to pick.
+  - id: wifi_populate_dropdown
+    mode: single
+    then:
+      - lambda: |-
+          if (!id(setup_web)->scan_completed()) {
+            // Still scanning. Saying so is the whole point: an empty dropdown
+            // with no explanation is indistinguishable from a dead radio, and
+            // on a wall screen nobody is going to work that out.
+            lv_label_set_text(id(wifi_status), "Still scanning for networks...");
+            return;
+          }
+
+          // SSID -> strongest RSSI seen, so a later, weaker beacon for a network
+          // already recorded cannot drag its entry down the list.
+          std::map<std::string, int> best;
+          auto &results = wifi::global_wifi_component->get_scan_result();
+          for (auto &scan : results) {
+            if (scan.get_is_hidden())
+              continue;
+            std::string ssid{scan.get_ssid().c_str()};
+            if (ssid.empty())
+              continue;
+            int rssi = scan.get_rssi();
+            auto it = best.find(ssid);
+            if (it == best.end() || rssi > it->second)
+              best[ssid] = rssi;
+          }
+
+          // Strongest first. A stable tiebreak on the SSID keeps the order from
+          // shifting between two scans that report the same networks equally
+          // well, which would otherwise move someone's entry under their finger.
+          std::vector<std::pair<int, std::string>> sorted;
+          sorted.reserve(best.size());
+          for (auto &kv : best)
+            sorted.emplace_back(kv.second, kv.first);
+          std::sort(sorted.begin(), sorted.end(),
+                    [](const std::pair<int, std::string> &a, const std::pair<int, std::string> &b) {
+                      if (a.first != b.first) return a.first > b.first;
+                      return a.second < b.second;
+                    });
+
+          std::vector<std::string> options;
+          options.reserve(sorted.size());
+          for (auto &entry : sorted)
+            options.push_back(entry.second);
+
+          ESP_LOGI("subwave.setup", "%u result(s) collapsed to %u network(s).",
+                   (unsigned) results.size(), (unsigned) options.size());
+          if (options.empty())
+            options.push_back("No networks found");
+
+          id(wifi_network_dropdown)->set_options(options);
+          lv_label_set_text(id(wifi_status), options.size() == 1 && options[0] == "No networks found"
+                                              ? "No networks found."
+                                              : "Pick a network below.");
+
+  # ---------------------------------------------------------------------------
+  # The on-screen keyboard.
+  #
+  # Tapping the password field opens it; tapping the field again, or Done, closes
+  # it. Nothing else on the screen opens it, because there is nothing else that
+  # needs it.
+  #
+  # THE FIELD MOVES UP RATHER THAN THE KEYBOARD MOVING DOWN. The keyboard has to
+  # cover the network picker — at arm's length on a wall, a keyboard squeezed
+  # beside a list leaves neither one usable, and by the time you are typing a
+  # password you have already picked a network. So the keyboard rises over the
+  # bottom of the screen and the field steps up above it, which is one
+  # lv_obj_set_y rather than a container to slide.
+  #
+  # The y values are duplicated between setup.yaml and here. That is the cost of
+  # a panel this full; the alternative is a layout pass in C++ for two numbers.
+  # 468 is above the keyboard's top edge of 520, which is the only constraint
+  # that actually matters.
+  # ---------------------------------------------------------------------------
+  - id: wifi_keyboard_toggle
+    mode: single
+    then:
+      - lambda: |-
+          auto *kb = id(wifi_keyboard)->obj;
+          bool opening = lv_obj_has_flag(kb, LV_OBJ_FLAG_HIDDEN);
+
+          if (opening) {
+            lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
+            for (auto *b : {id(wifi_mode_lower), id(wifi_mode_upper), id(wifi_mode_special),
+                            id(wifi_mode_number), id(wifi_keyboard_done)})
+              lv_obj_clear_flag(b, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_y(id(wifi_password), 468);
+          } else {
+            lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+            for (auto *b : {id(wifi_mode_lower), id(wifi_mode_upper), id(wifi_mode_special),
+                            id(wifi_mode_number), id(wifi_keyboard_done)})
+              lv_obj_add_flag(b, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_y(id(wifi_password), 700);
+          }
+          lv_obj_invalidate(kb);
+          lv_obj_invalidate(id(wifi_password));
+
+  # Switch the keyboard's character set.
+  #
+  # LVGL's keyboard shows exactly one set at a time and does not cycle, so a
+  # password containing a digit and a lowercase letter needs this. The parameter
+  # indexes the mode rather than naming it because ESPHome's script parameters
+  # are typed, and the alternative — four near-identical scripts — is worse.
+  - id: wifi_keyboard_mode
+    mode: restart
+    parameters:
+      mode: int
+    then:
+      - lambda: |-
+          static const lv_keyboard_mode_t modes[4] = {
+              LV_KEYBOARD_MODE_TEXT_LOWER,
+              LV_KEYBOARD_MODE_TEXT_UPPER,
+              LV_KEYBOARD_MODE_SPECIAL,
+              LV_KEYBOARD_MODE_NUMBER,
+          };
+          if (mode < 0 || mode > 3)
+            return;
+          lv_keyboard_set_mode(id(wifi_keyboard)->obj, modes[mode]);
+
+  # Run when a scan actually lands.
+  #
+  # The trigger has to be the real event, not a timer. The on-screen list is the
+  # only place someone standing at the wall can see the result, so it has to be
+  # right at the moment it is looked at; a list filled on a schedule is either
+  # empty on arrival or stale.
+  #
+  # NOT NAMED `on_wifi_scan_results`: ESPHome's id namespace is global, and using
+  # the same string as both the script id and the `on_scan_script:` option value
+  # makes the validator report the id as defined twice.
+  - id: wifi_scan_landed
+    mode: restart
+    then:
+      - script.execute: wifi_populate_dropdown
+
+  - id: wifi_connect
+    mode: single
+    then:
+      - lambda: |-
+          std::string ssid = id(wifi_network_dropdown)->get_selected_text();
+          const char *psk = lv_textarea_get_text(id(wifi_password));
+          if (ssid.empty() || ssid == "No networks found") {
+            lv_label_set_text(id(wifi_status), "No network selected.");
+            return;
+          }
+          wifi::global_wifi_component->save_wifi_sta(ssid, psk == nullptr ? "" : psk);
+          lv_label_set_text(id(wifi_status), ("Connecting to " + ssid + "...").c_str());
+          App.safe_reboot();
+
+  # ---------------------------------------------------------------------------
+  # Window switching (moved from window.yaml to avoid duplicate script: key).
+  #
+  # Four slots live side by side inside window_stack: window_0, window_1,
+  # window_2, setup_screen. Exactly one is visible; the rest are parked off to
+  # one side behind LV_OBJ_FLAG_HIDDEN. A slide is a loop that walks both the
+  # outgoing and incoming slot across the stack a few pixels at a time.
+  #
+  # THE ANIMATION IS PLAIN LVGL, NOT lv_anim. The crossfade in theme.yaml already
+  # blocks this script through art_fading, and adding a second, independent
+  # animation system here would mean two clocks driving one window — which is
+  # how a slide ends up fighting a crossfade and leaving the screen blank.
+  # ---------------------------------------------------------------------------
+  - id: window_go
+    mode: restart
+    parameters:
+      target: int
+    then:
+      - lambda: |-
+          if (target == id(window_index)) return;
+          // A slide requested mid-crossfade is remembered, not dropped: the
+          // crossfade clears art_fading and window_tick picks this up.
+          if (id(art_fading)) {
+            id(window_queued) = target;
+            return;
+          }
+          id(window_queued) = -1;
+          int from = id(window_index);
+          id(window_index) = target;
+
+          // Pointers to an incomplete type — legal to hold, illegal to deref.
+          lv_obj_t *wins[4] = {id(window_0), id(window_1), id(window_2), id(setup_screen)};
+
+          const int32_t width = 800;   // the panel is 800x800
+          const int32_t step = 24;     // 800/24 = 34 frames, ~570ms at 16ms
+          int32_t direction = target > from ? 1 : -1;
+
+          for (int32_t moved = 0; moved < width; moved += step) {
+            for (int32_t f = 0; f <= moved; f += step)
+              lv_obj_set_x(wins[from], direction > 0 ? -f : width - f);
+            for (int32_t f = width - moved; f >= 0; f -= step)
+              lv_obj_set_x(wins[target], direction > 0 ? f : width - f);
+            delay(16);
+          }
+
+          lv_obj_set_x(wins[from], direction > 0 ? -width : width);
+          lv_obj_set_x(wins[target], 0);
+          lv_obj_add_flag(wins[from], LV_OBJ_FLAG_HIDDEN);
+          lv_obj_clear_flag(wins[target], LV_OBJ_FLAG_HIDDEN);
+          lv_obj_invalidate(wins[from]);
+          lv_obj_invalidate(wins[target]);
+          window_draw_rail->execute();
+
+  - id: window_prev
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: return id(window_index) > 0;
+          then:
+            - script.execute: { id: window_go, target: (int)id(window_index) - 1 }
+
+  - id: window_next
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: return id(window_index) < 3;
+          then:
+            - script.execute: { id: window_go, target: (int)id(window_index) + 1 }
+
+  - id: window_tick
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: return id(window_queued) >= 0 && !id(art_fading);
+          then:
+            - script.execute: { id: window_go, target: (int)id(window_index) + 1 }

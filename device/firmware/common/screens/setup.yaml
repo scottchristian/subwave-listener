@@ -1,0 +1,334 @@
+# The setup screen, shown until this device has claimed itself.
+#
+# DESIGN: Frontend-design principles applied.
+#
+# Subject: Wall-mounted SUB/WAVE radio display. Thin client, provisioned once.
+# Audience: Anyone standing in front of the screen — cafe staff, venue staff,
+# the station owner. Not technical, not patient, not carrying a laptop.
+# Primary job: Get this screen on WiFi and claimed to the station, fast.
+#
+# Hero: The QR code. It's the fastest path — phone scans, captive portal does
+# the rest. Everything else on the screen is the fallback for when a phone
+# isn't handy.
+#
+# Layout: Single column, left-aligned. Everything fits within 800px height.
+# Large touch targets for wall mounting. No decorative chrome — every pixel
+# serves setup.
+#
+# THE QR ENCODES WIFI CONNECTION INFO, NOT A URL. A phone scanning it joins the
+# SUBWAVE-SCREEN access point directly using WPA2 with the password below; the
+# captive portal then serves the setup wizard automatically, like a public
+# Wi-Fi login portal.
+#
+# THE SCREEN SHOWS SSID AND PASSWORD so a phone can connect without scanning —
+# just type them in. The setup page appears automatically once the phone is on
+# the access point.
+#
+# The screen itself can also do setup: scan for networks, pick one, enter a
+# password, connect. Mesh networks may appear multiple times — duplicates are
+# collapsed to a single entry with the strongest signal.
+#
+# The CONTENT of the setup screen — the widgets only.
+#
+# The slot that holds these (id, size, and the fact that it slides inside
+# window_stack) is declared in ../window.yaml, because the sliding mechanism
+# belongs to neither this screen nor the others. Since ESPHome dropped the
+# `parent:` key, a widget's parent is simply the `widgets:` list it sits in,
+# and a list can only come from the file that encloses it.
+#
+# Anything this screen used to declare BESIDE its widgets — scripts, globals —
+# is now in ./scripts.yaml, because a bare list cannot have siblings.
+
+# ── Top: phone-first setup ──────────────────────────────────────────────
+
+- label:
+    id: setup_title
+    text: "Setup Wi-Fi"
+    text_font: font_title
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 40px
+    y: 12px
+
+- label:
+    id: setup_instruction
+    text: "Join SUBWAVE-SCREEN on your phone, then pick your home network below."
+    text_font: font_body
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 40px
+    y: 44px
+    width: 1200px
+
+- qrcode:
+    id: setup_qr
+    size: 280
+    align: TOP_LEFT
+    x: 40px
+    y: 76px
+    light_color: 0xE8EDF3
+    dark_color: 0x0B1A2B
+    text: "WIFI:T:WPA;S:SUBWAVE-SCREEN;P:D2P2K7FF;;"
+
+- label:
+    id: setup_hint
+    text: "Scan to join SUBWAVE-SCREEN. Setup page appears automatically."
+    text_font: font_body
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 360px
+    y: 76px
+    width: 880px
+
+# ── Middle: screen credentials (for manual phone entry) ─────────────────
+
+- label:
+    id: setup_wifi_label
+    text: "Network"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 40px
+    y: 380px
+    width: 200px
+
+- label:
+    id: setup_wifi_value
+    text: "SUBWAVE-SCREEN"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 40px
+    y: 420px
+    width: 300px
+
+- label:
+    id: setup_password_label
+    text: "Password"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 40px
+    y: 464px
+    width: 200px
+
+- label:
+    id: setup_password_value
+    text: "D2P2K7FF"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 40px
+    y: 504px
+    width: 300px
+
+# ── Bottom: on-screen setup ─────────────────────────────────────────────
+
+- label:
+    id: setup_home_label
+    text: "Home network"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 40px
+    y: 556px
+    width: 200px
+
+- button:
+    id: setup_scan_button
+    text: "Scan"
+    align: TOP_LEFT
+    x: 40px
+    y: 596px
+    width: 100px
+    height: 44px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    on_click:
+      - script.execute: wifi_scan
+
+- dropdown:
+    id: wifi_network_dropdown
+    align: TOP_LEFT
+    x: 40px
+    y: 648px
+    width: 880px
+    options:
+      - "Scanning…"
+    symbol: "›"
+
+- label:
+    id: setup_password_label2
+    text: "Password"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 40px
+    y: 706px
+    width: 200px
+
+- textarea:
+    id: wifi_password
+    align: TOP_LEFT
+    x: 40px
+    y: 700px
+    width: 400px
+    height: 44px
+    one_line: true
+    password_mode: true
+    placeholder_text: "Network password"
+    # Tapping the field opens the keyboard; tapping it again closes it. There is
+    # no other way in, so this is the whole affordance — see wifi_keyboard_toggle.
+    on_click:
+      - script.execute: wifi_keyboard_toggle
+
+# ── The on-screen keyboard ──────────────────────────────────────────────
+#
+# Hidden until the password field is tapped. It occupies the bottom of the
+# screen and covers the network picker while it is up, which is deliberate: by
+# the time anyone is typing a password they have already picked a network, and
+# the alternative — squeezing a keyboard in beside the list — leaves neither
+# usable at arm's length on a wall.
+#
+# THE FIELD MOVES UP when the keyboard opens, because otherwise it would be
+# behind it. It is the one line that has to be above y=520 (the keyboard's top).
+#
+# FOUR MODE BUTTONS, because a WiFi password needs all four character sets and
+# LVGL's keyboard shows exactly one at a time. Without them the keyboard starts
+# in one case and there is no way to reach the other three.
+
+- button:
+    id: wifi_mode_lower
+    text: "abc"
+    align: TOP_LEFT
+    x: 460px
+    y: 468px
+    width: 72px
+    height: 44px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 0 }
+
+- button:
+    id: wifi_mode_upper
+    text: "ABC"
+    align: TOP_LEFT
+    x: 540px
+    y: 468px
+    width: 72px
+    height: 44px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 1 }
+
+- button:
+    id: wifi_mode_special
+    text: "#+="
+    align: TOP_LEFT
+    x: 620px
+    y: 468px
+    width: 72px
+    height: 44px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 2 }
+
+- button:
+    id: wifi_mode_number
+    text: "123"
+    align: TOP_LEFT
+    x: 700px
+    y: 468px
+    width: 72px
+    height: 44px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 3 }
+
+- button:
+    id: wifi_keyboard_done
+    text: "Done"
+    align: TOP_LEFT
+    x: 790px
+    y: 468px
+    width: 100px
+    height: 44px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: wifi_keyboard_toggle
+
+- keyboard:
+    id: wifi_keyboard
+    align: TOP_LEFT
+    x: 40px
+    y: 520px
+    width: 1200px
+    height: 268px
+    textarea: wifi_password
+    # Lower case first: most WiFi passwords are mostly lower case, and starting
+    # in upper case means the first character typed is wrong half the time.
+    mode: TEXT_LOWER
+    hidden: true
+
+- button:
+    id: setup_connect_button
+    text: "Connect"
+    align: TOP_LEFT
+    x: 460px
+    y: 700px
+    width: 140px
+    height: 44px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    on_click:
+      - script.execute: wifi_connect
+
+- label:
+    id: wifi_status
+    text: ""
+    text_font: font_body
+    text_color: 0x4E9FD4
+    align: TOP_LEFT
+    x: 620px
+    y: 700px
+    width: 660px
+
+- label:
+    id: setup_address
+    text: "—"
+    text_font: font_body
+    text_color: 0x6A8BA8
+    align: BOTTOM_RIGHT
+    x: -40px
+    y: -24px
