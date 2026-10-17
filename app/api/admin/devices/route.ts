@@ -88,12 +88,12 @@ export async function POST(req: NextRequest) {
   // produce a substitutions file that does not parse, and the failure surfaces as
   // an opaque YAML error at the far end of a fifteen-minute build.
   const command = [
-    "esphome compile \\",
+    "python3 -m esphome compile \\",
     `  -s device_id '${row.deviceId ?? row.id}' \\`,
     `  -s claim_token '${claim.raw}' \\`,
     `  -s server_url '${serverUrl}' \\`,
     "  -s firmware_version '1.0.0' \\",
-    "  device/firmware/builds/subwave-jc8012p4a1.yaml",
+    "  subwave-jc8012p4a1.yaml",
   ].join("\n");
 
   return NextResponse.json(
@@ -161,16 +161,20 @@ export async function PATCH(req: NextRequest) {
     }
     case "newClaim": {
       const claim = await mintClaimToken(row);
-      const serverUrl = new URL(req.url).origin;
+      const forwardedProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
+      const forwardedHost = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
+      const host = forwardedHost || req.headers.get("host") || "localhost:3000";
+      const proto = forwardedProto || (req.url.startsWith("https") ? "https" : "http");
+      const serverUrl = `${proto}://${host}`;
       return NextResponse.json(
         {
           buildCommand: [
-            "esphome compile \\",
+            "python3 -m esphome compile \\",
             `  -s device_id '${row.deviceId ?? row.id}' \\`,
             `  -s claim_token '${claim.raw}' \\`,
             `  -s server_url '${serverUrl}' \\`,
             "  -s firmware_version '1.0.0' \\",
-            "  device/firmware/builds/subwave-jc8012p4a1.yaml",
+            "  subwave-jc8012p4a1.yaml",
           ].join("\n"),
           claimExpiresAt: claim.expires.toISOString(),
           note: "Any firmware already built with the old setup code will no longer claim. Flash the new build.",
