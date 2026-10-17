@@ -180,9 +180,34 @@ class SubwaveDisplay
   void request_skip();
   /** Push a settings change made on the device's own settings screen. */
   void push_settings(const StationSettings &s);
-  /** Long-press on a settings row to unlock the controls. */
-  void acknowledge_rotation();
 
+  /**
+   * Fetch the state now rather than at the next poll.
+   *
+   * For a user action that must feel answered — a skip, a setting pushed from the
+   * device's own screen. Without it the server's answer arrives up to a poll
+   * interval later, and the gap between pressing a button and seeing anything is
+   * indistinguishable from the button being broken.
+   *
+   * Does not claim to be fast. request_() reads the response to completion, so
+   * this blocks for the round trip — which is why it is called from a script
+   * action rather than from a touch handler.
+   */
+  void refresh_now() { this->poll_state_(); }
+
+  /**
+   * Tell the station the screen is alive. Driven by a YAML interval.
+   *
+   * Public because the interval is YAML and the method is not — `id()` is a
+   * lambda-local helper, so a private member is unreachable from the one place
+   * that should be calling it. That is the same reason bind_backlight() exists.
+   *
+   * IT WAS PRIVATE AND UNCALLED, which meant the screen never sent a heartbeat
+   * at all: the station's device list showed a screen that was configured and
+   * silent, and there was no way for anybody to tell that apart from one that had
+   * been unplugged.
+   */
+  void send_heartbeat();
   /** Register the custom web handler for the setup wizard. */
   void register_web_handler_();
 
@@ -206,7 +231,6 @@ class SubwaveDisplay
   void handle_(Req kind, int status, const std::string &body);
 
   void poll_state_();
-  void poll_schedule_();
   void send_heartbeat_();
   bool claim_device_();
   void parse_state_(const std::string &json);
@@ -238,6 +262,9 @@ class SubwaveDisplay
   int poll_after_sec_{10};
   std::string station_name_;
   std::string logo_url_;
+  // The cover currently on the glass. Compared against the incoming art URL so a
+  // ten-second poll does not pull the same JPEG down again every time.
+  std::string art_url_shown_;
 
   bool claimed_{false};
   bool server_reachable_{false};

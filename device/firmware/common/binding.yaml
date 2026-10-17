@@ -41,6 +41,7 @@ script:
           using subwave_display::bind_int;
           using subwave_display::bind_bool;
           using subwave_display::bind_uint32;
+          using subwave_display::bind_backlight;
 
           // ---- -------------------------------------------- the now-playing window
           bind_object("live_lamp", id(live_lamp));
@@ -59,6 +60,11 @@ script:
           bind_object("btn_skip", id(btn_skip));
           bind_object("btn_skip_label", id(btn_skip_label));
           bind_object("status_line", id(status_line));
+
+          // The backlight is not a widget, so it does not go in the widget table —
+          // but idle_apply() cannot reach it with id(backlight) either, because
+          // that helper only exists inside a lambda.
+          bind_backlight(id(backlight));
 
           // ---- ----------------------------------------------------- the show list
           bind_object("live_lamp_shows", id(live_lamp_shows));
@@ -144,3 +150,7 @@ script:
           subwave_display::bind_client(id(display_client));
       - delay: 500ms
       - lambda: subwave_display::bindings_report_missing();
+      # LAST. Until this runs, every lookup is null and every painter is a crash.
+      # The first state poll can land inside bind_widgets' one-second delay on a
+      # fast network, so this is not a theoretical ordering.
+      - lambda: subwave_display::ui_mark_ready();

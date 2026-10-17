@@ -21,6 +21,19 @@ touchscreen:
       # every later step unverifiable: you cannot tell a layout bug from a
       # coordinate bug, and both look like "the button does nothing".
       mirror_y: false
+    # THE ONLY TOUCH LISTENER ON THE DEVICE, and it exists for one reason:
+    # waking. "Waking is touch-only" (device/design.md) because there is no audio
+    # here and so no user activity to measure — a track change or a heartbeat
+    # must not light up a screen in an empty room.
+    #
+    # It was missing entirely until 1.9.0, which is why the screen could not
+    # wake even once the dimming existed. Every other interaction — Skip, the
+    # brightness segments, the carousel arrows, the setup screen — is wired to
+    # its own widget, so this is the only path that fires when nothing is
+    # pressed-and-held on a control, and it has to exist for the screen to come
+    # back at all.
+    on_touch:
+      - script.execute: idle_arm
 
 # WiFi is a SEPARATE ESP32-C6 on SPI, so the display and the network are
 # coupled only by the fact that they share a board.
@@ -72,173 +85,34 @@ lvgl:
       pad_right: 0
 
       widgets:
-        # Colored backdrop behind artwork (visible for non-square TV art)
-        - obj:
-            id: artwork_bg_panel
-            x: 0
-            y: 0
-            width: 800px
-            height: 800px
-            bg_color: 0x000000
-            bg_opa: 100%
-            radius: 0
-            border_width: 0
-            pad_all: 0
-            scrollable: false
-
-        # Full-height artwork (square, left side of screen) - crossfade uses two images
-        - image:
-            id: art_out_widget
-            x: 0
-            y: 0
-            width: 800px
-            height: 800px
-            src: art_out_image
-            opa: 100%
-
-        - image:
-            id: art_in_widget
-            x: 0
-            y: 0
-            width: 800px
-            height: 800px
-            src: art_in_image
-            opa: 0%
-            hidden: true
-
-        # Error label: shown when album art download fails
-        - label:
-            id: artwork_error_label
-            text: "Artwork unavailable"
-            x: 200
-            y: 380
-            width: 400px
-            height: 30px
-            text_font: font_body
-            text_color: 0x888888
-            text_align: center
-            hidden: true
-
-        # Accent color background (right side, behind track info)
-        - obj:
-            id: accent_overlay
-            x: 800
-            y: 0
-            width: 480px
-            height: 800px
-            bg_color: 0x000000
-            bg_opa: 100%
-            radius: 0
-            border_width: 0
-            pad_all: 0
-            scrollable: false
-
-        # Track info panel (flex column on right side)
-        - obj:
-            id: track_info_panel
-            x: 840
-            y: 40
-            width: 400px
-            height: 720px
-            bg_opa: 0%
-            border_width: 0
-            pad_all: 0
-            scrollable: false
-            scrollbar_mode: "off"
-            layout:
-              type: flex
-              flex_flow: COLUMN
-              pad_row: 0
-            widgets:
-              - label:
-                  id: media_title_label
-                  text: "—"
-                  width: 100%
-                  max_height: 506px
-                  long_mode: wrap
-                  text_font: font_title
-                  text_color: 0xDCE8F5
-                  text_align: left
-                  text_line_space: 0
-
-              - label:
-                  id: media_artist_label
-                  text: ""
-                  pad_top: 4
-                  width: 100%
-                  long_mode: wrap
-                  text_font: font_body
-                  text_color: 0x6A8BA8
-                  text_opa: 80%
-                  text_align: left
-                  hidden: true
-
-              - label:
-                  id: media_time_label
-                  text: "0:00"
-                  pad_top: 12
-                  width: 100%
-                  text_font: font_small
-                  text_color: 0x6A8BA8
-                  text_opa: 80%
-                  text_align: left
-
-        # Play/pause button (bottom-right corner)
-        - button:
-            id: media_play_pause_button
-            align: bottom_right
-            x: -40
-            y: -40
-            width: 96px
-            height: 96px
-            radius: 48
-            bg_color: 0x0D1F35
-            bg_opa: 100%
-            border_width: 0
-            widgets:
-              - label:
-                  id: media_play_icon
-                  text_font: font_title
-                  align: center
-                  text: "▶"
-                  text_color: 0xDCE8F5
-                  hidden: false
-              - label:
-                  id: media_pause_icon
-                  text_font: font_title
-                  align: center
-                  text: "⏸"
-                  text_color: 0xDCE8F5
-                  hidden: true
-            on_click:
-              - script.execute: skip_toggle
-
-        # Progress bar at the very bottom
-        - bar:
-            id: media_progress_bar
-            align: bottom_mid
-            y: 0
-            width: 1280
-            height: 4
-            bg_color: 0x000000
-            bg_opa: 100%
-            radius: 0
-            min_value: 0
-            max_value: 100
-            value: 0
-            indicator:
-              bg_color: 0x4E9FD4
-              radius: 0
-
-        # Station logo (top-right)
-        - image:
-            id: station_logo
-            src: station_logo_image
-            width: 200px
-            height: 48px
-            align: TOP_RIGHT
-            x: -64px
-            y: 48px
+        # ---------------------------------------------------------------------------
+        # WHAT WAS HERE, AND WHY IT IS GONE.
+        #
+        # Fourteen widgets inherited from the reference board's config: an artwork
+        # backdrop, two cover images, an "artwork unavailable" label, a 480px
+        # opaque black accent panel, a track-info panel with its own title / artist
+        # / time labels, a play/pause button, a progress bar and a station logo.
+        #
+        # NOT ONE OF THEM WAS BOUND OR REFERENCED. Each screen carries its own
+        # artwork, its own title and its own logo, and every one of these ids
+        # appears in no bind_object() call and in no OBJ() in the C++. They were
+        # also, unavoidably, invisible: they are siblings of window_stack rather
+        # than children of it, and window_stack is declared after them, so all
+        # three windows — each with an opaque background — were painted over the
+        # lot.
+        #
+        # They stayed anyway, and that is the problem. The accent panel is 480px of
+        # solid black on the RIGHT-HAND side of the screen, which is exactly where
+        # now.yaml puts the cover — so to anyone reading this file it looks
+        # deliberately placed to hide the artwork. And the play/pause button was
+        # wired to skip_toggle, which toggles a SETTING, so a reader would
+        # reasonably conclude there was a working media control wired to the wrong
+        # thing.
+        #
+        # Inert code sitting in the wrong place is still wrong, and worse than
+        # missing code: the next person to move an artwork x-coordinate spends an
+        # afternoon on a panel that was never on screen.
+        # ---------------------------------------------------------------------------
 
         # ---- the sliding stack (three windows + setup + sleep hint) ----
         - obj:
@@ -437,16 +311,11 @@ online_image:
     on_error:
       - logger.log: "art_in: nothing to show yet"
 
-  # The station logo. Tiny, so it gets a small buffer and downloads in a
-  # fraction of a second — it is the one image that must be right immediately.
-  - id: station_logo_image
-    http_request_id: shared_http
-    url: "http://192.168.4.1/brand/logo.png"
-    format: PNG
-    type: BINARY
-    resize: 200x48
-    buffer_size: 16384
-    update_interval: 1h
+  # There was a station_logo_image here, feeding a station_logo image widget that
+  # was one of the fourteen removed above. Nothing else referenced it, so it went
+  # with them — an unused online_image is not free. It still allocates its buffer,
+  # and it has `update_interval: 1h`, so it was waking the radio once an hour to
+  # fetch a picture that had nothing to display it in.
 
   # ---- presenter avatars, one per schedule row ----------------------------
   #

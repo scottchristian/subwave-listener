@@ -1,4 +1,6 @@
 #include "display_client.h"
+// The painters. parse_state_ has to call them itself — see below.
+#include "ui.h"
 
 #include <cJSON.h>
 #include <ctime>
@@ -213,6 +215,38 @@ void SubwaveDisplay::parse_state_(const std::string &json) {
   this->last_error_.clear();
 
   cJSON_Delete(root);
+
+  // ---- and now put it on the glass -------------------------------------
+  //
+  // THIS IS THE PART THAT WAS MISSING, AND IT IS THE WHOLE SCREEN.
+  //
+  // parse_state_ filled in every field the now-playing window draws from and
+  // then returned. Nothing called now_refresh(). Every label stayed on whatever
+  // ESPHome had put there at boot — the title, the artist, the show, the
+  // listener counts, the Skip button — so a screen on a perfectly good network
+  // sat there showing its own YAML defaults while the log cheerfully reported a
+  // successful state poll every ten seconds.
+  //
+  // THAT IS WHY IT WAS INVISIBLE. Nothing errored. The fetch succeeded, the
+  // parse succeeded, the log said so, and the glass said nothing at all. A bug
+  // whose only symptom is the absence of a change cannot be found by watching
+  // the logs, which is the only thing anybody was watching.
+  //
+  // PAINT HERE, WHERE THE STATE LANDED, NOT ON A TIMER. A repaint interval would
+  // work and would be wrong: it would redraw the whole window whether or not
+  // anything changed, it would repaint windows nobody is looking at, and the
+  // moment a field were added to the struct and not to the painter, the timer
+  // would still be running and the bug would still be there.
+  now_refresh();
+  shows_refresh();
+
+  // Artwork, but only when the cover is actually a different one. Fetching every
+  // poll would pull a JPEG down the wire every ten seconds to redraw a picture
+  // that is already there.
+  if (this->now_.art_url != this->art_url_shown_) {
+    this->art_url_shown_ = this->now_.art_url;
+    this->request_artwork(this->now_.art_url);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -399,6 +433,11 @@ void SubwaveDisplay::send_heartbeat_() {
   this->request_(Req::HEARTBEAT, "POST", "/api/devices/heartbeat", body, 15000);
 }
 
+void SubwaveDisplay::send_heartbeat() {
+  // Public wrapper. The interval is YAML; see the declaration for why.
+  this->send_heartbeat_();
+}
+
 void SubwaveDisplay::push_settings(const StationSettings &s) {
   this->settings_ = s;
   if (!this->claimed_) return;
@@ -414,8 +453,6 @@ void SubwaveDisplay::push_settings(const StationSettings &s) {
 
   this->request_(Req::SETTINGS, "PATCH", "/api/devices/heartbeat", body, 15000);
 }
-
-void SubwaveDisplay::poll_schedule_() { /* fetched when the shows window opens */ }
 
 void SubwaveDisplay::update() {
   if (!esphome::network::is_connected()) {
@@ -459,14 +496,6 @@ void SubwaveDisplay::load_token_() {
   this->bearer_ = stored;
   this->claimed_ = true;
   ESP_LOGI(TAG, "Found a stored credential; this screen is set up.");
-}
-
-void SubwaveDisplay::acknowledge_rotation() {
-  // A rotated token arrives in a heartbeat response and is written straight over
-  // the top. Nothing else needs to happen: the server clears its grace hash in the
-  // same write, so the old credential dies the moment the new one lands.
-  if (this->bearer_.empty()) return;
-  this->save_token_();
 }
 
 namespace {

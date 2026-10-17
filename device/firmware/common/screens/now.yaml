@@ -28,17 +28,6 @@
 # Anything this screen used to declare BESIDE its widgets — scripts, globals —
 # is now in ./scripts.yaml, because a bare list cannot have siblings.
 
-# DEBUG: Static test label to verify display pipeline
-- label:
-    id: now_test
-    text: "NOW PLAYING WINDOW ACTIVE"
-    text_font: font_title
-    text_color: 0x4E9FD4
-    align: TOP_LEFT
-    x: 64px
-    y: 48px
-    width: 1000px
-
 # ---- tier 1: the voice --------------------------------------
 # A 12px lamp, not a badge. Presence is a light, which is what it is
 # on real broadcast equipment, and it goes muted when the stream is
@@ -95,8 +84,8 @@
     width: 520px
     height: 520px
     align: TOP_LEFT
-    x: 64px
-    y: 150px
+    x: 696px
+    y: 116px
     bg_color: 0x0D1F35
     bg_opa: COVER
     clickable: false
@@ -108,8 +97,8 @@
     width: 520px
     height: 520px
     align: TOP_LEFT
-    x: 64px
-    y: 150px
+    x: 696px
+    y: 116px
     bg_color: 0x0D1F35
     bg_opa: COVER
     clickable: false
@@ -124,8 +113,8 @@
     text_font: font_title
     text_color: 0xDCE8F5
     align: TOP_LEFT
-    x: 624px
-    y: 48px
+    x: 64px
+    y: 240px
     width: 592px
     long_mode: DOT
     text_line_space: 0
@@ -136,8 +125,8 @@
     text_font: font_body
     text_color: 0x6A8BA8
     align: TOP_LEFT
-    x: 624px
-    y: 172px
+    x: 64px
+    y: 356px
     width: 592px
     long_mode: DOT
 
@@ -150,8 +139,8 @@
     width: 592px
     height: 1px
     align: TOP_LEFT
-    x: 624px
-    y: 230px
+    x: 64px
+    y: 410px
     bg_color: 0x1A3050
     bg_opa: COVER
 
@@ -161,8 +150,8 @@
     text_font: font_title
     text_color: 0xDCE8F5
     align: TOP_LEFT
-    x: 624px
-    y: 262px
+    x: 64px
+    y: 442px
     width: 280px
 
 - label:
@@ -171,8 +160,8 @@
     text_font: font_small
     text_color: 0x6A8BA8
     align: TOP_LEFT
-    x: 624px
-    y: 314px
+    x: 64px
+    y: 494px
     width: 280px
 
 - label:
@@ -181,8 +170,8 @@
     text_font: font_title
     text_color: 0xDCE8F5
     align: TOP_LEFT
-    x: 936px
-    y: 262px
+    x: 376px
+    y: 442px
     width: 280px
 
 - label:
@@ -191,8 +180,8 @@
     text_font: font_small
     text_color: 0x6A8BA8
     align: TOP_LEFT
-    x: 936px
-    y: 314px
+    x: 376px
+    y: 494px
     width: 280px
 
 # ---- Skip -------------------------------------------------------
@@ -210,14 +199,18 @@
     height: 72px
     radius: 36px
     align: TOP_LEFT
-    x: 624px
-    y: 372px
+    x: 64px
+    y: 560px
     bg_color: 0x1A1214
     bg_opa: COVER
     border_width: 1
     border_color: 0xEF4444
     border_opa: COVER
     checkable: false
+    # THE ONE on_click on this window. It was missing, which made the only
+    # control on the screen a decoration. See skip_press in scripts.yaml.
+    on_click:
+      - script.execute: skip_press
     widgets:
       - label:
           id: btn_skip_label
@@ -247,7 +240,7 @@
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 64px
-    y: 500px
+    y: 672px
     width: 1100px
 
 

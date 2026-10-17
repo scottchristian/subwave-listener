@@ -33,12 +33,54 @@ export interface Widget {
   bgColor: string | null;
   radius: number | null;
   hidden: boolean;
+  /**
+   * The widget's LVGL alignment, or null when it does not say.
+   *
+   * It matters because x and y MEAN DIFFERENT THINGS under a different anchor.
+   * With TOP_LEFT they are the top-left corner, which is what a layout check can
+   * reason about. Under BOTTOM_LEFT, y is measured UP from the bottom edge — so
+   * `shows_expanded`'s `y: -88px` does not put it 88px above the top of the
+   * screen, it puts it 88px BELOW the bottom, which is how it is stowed off-screen
+   * before a show is expanded.
+   *
+   * Reading that as a top-left coordinate put a 1152x200 tray across the station
+   * header and reported it as a collision that does not exist.
+   */
+  align: string | null;
+  /**
+   * True when this widget sits inside another widget's `widgets:` list.
+   *
+   * It matters because a child is positioned RELATIVE to its parent, so a child
+   * and its parent routinely share coordinates. An overlap check that treated
+   * those as a collision would fail on every button with a label in it, which
+   * is every button — and a check that cries wolf gets ignored.
+   *
+   * Detected by indentation, since ESPHome's new LVGL schema makes the parent
+   * the `widgets:` list an entry appears in, and top-level entries are the only
+   * ones at column zero.
+   */
+  nested: boolean;
   /** Widgets whose width is a percentage resolve against this. */
   parentWidth: number;
 }
 
+/**
+ * Every screen body, in the order the carousel visits them.
+ *
+ * ALL FOUR, not just the setup screen. The setup screen was the one anybody had
+ * looked at, so it was the one that was checked — and the other three had never
+ * been drawn or asserted, which is the same blind spot the setup screen had and
+ * the reason four faults survived in it.
+ */
+export const SCREENS = ["setup", "now", "shows", "settings"] as const;
+export type ScreenName = (typeof SCREENS)[number];
+
+export function screenPath(root: string, name: string): string {
+  return path.join(root, "device", "firmware", "common", "screens", `${name}.yaml`);
+}
+
 export function setupScreenPath(root: string): string {
-  return path.join(root, "device", "firmware", "common", "screens", "setup.yaml");
+  return screenPath(root, "setup");
 }
 
 export function scriptsPath(root: string): string {
@@ -72,10 +114,13 @@ export function parseWidgets(file: string): Map<string, Widget> {
   for (const raw of lines.slice(start)) {
     if (!raw.trim() || raw.trimStart().startsWith("#")) continue;
 
-    const head = /^- (\w+):/.exec(raw);
+    // A top-level entry starts at column zero; anything indented is a child of
+    // whichever `widgets:` list encloses it.
+    const head = /^(\s*)- (\w+):/.exec(raw);
     if (head) {
       cur = {
-        kind: head[1],
+        nested: head[1].length > 0,
+        kind: head[2],
         id: "",
         x: null,
         y: null,
@@ -87,6 +132,7 @@ export function parseWidgets(file: string): Map<string, Widget> {
         bgColor: null,
         radius: null,
         hidden: false,
+        align: null,
         parentWidth: PANEL_W,
       };
       continue;
@@ -136,6 +182,9 @@ export function parseWidgets(file: string): Map<string, Widget> {
         break;
       case "hidden":
         cur.hidden = v === "true";
+        break;
+      case "align":
+        cur.align = v;
         break;
       default:
         break;

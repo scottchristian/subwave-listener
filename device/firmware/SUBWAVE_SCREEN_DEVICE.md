@@ -689,3 +689,77 @@ Cost real time; all four are one-liners once known.
   `cg.add` needs an Expression; `cg.RawStatement` is a Statement and raises
   "Object is not an expression". There is no `cg.Lambda` in 2026.7.
 
+
+## Dead code that was running — and the gate that now catches it
+
+Five features were implemented, bound, and never switched on. All of them
+presented as a working system in the code and as nothing at all on the screen.
+None of them logged an error, because nothing was broken; nothing ran.
+
+- **`now_refresh()` was never called.** `parse_state_()` filled every field the
+  now-playing window draws from and returned. The labels stayed on their YAML
+  defaults while the log reported a successful state poll every ten seconds. A
+  bug whose only symptom is the absence of a change is invisible to anyone
+  watching logs, which is the only thing anybody was watching.
+  - Fix: paint in `parse_state_()`, where the state landed, not on a timer. A
+    timer would redraw whether or not anything changed and would keep running
+    after a field was added to the struct but not to the painter.
+- **`shows_refresh()` was never called.** Same cause.
+- **`send_heartbeat_()` was never called.** The screen never told the station it
+  was alive; the device list showed a configured, silent screen. Public wrapper
+  `send_heartbeat()` added so the YAML interval can call it; 45 s interval.
+- **`request_skip()` and the Skip button's `on_click`.** The only control on
+  the window was a decoration. Button wired to `skip_press`; the label is NOT
+  set locally, because the server sends the finished label and the device must
+  not interpret a mode — that is what stops the wall and a browser disagreeing
+  about whether a skip worked. The press then re-polls immediately so it does
+  not read as a dead button.
+- **`station_now_ms()` and `settings_clock`.** The clock was bound and never
+  painted. Own one-second interval, UTC, because the screen has no timezone
+  setting and a wrong guess on a clock is worse than a plainly-labelled one.
+- **`idle_apply()` / `idle_touch()` / `idle_poll()` were dead.** The screen
+  never dimmed, never blanked, and could not be woken. Globals declared and
+  bound; nothing read them. Wired now: `on_touch` → `idle_arm`, 5 s tick →
+  `idle_poll`, backlight actually dims (earlier version showed a label over a
+  still-lit screen). See `device/design.md`'s idle section: stay/dim/off, 8 s
+  ramp, wake touch-only, 2 s message then blank.
+- **The setup screen drew over the now-playing screen on every boot.** Every
+  slot in `window_stack` is created visible and stacks at 0,0, so `setup_screen`
+  (last in the list) was on top. The connectivity ladder logged "all four steps
+  pass" truthfully; nothing in the log said what was on the glass.
+  - Fix: `boot_windows` hides the other three slots at boot. The ladder is
+    correct; it was the glass that was lying.
+- **Fourteen reference-firmware widgets** (`artwork_bg_panel`, `accent_overlay`,
+  `track_info_panel`, `media_play_pause_button`, `station_logo`, …) sat in front
+  of nothing and behind everything, behind three opaque windows, never bound,
+  never referenced. `media_play_pause_button.on_click` was wired to
+  `skip_toggle` — a setting, not a control. Removed; the comment in
+  `display.yaml` says why.
+- **`chrome_refresh()` and `poll_schedule_()` were empty stubs.** Deleted.
+
+**The gate that now catches this class:** `scripts/check-firmware-dead-code.mts`.
+It starts from entry points (ESPHome callbacks plus every name referenced in the
+YAML) and walks the call graph inside the component, stripping comments and
+string literals first — a comment naming a function used to count as a call,
+which made the original version useless. Any function that cannot be reached is
+reported. `idle_touch` sat in that report for the life of the firmware. Run
+`npm run check:unit` (it is part of it) and `node --experimental-strip-types
+--no-warnings scripts/check-firmware-dead-code.mts` directly.
+
+**Mutation-tested.** Deleting the real call site for `shows_refresh` or the
+`on_touch` wiring makes the gate fail. A gate that passes on a comment is not a
+gate.
+
+## Artwork — still half-built
+
+The crossfade scaffold exists (`art_swap`, `art_fading`, `art_queued`,
+`art_primed`) and the online images exist, but:
+
+- `art_primed` is never set to true, so `art_swap` never fires.
+- `online_image` has no auth header, and the art route is bearer-protected, so
+  even a triggered download would 401.
+- The initial URL is a deliberate 404.
+
+The cover is the one part of the now-playing window that is still blank. The
+fetch through the authenticated `request_()` path runs but only logs; wiring the
+online image to it is the next piece of work and needs hardware verification.

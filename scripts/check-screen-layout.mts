@@ -36,14 +36,15 @@ import path from "node:path";
 import {
   PANEL_H,
   PANEL_W,
+  SCREENS,
   parseKeyboardState,
   parseWidgets,
-  setupScreenPath,
+  screenPath,
   scriptsPath,
 } from "./lib/setup-layout.mts";
 
 const ROOT = process.cwd();
-const SETUP = setupScreenPath(ROOT);
+const SETUP = screenPath(ROOT, "setup");
 const SCRIPTS = scriptsPath(ROOT);
 
 let passed = 0;
@@ -169,6 +170,105 @@ ok(
   "the keyboard toggle moves no widget",
   `${toggleMoves} position write(s) in the toggle — every move is a possible stranded caption`,
 );
+
+// ---------------------------------------------------------------------------
+// 5. EVERY screen, not just the setup one.
+// ---------------------------------------------------------------------------
+// The setup screen was checked because it was the only one anybody had looked
+// at. The other three had never been drawn or asserted, which is precisely how
+// the setup screen ended up with a title overlapping a label, two character-set
+// buttons under a third, and a byline sitting on top of the artwork.
+//
+// The overlap assertion is the one that earns its keep. It needs widgets that
+// declare BOTH a position and a size. A label has no `height:` — LVGL derives it
+// from the font and the wrapped line count — so there is no box to test, and
+// inventing one from a font size produces false positives on every screen that
+// wraps a title.
+//
+// SO THE TWO TOOLS COVER DIFFERENT THINGS, AND NEITHER IS REDUNDANT. The gate
+// covers widgets with declared boxes: controls, rules, images, hairlines. The
+// renderer covers text, because it draws glyphs at real sizes. A title
+// overlapping a label is visible in the picture and invisible here; a button
+// landing on top of a 520-square cover is caught by both.
+//
+// HIDDEN AND NESTED WIDGETS ARE SKIPPED, and both exclusions are load-bearing.
+//
+// Hidden: both artwork widgets are hidden until a cover arrives, and two hidden
+// 520-square images stacked at the same coordinates IS the design — outgoing
+// under incoming. Asserting on that would fail on purpose.
+//
+// Nested: a child is positioned relative to its parent, so a button and the
+// label inside it share coordinates by design. Comparing those would fail on
+// every button that has a label in it.
+for (const name of SCREENS) {
+  const widgets = parseWidgets(screenPath(ROOT, name));
+  ok(widgets.size > 0, `${name}.yaml yields widgets`, `${widgets.size}`);
+
+  for (const [id, w] of widgets) {
+    if (w.y === null) continue;
+    ok(
+      w.y + (w.h ?? 0) <= PANEL_H,
+      `${name}: ${id} fits on the panel`,
+      `y=${w.y} + h=${w.h ?? 0} = ${w.y + (w.h ?? 0)} > ${PANEL_H}`,
+    );
+  }
+
+  // HIDDEN WIDGETS ARE INCLUDED, and only a PAIR of hidden widgets is skipped.
+  //
+  // The first version filtered hidden widgets out, which quietly removed the
+  // most valuable case there is. Both artwork widgets are hidden until a cover
+  // arrives, so "put a control on top of the artwork" passed — and then failed
+  // the moment a cover arrived and `art_in` went visible. A check that cannot
+  // see a collision that only exists at runtime is not checking the layout.
+  //
+  // What genuinely stacks is the pair: `art_out` and `art_in` sit at identical
+  // coordinates on purpose, the outgoing cover underneath the incoming one. That
+  // is the only reason a hidden-pair exemption exists, and it is narrow on
+  // purpose.
+  // TOP-LEFT (or unanchored, which is LVGL's default) only. Under any other
+  // anchor x and y are offsets from a different corner, so the pair above is not
+  // a box and comparing them invents collisions. A widget that says
+  // `align: BOTTOM_LEFT, y: -88px` is not 88px from the top.
+  const boxes = [...widgets.values()].filter(
+    (w) =>
+      !w.nested &&
+      (w.align === null || w.align === "TOP_LEFT") &&
+      w.x !== null &&
+      w.y !== null &&
+      w.w !== null &&
+      w.h !== null,
+  );
+  for (let i = 0; i < boxes.length; i++) {
+    for (let j = i + 1; j < boxes.length; j++) {
+      const a = boxes[i];
+      const b = boxes[j];
+      if (a.hidden && b.hidden) continue;
+
+      // THE ONE DELIBERATE COINCIDENCE besides the artwork pair: the keyboard's
+      // own buttons and the controls they replace. The mode row and Done sit
+      // exactly where Connect and the status line are, because that row is the
+      // password field's row and there is only one of it. The toggle shows one
+      // set and hides the other, so they are never on screen together.
+      //
+      // Exempted only for pairs the toggle ACTUALLY makes exclusive — one id
+      // from each list. Anything else at the same coordinates is a collision
+      // that no amount of toggling explains.
+      const kbState = parseKeyboardState(ROOT);
+      const exclusive = (p: string, q: string) =>
+        (kbState.shownWhileTyping.includes(p) && kbState.hiddenWhileTyping.includes(q)) ||
+        (kbState.shownWhileTyping.includes(q) && kbState.hiddenWhileTyping.includes(p));
+      if (exclusive(a.id, b.id)) continue;
+      const overlapX = a.x! < b.x! + b.w! && b.x! < a.x! + a.w!;
+      const overlapY = a.y! < b.y! + b.h! && b.y! < a.y! + a.h!;
+      ok(
+        !(overlapX && overlapY),
+        `${name}: ${a.id} and ${b.id} do not overlap`,
+        `a(${a.x},${a.y},${a.w}x${a.h}${a.hidden ? ", hidden" : ""}) ` +
+          `b(${b.x},${b.y},${b.w}x${b.h}${b.hidden ? ", hidden" : ""})`,
+      );
+    }
+  }
+}
 
 console.log(`  ${passed}/${passed + failed} screen-layout assertions passed`);
 process.exit(failed === 0 ? 0 : 1);

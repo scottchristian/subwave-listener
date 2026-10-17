@@ -30,11 +30,12 @@ import sharp from "sharp";
 import {
   PANEL_H,
   PANEL_W,
+  SCREENS,
   closedState,
   openState,
   parseKeyboardState,
   parseWidgets,
-  setupScreenPath,
+  screenPath,
   type Widget,
 } from "./lib/setup-layout.mts";
 
@@ -47,6 +48,14 @@ const FONT_SIZE: Record<string, { px: number; serif: boolean }> = {
   font_body: { px: 26, serif: false },
   font_small: { px: 18, serif: false },
 };
+
+/** The font stack for a widget. Single quotes inside, so the SVG attribute is
+ *  never built by nesting double quotes inside a double-quoted attribute — which
+ *  produced an XML parse error rather than a wrong-looking picture. */
+function familyOf(w: Widget): string {
+  const font = FONT_SIZE[w.textFont ?? "font_body"] ?? { px: 20, serif: false };
+  return font.serif ? "Georgia, 'Times New Roman', serif" : "Helvetica, Arial, sans-serif";
+}
 
 const esc = (s: string) =>
   s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
@@ -111,7 +120,25 @@ function keyboardBlock(w: Widget): string {
 }
 
 function widgetSvg(w: Widget): string {
-  if (w.hidden) return "";
+  // HIDDEN WIDGETS ARE STILL DRAWN, as outlines.
+  //
+  // Not drawing them made the preview lie about the screen. Both artwork
+  // widgets are `hidden: true` until a cover arrives, so the now-playing window
+  // rendered as an empty right-hand half with nothing to say a 520-square cover
+  // belongs there — which is exactly the half of the layout most worth checking.
+  //
+  // A dashed outline says "this is empty right now, and this is the space it
+  // will occupy", which is both true and enough to catch an overlap.
+  if (w.hidden) {
+    const x = w.x ?? 0;
+    const y = w.y ?? 0;
+    const width = w.w ?? 0;
+    const height = w.h ?? 0;
+    if (width === 0 || height === 0) return "";
+
+    return `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${w.radius ?? 0}" fill="none" stroke="#2f4a6b" stroke-width="2" stroke-dasharray="8 6"/>`
+      + `<text x="${x + width / 2}" y="${y + height / 2 + 5}" font-family="${familyOf(w)}" font-size="15" fill="#3c5c7d" text-anchor="middle">${esc(w.id)} (hidden)</text>`;
+  }
 
   const x = w.x ?? 0;
   const y = w.y ?? 0;
@@ -151,6 +178,17 @@ function widgetSvg(w: Widget): string {
       return out;
     }
 
+    case "image":
+    case "img": {
+      // Artwork and avatars. Drawn as a labelled placeholder: the real bytes are
+      // fetched at runtime and a placeholder that says which image it is standing
+      // in for is more useful than a grey box.
+      const tone = "#16304c";
+      out += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" fill="${tone}"/>`;
+      out += `<text x="${x + width / 2}" y="${y + height / 2 + 5}" font-family="Helvetica, Arial, sans-serif" font-size="13" fill="#4a6b85" text-anchor="middle">${esc(w.id)}</text>`;
+      return out;
+    }
+
     case "obj": {
       if (height <= 2) {
         // A hairline. Drawn at full opacity with a minimum width so a 1px rule
@@ -187,7 +225,6 @@ ${body}
 </svg>`;
 }
 
-const setup = parseWidgets(setupScreenPath(ROOT));
 const kb = parseKeyboardState(ROOT);
 
 const NOTE =
@@ -195,14 +232,26 @@ const NOTE =
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
-const states: Array<[string, Widget[], string]> = [
-  ["keyboard-closed", closedState(setup), "keyboard closed"],
-  ["keyboard-open", openState(setup, kb), "keyboard open"],
-];
+// Every screen, and for the setup screen both keyboard states — because the
+// interesting bugs live in the transition, which is not in the YAML at all.
+const jobs: Array<[string, Widget[], string]> = [];
+for (const name of SCREENS) {
+  const widgets = parseWidgets(screenPath(ROOT, name));
+  if (widgets.size === 0) {
+    console.log(`  SKIP  ${name} — no widgets parsed`);
+    continue;
+  }
+  if (name === "setup") {
+    jobs.push([`${name}-keyboard-closed`, closedState(widgets), `${name} · keyboard closed`]);
+    jobs.push([`${name}-keyboard-open`, openState(widgets, kb), `${name} · keyboard open`]);
+  } else {
+    jobs.push([name, closedState(widgets), name]);
+  }
+}
 
-for (const [name, widgets, caption] of states) {
+for (const [name, widgets, caption] of jobs) {
   const svg = render(widgets, `${caption} — ${NOTE}`);
-  const out = path.join(OUT_DIR, `setup-${name}.png`);
+  const out = path.join(OUT_DIR, `${name}.png`);
   await sharp(Buffer.from(svg)).png().toFile(out);
   console.log(`  wrote ${path.relative(ROOT, out)}  (${widgets.filter((w) => !w.hidden).length} visible)`);
 }

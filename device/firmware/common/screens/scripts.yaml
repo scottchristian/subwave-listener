@@ -480,6 +480,101 @@ script:
           window_go->execute(3);
 
   # ---------------------------------------------------------------------------
+  # Skip — the only control on the now-playing window.
+  #
+  # IT DID NOTHING. The button was drawn, the label had all four states wired to
+  # it, SubwaveDisplay::request_skip() was implemented and correct, and the button
+  # had no on_click at all. It was the single most visible affordance on the
+  # screen and it was inert. Nothing said so anywhere: the log was silent because
+  # there was no request to log, and the dead-code gate that would have found it
+  # did not exist yet.
+  #
+  # WHY THE LABEL IS NOT SET HERE. device/design.md is explicit that the device
+  # receives a finished label and never interprets a mode, and that is what stops
+  # the wall and a browser disagreeing about whether a skip worked. Inventing a
+  # local "Skipping…" would be exactly the disagreement the rule exists to
+  # prevent — and if the server refuses the skip, the screen would have to take
+  # the word back.
+  #
+  # SO: fire the request and go straight back to the server for the truth. The
+  # normal poll is up to ten seconds away, and a press with ten seconds of
+  # nothing after it does not read as a slow network — it reads as a dead button,
+  # which is what the button already was.
+  # ---------------------------------------------------------------------------
+  - id: skip_press
+    mode: single
+    then:
+      - lambda: |-
+          auto *c = id(display_client);
+          c->request_skip();
+          c->refresh_now();
+
+  # ---------------------------------------------------------------------------
+  # Idle: arm, tick, wake.
+  #
+  # ALL THREE PARTS WERE MISSING until 1.9.0. idle_apply() was called only from
+  # idle_touch(), and idle_touch() was called from nothing — so the screen never
+  # dimmed, never blanked, and had no way to wake, while the settings screen
+  # offered three working-looking idle modes. The globals were declared and bound.
+  # Nothing read them.
+  #
+  # A TICK, NOT A TIMER. The deadline is armed by a touch and re-armed by every
+  # wake, so a self-rescheduling timer would have to be cancelled and rebuilt
+  # each time and would eventually be the one that leaks. Asking a question on an
+  # interval cannot leave a timer behind.
+  #
+  # FIVE SECONDS, not one. The modes are measured in minutes; the only cost of a
+  # coarser tick is that the screen goes off up to five seconds late, which is
+  # invisible, and waking is immediate because it is driven by the touch itself.
+  - id: idle_tick
+    mode: single
+    then:
+      - lambda: subwave_display::idle_poll();
+
+  # Arm the deadline. Called at boot and again on every wake.
+  - id: idle_arm
+    mode: single
+    then:
+      - lambda: subwave_display::idle_touch();
+
+  # ---------------------------------------------------------------------------
+  # What is on the glass at boot.
+  #
+  # EVERY SLOT IN window_stack IS CREATED VISIBLE. window_0, window_1,
+  # window_2 and setup_screen all sit at x=0, y=0 with no `hidden:` flag in
+  # display.yaml, so they stack, and the one created LAST draws on top.
+  #
+  # setup_screen is last in the list. So out of the box the setup screen covers
+  # the now-playing screen on every single boot, and a screen with working WiFi
+  # shows a Wi-Fi prompt to somebody who does not need one.
+  #
+  # THIS IS WHY IT SURVIVED THE CONNECTIVITY LADDER BEING CORRECT. The ladder
+  # logs "all four steps pass. Not asking for setup" and it is telling the
+  # truth — it did not navigate anywhere. The setup screen was simply already on
+  # top, and nothing in the boot log says what is being drawn.
+  #
+  # A lesson worth keeping: a log that reports what a component DID is not
+  # evidence about what is on the glass. Only the glass answers that.
+  #
+  # The initial state is set explicitly here rather than inferred from which
+  # window happens to be created last. window_go maintains it from then on.
+  # ---------------------------------------------------------------------------
+  - id: boot_windows
+    mode: single
+    then:
+      - lambda: |-
+          lv_obj_add_flag(id(window_1), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(window_2), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(setup_screen), LV_OBJ_FLAG_HIDDEN);
+          // window_0 is the one that shows, so it is the one that must be the
+          // only one WITHOUT the flag. Clearing it rather than leaving it means a
+          // future change to which window opens is one line, here.
+          lv_obj_clear_flag(id(window_0), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_set_x(id(window_0), 0);
+          window_draw_rail->execute();
+          ESP_LOGI("subwave.ui", "Boot window is 0; the other three slots hidden.");
+
+  # ---------------------------------------------------------------------------
   # Window switching (moved from window.yaml to avoid duplicate script: key).
   #
   # Four slots live side by side inside window_stack: window_0, window_1,

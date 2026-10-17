@@ -23,7 +23,7 @@ substitutions:
   device_id: "unprovisioned"
   claim_token: "unprovisioned"
   server_url: "https://causewayfm.com"
-  firmware_version: "1.9.0"
+  firmware_version: "1.10.1"
 
   # The panel is natively 800x1280 portrait and driven as 1280x800 landscape.
   # Getting this backwards is the single most common mistake with this board.
@@ -67,6 +67,13 @@ esphome:
       # Just bind widgets - let the page load naturally. window_0 is first child of window_stack so visible by default.
       # Setup screen visibility is handled by the display client based on claimed() state.
       - script.execute: bind_widgets
+      # Set which window is showing. Every slot in window_stack is created
+      # visible and they all stack at 0,0, so without this the setup screen
+      # draws over the now-playing screen on every boot.
+      - script.execute: boot_windows
+      # Arm the idle deadline. Without this the timer is never set and the screen
+      # never dims — which is how it behaved for the whole of this firmware's life.
+      - script.execute: idle_arm
       # Scan on boot and print every result to the console.
       #
       # Not a convenience. A screen that shows an empty picker is a screen you
@@ -234,6 +241,35 @@ globals:
     initial_value: 'false'
 
 interval:
+  - interval: 1s
+    then:
+      # The settings screen's clock. A clock fed from the ten-second state poll
+      # steps visibly, and one fed from the five-second idle tick is worse; one
+      # label write a second is not a cost worth optimising away.
+      - lambda: subwave_display::clock_refresh();
+    startup_delay: 2s
+
+  - interval: 45s
+    then:
+      # The screen's only sign of life. Without this the station's device list
+      # showed a configured screen that had gone permanently silent, which is
+      # indistinguishable from one somebody unplugged.
+      - lambda: id(display_client)->send_heartbeat();
+
+  - interval: 5s
+    then:
+      # Asked every five seconds rather than scheduled, because the deadline is
+      # re-armed by every touch and a self-rescheduling timer would have to be
+      # torn down each time.
+      - script.execute: idle_tick
+    # NOT OPTIONAL, AND NOT COSMETIC. idle_poll() dereferences screen_asleep and
+    # idle_deadline_ms, which live in the binding table that bind_widgets fills
+    # one second after boot. An interval with no startup_delay fires on the first
+    # loop after setup, which is inside that one second, so the very first tick
+    # would dereference a null pointer — a crash on every boot that looks like
+    # nothing at all in the log.
+    startup_delay: 2s
+
   - interval: 10s
     then:
       - if:

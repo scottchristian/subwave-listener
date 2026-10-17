@@ -9,6 +9,8 @@
 #include "esphome/components/network/util.h"
 // There is no `light/light.h`. The call API lives in light_call.h and the state
 // API in light_state.h; including the wrong name is a fatal error, not a warning.
+#include <ctime>
+
 #include "esphome/components/light/light_call.h"
 #include "esphome/components/light/light_state.h"
 #include "display_client.h"
@@ -60,6 +62,29 @@ static constexpr size_t MAX_BINDINGS = 128;
 static Binding g_bindings[MAX_BINDINGS];
 static size_t g_binding_count = 0;
 static SubwaveDisplay *g_client = nullptr;
+// The backlight, handed over from YAML. Held raw rather than looked up by name
+// because it is a light component and not a widget, so it never goes near the
+// widget binding table.
+static esphome::light::LightState *g_backlight = nullptr;
+
+// The "off" sequence has a second phase, and it needs somewhere to wait. ESPHome
+// 2026.7 has no App.schedule_timeout — the Application class has no timeout API
+// at all — so the delay is a deadline checked by the same tick that arms the
+// idle timer. See idle_poll().
+static uint32_t g_blank_at = 0;
+static bool g_blank_pending = false;
+
+// Whether the binding table is populated. Set by ui_mark_ready() once YAML has
+// handed over every widget.
+//
+// EVERY PAINTER IS NULL UNTIL THEN, AND THAT IS NOT A THEORETICAL WINDOW. The
+// first state poll can land before bind_widgets' one-second delay expires — the
+// screen is on a working network, the server answers in a few hundred
+// milliseconds — and the painter would dereference null on each of its twenty
+// labels. The guard is one flag rather than a null check at every call site
+// because a missed one is a crash and the twenty call sites are exactly where
+// one gets missed.
+static bool g_ui_ready = false;
 
 static void bind_raw(const char *name, void *ptr) {
   if (ptr == nullptr) return;  // already reported by the caller
@@ -84,6 +109,8 @@ static void *lookup(const char *name) {
   return nullptr;
 }
 
+void ui_mark_ready() { g_ui_ready = true; }
+
 void bindings_report_missing() {
   // One line, not one per object: a half-bound screen should say so once rather
   // than filling the log with the same complaint on every repaint.
@@ -99,11 +126,65 @@ void bindings_report_missing() {
 #define U32(name) (*(uint32_t *) lookup(#name))
 #define client() (g_client)
 
+/**
+ * True once the widgets exist.
+ *
+ * Spelled as a function rather than `#define ready() g_ui_ready` so that the
+ * dead-code gate can see the name `ui_ready` used at a call site and treat it as
+ * an edge. A macro would be invisible to it.
+ */
+bool ui_ready() { return g_ui_ready; }
 
+
+/**
+ * The station's clock, in milliseconds.
+ *
+ * The server's time, never SNTP and never the local counter. A screen with no RTC
+ * drifts, and a wall display whose schedule is two minutes out is worse than one
+ * showing nothing — so the station is the authority and every poll brings the
+ * device's idea of the time back into line with it. The local counter is only the
+ * fallback for the first seconds after boot, before the first poll has landed.
+ *
+ * NOT A PAINTER, AND NOT A TIMER. This is a reading, so that the painters that
+ * need a clock and the interval that drives them can disagree about nothing.
+ */
 int64_t station_now_ms() {
   auto *c = client();
-  if (c == nullptr || c->server_now_ms() == 0) return esphome::millis();
+  if (c == nullptr || c->server_now_ms() == 0) return (int64_t) esphome::millis();
   return c->server_now_ms();
+}
+
+/**
+ * The clock in the top-right of the settings screen.
+ *
+ * ITS OWN ONE-SECOND INTERVAL, NOT THE POLL AND NOT THE IDLE TICK. Those are both
+ * wrong in opposite directions: the poll is up to ten seconds apart, so a clock
+ * fed from it steps visibly and is wrong to within ten seconds most of the time,
+ * and the idle tick is five, which is worse. One `text` write a second is
+ * nothing — the label is thirty glyphs — and it is the only way a clock is a
+ * clock rather than a field report.
+ *
+ * IT WAS DEAD, LIKE MOST OF THIS SCREEN. station_now_ms() existed, and
+ * settings_clock was bound, and neither was ever connected to anything, so the
+ * label showed the empty string its YAML declared. See skip_press in
+ * scripts.yaml and parse_state_ in display_client.cpp for the rest of this
+ * family; three separate features were built, bound and never switched on.
+ */
+void clock_refresh() {
+  if (!ui_ready()) return;
+  const int64_t ms = station_now_ms();
+
+  // UTC, because that is what the server sends. A wall display has no timezone
+  // setting and never had one — the screen is in somebody's hallway, not in
+  // their pocket — so local time would need a guess, and a wrong guess on a
+  // clock is worse than a plainly-labelled one.
+  const time_t secs = (time_t) (ms / 1000);
+  struct tm tm_utc;
+  gmtime_r(&secs, &tm_utc);
+
+  char buf[16];
+  strftime(buf, sizeof(buf), "%H:%M", &tm_utc);
+  lv_label_set_text(OBJ(settings_clock), buf);
 }
 
 /**
@@ -185,7 +266,7 @@ void theme_paint_all() {
 /** Window 1. The three tiers, plus the Skip button the server already decided on. */
 void now_refresh() {
   auto *c = client();
-  if (c == nullptr) return;
+  if (c == nullptr || !ui_ready()) return;
   const auto &n = c->now_playing();
   const auto &b = c->byline();
   const auto &s = c->skip();
@@ -245,6 +326,7 @@ void now_refresh() {
 }
 
 void shows_refresh() {
+  if (!ui_ready()) return;
   // Placeholder rows until the schedule lands. A list that renders its frame
   // immediately and fills in is better than one that renders nothing, because a
   // screen showing nothing reads as broken rather than as loading.
@@ -257,6 +339,7 @@ void shows_refresh() {
 }
 
 void settings_refresh() {
+  if (!ui_ready()) return;
   auto *c = client();
   if (c == nullptr) return;
   const auto &s = c->settings();
@@ -315,8 +398,6 @@ void settings_refresh() {
   lv_label_set_text(OBJ(val_up), up);
 }
 
-void chrome_refresh() { /* the rail is drawn by window_draw_rail in theme.yaml */ }
-
 /**
  * The screen going dark, and coming back.
  *
@@ -326,27 +407,133 @@ void chrome_refresh() { /* the rail is drawn by window_draw_rail in theme.yaml *
  * wrong one. It answers an action — the screen dimming itself — and nothing on
  * this device animates for its own sake.
  */
+void bind_backlight(esphome::light::LightState *light) { g_backlight = light; }
+
 void idle_apply(bool asleep) {
+  auto *c = client();
+  if (c == nullptr || !ui_ready()) return;
+
   // ONE OWNER FOR THE ASLEEP STATE. The global existed, was declared in
   // setup.yaml and was bound across — and nothing read or wrote it, so the
   // screen had two possible answers to "is it asleep" and no way to tell which
   // was true. This function is the only thing that changes it.
   BOOL(screen_asleep) = asleep;
 
-  if (asleep) {
-    lv_obj_clear_flag(OBJ(sleep_hint), LV_OBJ_FLAG_HIDDEN);
-    lv_label_set_text(OBJ(sleep_hint), "Screen off · tap anywhere to wake");
+  // THE BACKLIGHT IS WHAT ACTUALLY DIMS. Showing a label over a still-lit screen
+  // is not a screen going off, and the first version did exactly that.
+  if (g_backlight == nullptr) return;
+
+  auto dim_to = [&](float pct, uint32_t transition_ms) {
+    auto call = g_backlight->make_call();
+    call.set_brightness(pct / 100.0f);
+    call.set_transition_length(transition_ms);
+    call.perform();
+  };
+
+  if (!asleep) {
+    // CANCEL THE PENDING BLANK. Without this a tap during the 2.5s "screen off"
+    // message wakes the screen and then, a moment later, the blank lands anyway
+    // and the wake silently fails. It is the kind of bug that reads as "touch
+    // does not work" and nothing in the log says why.
+    g_blank_pending = false;
+    lv_obj_add_flag(OBJ(sleep_hint), LV_OBJ_FLAG_HIDDEN);
+    // Ramped, not a hard cut. A jump from black to full brightness is unpleasant
+    // in a dark room, and the ramp is what makes it read as waking rather than as
+    // a different screen appearing.
+    dim_to(100, 800);
     return;
   }
-  lv_obj_add_flag(OBJ(sleep_hint), LV_OBJ_FLAG_HIDDEN);
+
+  // THREE MODES, ONE CHOICE. See device/design.md's idle section — and note that
+  // there is no audio on this device, so there is no user activity to measure.
+  // "Waking is touch-only" follows from that: a track change or a heartbeat must
+  // not light up a screen in an empty room.
+  const std::string mode = c->settings().idle_mode;
+  if (mode == "stay") {
+    dim_to(100, 0);
+    return;
+  }
+  if (mode == "dim") {
+    lv_obj_add_flag(OBJ(sleep_hint), LV_OBJ_FLAG_HIDDEN);
+    // 8 SECONDS IS THE RAMP, AND THE RAMP IS THE CONFIRMATION — you watch it
+    // happen. design.md is explicit that this is not a transition to hide.
+    dim_to((float) c->settings().idle_pct, 8000);
+    return;
+  }
+
+  // "off": drop partway, say so, then blank. The message is what tells somebody
+  // standing there that the screen has not failed — a black rectangle on a wall
+  // is indistinguishable from a broken one.
+  dim_to(20, 1000);
+  lv_obj_clear_flag(OBJ(sleep_hint), LV_OBJ_FLAG_HIDDEN);
+  lv_label_set_text(OBJ(sleep_hint), "Screen off \u00b7 tap anywhere to wake");
+  // Arm the second phase rather than schedule it. Same reason as the tick: the
+  // deadline is data, not a timer that has to be torn down on wake.
+  g_blank_at = (uint32_t) esphome::millis() + 2500u;
+  g_blank_pending = true;
 }
 
 void idle_touch() {
   // Any touch wakes, and restarts the full timer. A track change, a show change
   // or a heartbeat deliberately do NOT: a screen nobody is touching should stay
   // as it is rather than lighting itself up in an empty room.
+  //
+  // esphome::millis(), NOT station_now_ms(). It used to be the server's clock,
+  // which made the idle deadline depend on the server answering — a screen that
+  // could not reach the station would never time out — and it jumps when the
+  // server's does, which would blank the screen early or never.
   idle_apply(false);
-  U32(idle_deadline_ms) = (uint32_t) station_now_ms() + (uint32_t) (client()->settings().idle_min * 60000ULL);
+  auto *c = client();
+  const uint32_t minutes = c == nullptr ? 15u : (uint32_t) c->settings().idle_min;
+  U32(idle_deadline_ms) = (uint32_t) esphome::millis() + minutes * 60000u;
+}
+
+/**
+ * The idle tick. Asks one question and does whichever phase of the idle sequence
+ * has come due. Called from the YAML interval every five seconds.
+ *
+ * ONE POLL, TWO PHASES, IN THIS ORDER, AND THE ORDER IS LOAD-BEARING.
+ *
+ * The blank is checked first because the "off" sequence is two steps separated
+ * by 2.5 seconds — drop to 20%, say so, then blank — and if the expire check ran
+ * first it would see the deadline already passed and start the sequence all over
+ * again on every tick, holding the screen at 20% forever and never blanking.
+ *
+ * THERE IS NO TIMER HERE, and that is deliberate twice over. ESPHome 2026.7's
+ * Application has no timeout scheduling at all, so a deferred call has to be a
+ * deadline checked by the next tick. And a self-rescheduling timer would have to
+ * be cancelled and rebuilt on every wake, which is the shape of bug that outlives
+ * the firmware. A poll cannot leave a timer behind.
+ */
+void idle_poll() {
+  // Same reason as the painters: the deadline and the asleep flag are bound
+  // objects, so reading them before ui_mark_ready() is a null dereference. The
+  // interval's startup_delay keeps this from mattering in practice; the guard is
+  // here so that moving that delay can never turn into a crash.
+  if (!ui_ready()) return;
+  // Phase two: the blank is due.
+  if (g_blank_pending) {
+    // Unsigned subtraction, deliberately: millis() wraps every 49 days and the
+    // naive `millis() > deadline` form gets a wrap wrong for the whole of the
+    // following period.
+    if ((int32_t) (esphome::millis() - g_blank_at) >= 0) {
+      g_blank_pending = false;
+      if (g_backlight != nullptr)
+        g_backlight->make_call().set_brightness(0.0f).perform();
+      ESP_LOGI(TAG, "Blanked. Touch to wake.");
+    }
+    return;
+  }
+
+  if (BOOL(screen_asleep)) return;
+  const uint32_t deadline = U32(idle_deadline_ms);
+  // ZERO MEANS NOT ARMED. At boot there is no deadline until the first touch, so
+  // the tick has to be able to tell "not armed" from "armed at millis() == 0".
+  if (deadline == 0) return;
+  if ((int32_t) (esphome::millis() - deadline) < 0) return;
+
+  ESP_LOGI(TAG, "Idle deadline passed; applying mode.");
+  idle_apply(true);
 }
 
 }  // namespace subwave_display
