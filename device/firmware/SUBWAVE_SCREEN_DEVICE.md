@@ -21,8 +21,9 @@ present as a clean boot and an empty screen.
   `esphome/esphome:2026.7.0`.
 - Provisioning: ONE standard image for every screen. Flash it, then on the
   device's setup screen enter the server URL and the bind code shown in the
-  admin panel. The device fetches its identity from the station's bind endpoint
-  and stores it in flash. No per-device build step.
+  admin panel (or use the web wizard at the device's IP). The device tests
+  the connection, fetches its identity from the station's bind endpoint, and
+  stores it in flash. No per-device build step.
 
 ## Entry point and project files
 
