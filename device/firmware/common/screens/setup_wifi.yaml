@@ -1,4 +1,4 @@
-# The setup screen, shown until this device has claimed itself.
+# The setup screen — page 1 of 2: connect to Wi-Fi.
 #
 # DESIGN: Frontend-design principles applied.
 #
@@ -28,6 +28,8 @@
 # password, connect. Mesh networks may appear multiple times — duplicates are
 # collapsed to a single entry with the strongest signal.
 #
+# Page 1 of 2: connect to Wi-Fi. Tap "Next →" to go to the bind screen.
+#
 # The CONTENT of the setup screen — the widgets only.
 #
 # The slot that holds these (id, size, and the fact that it slides inside
@@ -43,22 +45,16 @@
 
 - label:
     id: setup_title
-    text: "Setup"
+    text: "Connect to Wi-Fi"
     text_font: font_title
     text_color: 0xDCE8F5
     align: TOP_LEFT
     x: 40px
     y: 12px
 
-# NAMES BOTH ROUTES, AND ASKS FOR ONE. The previous copy — "Join
-# SUBWAVE-SCREEN on your phone, then pick your home network below" — gave two
-# instructions in one sentence and the reader cannot tell whether they are two
-# steps of one route or two alternatives. They are alternatives: one needs a
-# phone, the other does not, and somebody standing at a wall with neither should
-# still be able to read what their options are.
 - label:
     id: setup_instruction
-    text: "If Wi-Fi already works, open this screen's address in a browser to bind it to your station."
+    text: "If Wi-Fi already works, tap Next to bind this screen to your station."
     text_font: font_body
     text_color: 0x6A8BA8
     align: TOP_LEFT
@@ -77,13 +73,6 @@
     text: "WIFI:T:WPA;S:SUBWAVE-SCREEN;P:D2P2K7FF;;"
 
 # ── Beside the QR: what the QR does, and what to type if you would rather ──
-#
-# THIS COLUMN USED TO BE EMPTY. The QR occupied x 40..320 and the credentials sat
-# in a separate band at y=380, which left 880x260 of bare panel to the right of
-# the code — the largest single block of nothing on the screen, beside the one
-# element people are told to look at first. The credentials now sit here, which
-# is also where they belong logically: they exist for somebody who is NOT going
-# to scan the code, so they belong opposite it.
 - label:
     id: setup_hint
     text: "Scan with your phone to join. The setup page opens by itself."
@@ -94,11 +83,6 @@
     y: 112px
     width: 860px
 
-# LABELS AND VALUES ARE NOT THE SAME VOICE. Both were font_body in full-contrast
-# text, so "Password" and "D2P2K7FF" carried identical weight and the pair read as
-# a flat list rather than a caption and its answer. Captions are font_small and
-# muted; answers are font_body and full contrast. That difference is the whole of
-# the hierarchy, and it costs nothing.
 - label:
     id: setup_wifi_label
     text: "Network"
@@ -139,11 +123,7 @@
     y: 320px
     width: 300px
 
-# A HAIRLINE, NOT A DIVIDER FOR ITS OWN SAKE. The two routes have nothing to do
-# with each other and both are plausible, so the rule says "below this is a
-# different way of doing the same thing" — structure carrying information, which
-# is the only reason a rule is allowed here. c_rule is the token the rest of the
-# design already uses for exactly this.
+# A HAIRLINE, NOT A DIVIDER FOR ITS OWN SAKE.
 - obj:
     id: setup_rule
     width: 1200px
@@ -155,7 +135,7 @@
     bg_opa: COVER
     border_width: 0
 
-# ── Bottom: on-screen setup ─────────────────────────────────────────────
+# ── Bottom: on-screen Wi-Fi setup ───────────────────────────────────────
 
 - label:
     id: setup_home_label
@@ -172,9 +152,9 @@
     text: "Scan"
     align: TOP_LEFT
     x: 40px
-    y: 468px
+    y: 444px
     width: 100px
-    height: 44px
+    height: 40px
     bg_color: 0x0D1F35
     border_width: 0
     radius: 8px
@@ -187,15 +167,9 @@
     id: wifi_network_dropdown
     align: TOP_LEFT
     x: 160px
-    y: 468px
+    y: 444px
     width: 1080px
-    # EXPLICIT, and it has to be. Left to LVGL a dropdown sizes its own height
-    # from its label and symbol, which means the box's vertical position — and
-    # therefore its alignment with the Scan button beside it — is not knowable
-    # from the YAML at all. The layout preview drew it with no height and no
-    # outline, which is what a zero-height box looks like. Matching the button's
-    # 44px makes the row a row.
-    height: 44px
+    height: 40px
     options:
       - "Scanning…"
     symbol: "›"
@@ -207,230 +181,31 @@
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 40px
-    y: 536px
+    y: 490px
     width: 200px
 
 - textarea:
     id: wifi_password
     align: TOP_LEFT
     x: 40px
-    y: 568px
+    y: 512px
     width: 400px
-    height: 44px
+    height: 40px
     one_line: true
     password_mode: true
     placeholder_text: "Network password"
-    # Tapping the field opens the keyboard; tapping it again closes it. There is
-    # no other way in, so this is the whole affordance — see wifi_keyboard_toggle.
     on_click:
+      - lambda: id(keyboard_target) = 0;
       - script.execute: wifi_keyboard_toggle
-
-# ── Server binding (on-screen) ───────────────────────────────────────────
-#
-# Placed on the right side, between the network labels and the dropdown, so
-# nothing overlaps the WiFi section or the rule.
-
-- label:
-    id: bind_section_label
-    text: "Bind to station"
-    text_font: font_small
-    text_color: 0x6A8BA8
-    align: TOP_LEFT
-    x: 620px
-    y: 348px
-    width: 200px
-
-- textarea:
-    id: bind_server_url
-    align: TOP_LEFT
-    x: 620px
-    y: 372px
-    width: 620px
-    height: 36px
-    one_line: true
-    placeholder_text: "https://your-station.example.com"
-    on_click:
-      - lambda: id(keyboard_target) = 2;
-      - script.execute: wifi_keyboard_toggle
-
-- textarea:
-    id: bind_code
-    align: TOP_LEFT
-    x: 620px
-    y: 424px
-    width: 200px
-    height: 36px
-    one_line: true
-    placeholder_text: "AB1-C23"
-    on_click:
-      - lambda: id(keyboard_target) = 3;
-      - script.execute: wifi_keyboard_toggle
-
-- button:
-    id: bind_test_button
-    text: "Test"
-    align: TOP_LEFT
-    x: 840px
-    y: 424px
-    width: 80px
-    height: 36px
-    bg_color: 0x0D1F35
-    border_width: 1
-    border_color: 0x4E9FD4
-    radius: 8px
-    text_color: 0x4E9FD4
-    text_font: font_small
-    on_click:
-      - script.execute: bind_test_connection
-
-- button:
-    id: bind_button
-    text: "Bind"
-    align: TOP_LEFT
-    x: 940px
-    y: 424px
-    width: 140px
-    height: 36px
-    bg_color: 0x1A1214
-    border_width: 1
-    border_color: 0xEF4444
-    radius: 8px
-    text_color: 0xF2F2F2
-    text_font: font_small
-    on_click:
-      - script.execute: bind_device
-
-- label:
-    id: bind_status
-    text: ""
-    text_font: font_small
-    text_color: 0x6A8BA8
-    align: TOP_LEFT
-    x: 620px
-    y: 468px
-    width: 620px
-
-# ── The on-screen keyboard ──────────────────────────────────────────────
-#
-# Hidden until the password field is tapped. It occupies the bottom of the
-# screen and covers the network picker while it is up, which is deliberate: by
-# the time anyone is typing a password they have already picked a network, and
-# the alternative — squeezing a keyboard in beside the list — leaves neither
-# usable at arm's length on a wall.
-#
-# THE FIELD MOVES UP when the keyboard opens, because otherwise it would be
-# behind it. It is the one line that has to be above y=520 (the keyboard's top).
-#
-# FOUR MODE BUTTONS, because a WiFi password needs all four character sets and
-# LVGL's keyboard shows exactly one at a time. Without them the keyboard starts
-# in one case and there is no way to reach the other three.
-
-- button:
-    id: wifi_mode_lower
-    text: "abc"
-    align: TOP_LEFT
-    x: 460px
-    y: 568px
-    width: 136px
-    height: 44px
-    bg_color: 0x0D1F35
-    border_width: 0
-    radius: 8px
-    text_color: 0xDCE8F5
-    text_font: font_body
-    hidden: true
-    on_click:
-      - script.execute: { id: wifi_keyboard_mode, mode: 0 }
-
-- button:
-    id: wifi_mode_upper
-    text: "ABC"
-    align: TOP_LEFT
-    x: 604px
-    y: 568px
-    width: 136px
-    height: 44px
-    bg_color: 0x0D1F35
-    border_width: 0
-    radius: 8px
-    text_color: 0xDCE8F5
-    text_font: font_body
-    hidden: true
-    on_click:
-      - script.execute: { id: wifi_keyboard_mode, mode: 1 }
-
-- button:
-    id: wifi_mode_special
-    text: "#+="
-    align: TOP_LEFT
-    x: 748px
-    y: 568px
-    width: 136px
-    height: 44px
-    bg_color: 0x0D1F35
-    border_width: 0
-    radius: 8px
-    text_color: 0xDCE8F5
-    text_font: font_body
-    hidden: true
-    on_click:
-      - script.execute: { id: wifi_keyboard_mode, mode: 2 }
-
-- button:
-    id: wifi_mode_number
-    text: "123"
-    align: TOP_LEFT
-    x: 892px
-    y: 568px
-    width: 136px
-    height: 44px
-    bg_color: 0x0D1F35
-    border_width: 0
-    radius: 8px
-    text_color: 0xDCE8F5
-    text_font: font_body
-    hidden: true
-    on_click:
-      - script.execute: { id: wifi_keyboard_mode, mode: 3 }
-
-- button:
-    id: wifi_keyboard_done
-    text: "Done"
-    align: TOP_LEFT
-    x: 1036px
-    y: 568px
-    width: 104px
-    height: 44px
-    bg_color: 0x0D1F35
-    border_width: 0
-    radius: 8px
-    text_color: 0xDCE8F5
-    text_font: font_body
-    hidden: true
-    on_click:
-      - script.execute: wifi_keyboard_toggle
-
-- keyboard:
-    id: wifi_keyboard
-    align: TOP_LEFT
-    x: 40px
-    y: 620px
-    width: 1200px
-    height: 160px
-    textarea: wifi_password
-    # Lower case first: most WiFi passwords are mostly lower case, and starting
-    # in upper case means the first character typed is wrong half the time.
-    mode: TEXT_LOWER
-    hidden: true
 
 - button:
     id: setup_connect_button
     text: "Connect"
     align: TOP_LEFT
     x: 460px
-    y: 568px
+    y: 512px
     width: 140px
-    height: 44px
+    height: 40px
     bg_color: 0x0D1F35
     border_width: 0
     radius: 8px
@@ -449,6 +224,123 @@
     y: 568px
     width: 620px
 
+- button:
+    id: setup_next_button
+    text: "Next →"
+    align: TOP_LEFT
+    x: 1060px
+    y: 512px
+    width: 140px
+    height: 40px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0x4E9FD4
+    text_font: font_body
+    on_click:
+      - script.execute: { id: window_go, target: 4 }
+
+# ── The on-screen keyboard ──────────────────────────────────────────────
+# Hidden until a field is tapped. Sits at the bottom with a safe margin so
+# all four rows of keys are visible.
+# Mode buttons sit in the row above (y=520px), hidden when keyboard is closed.
+
+- button:
+    id: wifi_mode_lower
+    text: "abc"
+    align: TOP_LEFT
+    x: 460px
+    y: 512px
+    width: 136px
+    height: 40px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 0 }
+
+- button:
+    id: wifi_mode_upper
+    text: "ABC"
+    align: TOP_LEFT
+    x: 604px
+    y: 512px
+    width: 136px
+    height: 40px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 1 }
+
+- button:
+    id: wifi_mode_special
+    text: "#+="
+    align: TOP_LEFT
+    x: 748px
+    y: 512px
+    width: 136px
+    height: 40px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 2 }
+
+- button:
+    id: wifi_mode_number
+    text: "123"
+    align: TOP_LEFT
+    x: 892px
+    y: 512px
+    width: 136px
+    height: 40px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 3 }
+
+- button:
+    id: wifi_keyboard_done
+    text: "Done"
+    align: TOP_LEFT
+    x: 1036px
+    y: 512px
+    width: 104px
+    height: 40px
+    bg_color: 0x0D1F35
+    border_width: 0
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: wifi_keyboard_toggle
+
+- keyboard:
+    id: wifi_kb
+    align: TOP_LEFT
+    x: 40px
+    y: 560px
+    width: 1200px
+    height: 200px
+    textarea: wifi_password
+    mode: TEXT_LOWER
+    hidden: true
+
 - label:
     id: setup_address
     text: "—"
@@ -457,6 +349,3 @@
     align: BOTTOM_RIGHT
     x: -40px
     y: -24px
-    # Make the address more prominent so the operator knows where to go.
-    # This is the only thing on the screen that tells them how to finish setup
-    # when Wi-Fi already works.

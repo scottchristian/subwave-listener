@@ -29,6 +29,10 @@ globals:
     type: int
     restore_value: no
     initial_value: '0'
+  - id: setup_page
+    type: int
+    restore_value: no
+    initial_value: '3'
 
 
 script:
@@ -333,46 +337,22 @@ script:
     mode: single
     then:
       - lambda: |-
-          auto *kb = id(wifi_keyboard)->obj;
-          bool opening = lv_obj_has_flag(kb, LV_OBJ_FLAG_HIDDEN);
+          // Pick the keyboard for the current screen.
+          // Wi-Fi page (setup_page == 3): wifi_kb -> textarea wifi_password
+          // Bind page   (setup_page == 4): bind_kb -> textarea bind_server_url / bind_code
+          lv_obj_t *kb_sel = id(id(setup_page) == 3 ? wifi_kb : bind_kb).obj;
+          bool kb_was_hidden = lv_obj_has_flag(kb_sel, LV_OBJ_FLAG_HIDDEN);
 
-          // NOTHING MOVES. THIS IS THE SECOND TIME, AND THE FIRST TIME LOST.
-          //
-          // The first version raised the password field into the row above the
-          // keyboard. That needed three things to go right at once: the field's
-          // caption travelled with it, the Connect button travelled with it, and
-          // the two controls the field landed on were hidden. All three were
-          // implemented and all three were still wrong — the caption landed on
-          // the section heading, and two of the four character-set buttons
-          // landed underneath Connect.
-          //
-          // NEITHER COLLISION IS DETECTABLE BY AN ASSERTION. Every widget was
-          // still inside the panel; nothing overlapped anything still visible.
-          // They were found by drawing the screen, which is the whole argument
-          // for drawing it.
-          //
-          // A 1200x180 keyboard tucked UNDER the password field does the same
-          // job with none of that: nothing is raised, nothing travels, nothing
-          // is covered, and no caption can end up above its own box.
-          //
-          // What is hidden is the two things that act on a FINISHED password —
-          // Connect and the status line. Both share the field's row, which is
-          // where the character-set buttons go while typing.
-          //
-          // The type is spelled out rather than `auto`, and not because the two
-          // differ — they are both `lv_obj_t *`. It is that `auto *row[] = {...}`
-          // cannot deduce from a braced-init-list at all, and the error it
-          // produces names a dozen inherited class paths and never mentions a
-          // braced list. Declaring `lv_obj_t *` is fine even though the type is
-          // incomplete: a pointer to an incomplete type may be declared, just
-          // not dereferenced.
           // Only the action buttons and status hide while typing. The field being
           // typed in MUST stay visible — hiding it is what made the keyboard
           // look like it had swallowed the input.
           lv_obj_t *hidden_while_typing[] = {id(setup_connect_button), id(wifi_status),
+                                   id(setup_next_button),
                                    id(bind_test_button), id(bind_button), id(bind_status)};
           lv_obj_t *shown_while_typing[] = {id(wifi_mode_lower), id(wifi_mode_upper), id(wifi_mode_special),
-                                   id(wifi_mode_number), id(wifi_keyboard_done)};
+                                   id(wifi_mode_number), id(wifi_keyboard_done),
+                                   id(bind_mode_lower), id(bind_mode_upper), id(bind_mode_special),
+                                   id(bind_mode_number), id(bind_keyboard_done)};
 
           // Switch the keyboard's target based on keyboard_target.
           // 0 = wifi_password (default), 2 = bind_server_url, 3 = bind_code
@@ -380,28 +360,28 @@ script:
           if (id(keyboard_target) == 2) target = id(bind_server_url);
           else if (id(keyboard_target) == 3) target = id(bind_code);
 
-          if (opening) {
+          if (kb_was_hidden) {
             // Keyboard was hidden — show it with the new target.
-            lv_keyboard_set_textarea(kb, target);
-            lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
+            lv_keyboard_set_textarea(kb_sel, target);
+            lv_obj_clear_flag(kb_sel, LV_OBJ_FLAG_HIDDEN);
             for (auto *o : hidden_while_typing)
               lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
             for (auto *o : shown_while_typing)
               lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
-          } else if (lv_keyboard_get_textarea(kb) != target) {
+          } else if (lv_keyboard_get_textarea(kb_sel) != target) {
             // Keyboard is visible but on a different field — switch target,
             // don't toggle off. Tapping a field while the keyboard is up
             // should retarget it, not hide it.
-            lv_keyboard_set_textarea(kb, target);
+            lv_keyboard_set_textarea(kb_sel, target);
           } else {
             // Keyboard is visible on the same field — toggle off.
-            lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(kb_sel, LV_OBJ_FLAG_HIDDEN);
             for (auto *o : hidden_while_typing)
               lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
             for (auto *o : shown_while_typing)
               lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
           }
-          lv_obj_invalidate(kb);
+          lv_obj_invalidate(kb_sel);
 
   # Switch the keyboard's character set.
   #
@@ -423,7 +403,8 @@ script:
           };
           if (mode < 0 || mode > 3)
             return;
-          lv_keyboard_set_mode(id(wifi_keyboard)->obj, modes[mode]);
+          lv_keyboard_set_mode(id(wifi_kb).obj, modes[mode]);
+          lv_keyboard_set_mode(id(bind_kb).obj, modes[mode]);
 
   # Run when a scan actually lands.
   #
@@ -669,21 +650,34 @@ script:
       - lambda: |-
           lv_obj_add_flag(id(window_1), LV_OBJ_FLAG_HIDDEN);
           lv_obj_add_flag(id(window_2), LV_OBJ_FLAG_HIDDEN);
-          // An unbound device has no identity and no server URL. Show the setup
-          // screen so the operator can enter the server address and bind code.
+          // An unbound device has no identity and no server URL. Show the Wi-Fi
+          // setup screen so the operator can connect and then bind.
           // A bound device shows the now-playing window.
           auto *c = id(display_client);
+          auto *wifi = esphome::wifi::global_wifi_component;
+          bool wifi_up = wifi != nullptr && wifi->is_connected();
           bool bound = !c->device_id().empty() && !c->claim_token().empty() && !c->server_url().empty();
           if (bound) {
-            lv_obj_add_flag(id(setup_screen), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(setup_wifi_screen), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(setup_bind_screen), LV_OBJ_FLAG_HIDDEN);
             lv_obj_clear_flag(id(window_0), LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_x(id(window_0), 0);
-            ESP_LOGI("subwave.ui", "Boot window is 0; the other three slots hidden.");
-          } else {
-            lv_obj_clear_flag(id(setup_screen), LV_OBJ_FLAG_HIDDEN);
+            ESP_LOGI("subwave.ui", "Boot window is 0; the other slots hidden.");
+          } else if (wifi_up) {
+            // Wi-Fi is already up; skip the Wi-Fi page and go straight to bind.
+            id(setup_page) = 4;
+            lv_obj_add_flag(id(setup_wifi_screen), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(setup_bind_screen), LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(id(window_0), LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_x(id(setup_screen), 0);
-            ESP_LOGI("subwave.ui", "Unbound device. Boot window is setup.");
+            lv_obj_set_x(id(setup_bind_screen), 0);
+            ESP_LOGI("subwave.ui", "Boot window is bind (WiFi up, no identity).");
+          } else {
+            id(setup_page) = 3;
+            lv_obj_clear_flag(id(setup_wifi_screen), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(setup_bind_screen), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(window_0), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_x(id(setup_wifi_screen), 0);
+            ESP_LOGI("subwave.ui", "Boot window is Wi-Fi setup (no WiFi, no identity).");
           }
           window_draw_rail->execute();
 
@@ -716,9 +710,12 @@ script:
           id(window_queued) = -1;
           int from = id(window_index);
           id(window_index) = target;
+          // Keep setup_page in sync so the keyboard toggle picks the right keyboard.
+          if (target == 3) id(setup_page) = 3;
+          if (target == 4) id(setup_page) = 4;
 
           // Pointers to an incomplete type — legal to hold, illegal to deref.
-          lv_obj_t *wins[4] = {id(window_0), id(window_1), id(window_2), id(setup_screen)};
+          lv_obj_t *wins[5] = {id(window_0), id(window_1), id(window_2), id(setup_wifi_screen), id(setup_bind_screen)};
 
           const int32_t width = 800;   // the panel is 800x800
           const int32_t step = 24;     // 800/24 = 34 frames, ~570ms at 16ms

@@ -44,7 +44,8 @@ import {
 } from "./lib/setup-layout.mts";
 
 const ROOT = process.cwd();
-const SETUP = screenPath(ROOT, "setup");
+const SETUP_WIFI = screenPath(ROOT, "setup_wifi");
+const SETUP_BIND = screenPath(ROOT, "setup_bind");
 const SCRIPTS = scriptsPath(ROOT);
 
 let passed = 0;
@@ -58,10 +59,13 @@ function ok(cond: boolean, name: string, extra = "") {
   console.log(`  FAIL  ${name}${extra ? " — " + extra : ""}`);
 }
 
-const setup = parseWidgets(SETUP);
+const setup_wifi = parseWidgets(SETUP_WIFI);
+const setup_bind = parseWidgets(SETUP_BIND);
 
-ok(fs.existsSync(SETUP), "setup.yaml found");
-ok(setup.size > 0, "setup.yaml yields widgets", `${setup.size} widget(s)`);
+ok(fs.existsSync(SETUP_WIFI), "setup_wifi.yaml found");
+ok(setup_wifi.size > 0, "setup_wifi.yaml yields widgets", `${setup_wifi.size} widget(s)`);
+ok(fs.existsSync(SETUP_BIND), "setup_bind.yaml found");
+ok(setup_bind.size > 0, "setup_bind.yaml yields widgets", `${setup_bind.size} widget(s)`);
 
 // ---------------------------------------------------------------------------
 // 1. Everything fits on the panel.
@@ -69,7 +73,16 @@ ok(setup.size > 0, "setup.yaml yields widgets", `${setup.size} widget(s)`);
 // Only widgets with an ABSOLUTE y are decidable. A widget positioned by align
 // alone (bottom-right, centred) is placed by LVGL and is out of scope; the ones
 // that caused the original overflow were all absolutely positioned.
-for (const [id, w] of setup) {
+for (const [id, w] of setup_wifi) {
+  if (w.y === null) continue;
+  const bottom = w.y + (w.h ?? 0);
+  ok(
+    bottom <= PANEL_H,
+    `${id} fits on the panel`,
+    `y=${w.y} + h=${w.h ?? 0} = ${bottom} > ${PANEL_H}`,
+  );
+}
+for (const [id, w] of setup_bind) {
   if (w.y === null) continue;
   const bottom = w.y + (w.h ?? 0);
   ok(
@@ -88,49 +101,74 @@ for (const [id, w] of setup) {
 // consequence worth checking is therefore simpler: the keyboard must start
 // BELOW the field, and must not start below it by an accident that is hard to
 // see — two numbers 50px apart read the same in a diff as two numbers 5px apart.
-const kb = setup.get("wifi_keyboard");
-const pw = setup.get("wifi_password");
-const connect = setup.get("setup_connect_button");
+const kb_wifi = setup_wifi.get("wifi_kb");
+const pw_wifi = setup_wifi.get("wifi_password");
+const kb_bind = setup_bind.get("bind_kb");
+const pw_bind = setup_bind.get("bind_server_url");
 
-ok(kb !== undefined, "wifi_keyboard is declared");
-ok(pw !== undefined, "wifi_password is declared");
-ok(kb?.y !== null && kb?.y !== undefined, "wifi_keyboard has an absolute y");
-ok(kb?.h !== null && kb?.h !== undefined, "wifi_keyboard has an explicit height");
+ok(kb_wifi !== undefined, "wifi_kb is declared (Wi-Fi page)");
+ok(pw_wifi !== undefined, "wifi_password is declared (Wi-Fi page)");
+ok(kb_wifi?.y !== null && kb_wifi?.y !== undefined, "wifi_kb has an absolute y (Wi-Fi page)");
+ok(kb_wifi?.h !== null && kb_wifi?.h !== undefined, "wifi_kb has an explicit height (Wi-Fi page)");
 
-if (kb && pw && pw.y !== null && pw.h !== null && kb.y !== null) {
-  const fieldBottom = pw.y + pw.h;
+if (kb_wifi && pw_wifi && pw_wifi.y !== null && pw_wifi.h !== null && kb_wifi.y !== null) {
+  const fieldBottom = pw_wifi.y + pw_wifi.h;
   ok(
-    kb.y >= fieldBottom + 8,
-    "the keyboard clears the password field with a visible gap",
-    `field ends ${fieldBottom}, keyboard starts ${kb.y} — no gap`,
+    kb_wifi.y >= fieldBottom + 8,
+    "the Wi-Fi keyboard clears the password field with a visible gap",
+    `field ends ${fieldBottom}, keyboard starts ${kb_wifi.y} — no gap`,
   );
   ok(
-    kb.y + kb.h! <= PANEL_H,
-    "the keyboard fits on the panel",
-    `y=${kb.y} + h=${kb.h} = ${kb.y + kb.h!} > ${PANEL_H}`,
+    kb_wifi.y + kb_wifi.h! <= PANEL_H,
+    "the Wi-Fi keyboard fits on the panel",
+    `y=${kb_wifi.y} + h=${kb_wifi.h!} = ${kb_wifi.y + kb_wifi.h!} > ${PANEL_H}`,
   );
   ok(
-    kb.h! >= 160,
-    "the keyboard is tall enough to type on",
-    `${kb.h}px is a strip rather than a keyboard`,
+    kb_wifi.h! >= 160,
+    "the Wi-Fi keyboard is tall enough to type on",
+    `${kb_wifi.h}px is a strip rather than a keyboard`,
+  );
+}
+
+ok(kb_bind !== undefined, "bind_kb is declared (Bind page)");
+ok(pw_bind !== undefined, "bind_server_url is declared (Bind page)");
+ok(kb_bind?.y !== null && kb_bind?.y !== undefined, "bind_kb has an absolute y (Bind page)");
+ok(kb_bind?.h !== null && kb_bind?.h !== undefined, "bind_kb has an explicit height (Bind page)");
+
+if (kb_bind && pw_bind && pw_bind.y !== null && pw_bind.h !== null && kb_bind.y !== null) {
+  const fieldBottom = pw_bind.y + pw_bind.h;
+  ok(
+    kb_bind.y >= fieldBottom + 8,
+    "the Bind keyboard clears the server URL field with a visible gap",
+    `field ends ${fieldBottom}, keyboard starts ${kb_bind.y} — no gap`,
+  );
+  ok(
+    kb_bind.y + kb_bind.h! <= PANEL_H,
+    "the Bind keyboard fits on the panel",
+    `y=${kb_bind.y} + h=${kb_bind.h!} = ${kb_bind.y + kb_bind.h!} > ${PANEL_H}`,
+  );
+  ok(
+    kb_bind.h! >= 160,
+    "the Bind keyboard is tall enough to type on",
+    `${kb_bind.h}px is a strip rather than a keyboard`,
   );
 }
 
 // The mode row lives in the field's row, to the right of it. Four 136px buttons
 // and a Done need 780px, and the field takes 400 — so anything wider than about
 // 520px of field would push them off the panel.
-if (kb && pw && pw.w !== null && pw.h !== null && kb.y !== null) {
+if (kb_wifi && pw_wifi && pw_wifi.w !== null && pw_wifi.h !== null && kb_wifi.y !== null) {
   // Sharing a row means sharing a TOP edge, not a bottom edge. The buttons are
   // the same height as the field, so comparing bottoms would test nothing.
-  const modeRow = pw.y;
+  const modeRow = pw_wifi.y;
   const buttons = ["wifi_mode_lower", "wifi_mode_upper", "wifi_mode_special", "wifi_mode_number", "wifi_keyboard_done"];
-  const inRow = buttons.filter((id) => setup.get(id)?.y === modeRow);
+  const inRow = buttons.filter((id) => setup_wifi.get(id)?.y === modeRow);
   ok(
     inRow.length === buttons.length,
     "every keyboard button shares the password field's row",
     `found ${inRow.length}/${buttons.length} at y=${modeRow}`,
   );
-  const last = setup.get("wifi_keyboard_done");
+  const last = setup_wifi.get("wifi_keyboard_done");
   if (last && last.x !== null && last.w !== null) {
     ok(
       last.x + last.w <= PANEL_W,
@@ -138,9 +176,9 @@ if (kb && pw && pw.w !== null && pw.h !== null && kb.y !== null) {
       `ends at ${last.x + last.w}`,
     );
     ok(
-      pw.x !== null && last.x > pw.x + pw.w,
+      pw_wifi.x !== null && last.x > pw_wifi.x + pw_wifi.w,
       "the keyboard buttons sit clear of the password field",
-      `Done starts at ${last.x}, field ends at ${(pw.x ?? 0) + pw.w}`,
+      `Done starts at ${last.x}, field ends at ${(pw_wifi.x ?? 0) + pw_wifi.w}`,
     );
   }
 }
@@ -156,7 +194,7 @@ const toggle = scriptSrc.slice(
   scriptSrc.indexOf("- id: wifi_keyboard_mode"),
 );
 ok(
-  /lv_obj_add_flag/.test(toggle.slice(toggle.indexOf("if (opening)"), toggle.indexOf("} else {"))),
+  /lv_obj_add_flag/.test(toggle.slice(toggle.indexOf("if (kb_was_hidden)"), toggle.indexOf("} else {"))),
   "the opening branch HIDES what the keyboard covers",
 );
 
@@ -168,7 +206,7 @@ const toggleMoves = (toggle.match(/lv_obj_set_(?:x|y)\(/g) ?? []).length;
 ok(
   toggleMoves === 0,
   "the keyboard toggle moves no widget",
-  `${toggleMoves} position write(s) in the toggle — every move is a possible stranded caption`,
+  `${toggleMoves} position write(s) in the toggle — every move is a possible stranded collision`,
 );
 
 // ---------------------------------------------------------------------------

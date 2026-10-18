@@ -21,16 +21,21 @@ wifi:
   # for [esphome]" — which says the shape is wrong without saying where it went.
   on_connect:
     - delay: 1500ms
-    # The WiFi wizard screen stays up until the device is actually claimed, not
-    # merely until it has an IP. A screen that hides its own QR the moment it
-    # associates leaves somebody standing in a room with no way to finish.
+    # WiFi just came up. Decide which setup screen (if any) to show:
+    #   bound identity        → now-playing (window_0)
+    #   WiFi + no identity    → bind screen (setup_bind_screen)
+    #   no WiFi (can't happen here, but safe) → Wi-Fi setup (setup_wifi_screen)
     - if:
         condition:
-          lambda: return !id(device_claimed);
+          lambda: |-
+            auto *c = id(display_client);
+            return !c->device_id().empty() && !c->claim_token().empty() && !c->server_url().empty();
         then:
-          - script.execute: show_setup_screen
+          - script.execute: { id: window_go, target: 0 }
+        else:
+          - script.execute: { id: window_go, target: 4 }
   on_disconnect:
-    - script.execute: show_setup_screen
+    - script.execute: { id: window_go, target: 3 }
 
 # captive_portal removed - we serve our own setup wizard via custom web handler
 # in subwave_display component. The captive portal component overrides our / route.
@@ -52,14 +57,11 @@ globals:
     initial_value: 'false'
 
 script:
-  - id: show_setup_screen
+  - id: show_setup_wifi_screen
     mode: restart
     then:
       - lambda: id(wifi_joined) = false;
       - script.execute: update_setup_label
-      # Show the setup screen. show_setup_screen used to only update the label,
-      # which meant the setup screen was never actually displayed — the
-      # connectivity ladder was the only path, and it only fires 18s after boot.
       - script.execute: { id: window_go, target: 3 }
 
   - id: update_setup_label

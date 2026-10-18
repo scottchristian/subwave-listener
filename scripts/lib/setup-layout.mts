@@ -72,7 +72,7 @@ export interface Widget {
  * been drawn or asserted, which is the same blind spot the setup screen had and
  * the reason four faults survived in it.
  */
-export const SCREENS = ["setup", "now", "shows", "settings"] as const;
+export const SCREENS = ["setup_wifi", "setup_bind", "now", "shows", "settings"] as const;
 export type ScreenName = (typeof SCREENS)[number];
 
 export function screenPath(root: string, name: string): string {
