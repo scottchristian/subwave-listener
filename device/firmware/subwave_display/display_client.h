@@ -100,6 +100,13 @@ class SubwaveDisplay
   void set_server_url(const std::string &url) { server_url_ = url; }
   void set_device_id(const std::string &id) { device_id_ = id; }
   void set_claim_token(const std::string &t) { claim_token_ = t; }
+
+  // Bind to a station using a server URL and a bind code. Returns true on
+  // success. Stores the resulting identity in flash.
+  bool bind(const std::string &server_url, const std::string &bind_code);
+
+  // Load identity from flash. Returns true if a complete identity was found.
+  bool load_identity_();
   void set_setup_ap_ssid(const std::string &s) { setup_ap_ssid_ = s; }
   void set_artwork_size(int v) { artwork_size_ = v; }
   void set_art_buffer_bytes(int v) { art_buffer_bytes_ = v; }
@@ -108,11 +115,18 @@ class SubwaveDisplay
   /** The bearer token, for the online_image auth header. Public for the same
    *  reason send_heartbeat() is: YAML cannot reach a private member. */
   const std::string &bearer() const { return bearer_; }
+  const std::string &device_id() const { return device_id_; }
+  const std::string &claim_token() const { return claim_token_; }
+  const std::string &server_url() const { return server_url_; }
   /** The app's base URL, for building artwork URLs in YAML. */
   const std::string &api_base() const { return api_base_; }
 
   const std::string &pending_art_url() const { return pending_art_url_; }
   void clear_pending_art_url() { pending_art_url_.clear(); }
+
+  const std::string &bind_code() const { return bind_code_; }
+  void set_bind_code(const std::string &c) { bind_code_ = c; }
+  bool needs_bind() const { return !bind_code_.empty() && (device_id_.empty() || claim_token_.empty()); }
 
   // For the screens: the current state, and the artwork fetch to start.
   const NowPlaying &now_playing() const { return now_; }
@@ -181,7 +195,9 @@ class SubwaveDisplay
   const char *connectivity_message(Connectivity c) const;
 
   /** True when setup should be demanded rather than merely offered. */
-  bool needs_setup() const { return this->connectivity_ != Connectivity::OK; }
+  bool needs_setup() const {
+    return this->connectivity_ != Connectivity::OK || this->device_id_.empty() || this->claim_token_.empty() || this->server_url_.empty();
+  }
 
   /** The Skip button. Refused by the server under the same policy as a listener's. */
   void request_skip();
@@ -246,8 +262,27 @@ class SubwaveDisplay
   // by memcpy of a trivially-copyable type — see the note on save_token_().
   static constexpr size_t TOKEN_BYTES = 65;
   static constexpr uint32_t TOKEN_KEY = 0x53574231;  // "SWB1"
+
+  // Flash storage for the bound identity. A standard image carries none of
+  // these at compile time; the device collects them during setup and stores
+  // them here. Each gets its own preference key so a partial write (power cut
+  // mid-save) cannot corrupt the whole identity.
+  static constexpr size_t URL_BYTES = 256;
+  static constexpr size_t ID_BYTES = 65;
+  static constexpr size_t CLAIM_BYTES = 65;
+  static constexpr uint32_t URL_KEY = 0x53574232;    // "SWB2"
+  static constexpr uint32_t DEVICE_ID_KEY = 0x53574233;  // "SWB3"
+  static constexpr uint32_t CLAIM_TOKEN_KEY = 0x53574234;  // "SWB4"
+
+  static constexpr size_t BIND_CODE_BYTES = 16;
+  static constexpr uint32_t BIND_CODE_KEY = 0x53574235;  // "SWB5"
   void save_token_();
   void load_token_();
+
+  void save_identity_();
+  void load_identity_from_flash_();
+  void save_bind_code_();
+  void load_bind_code_();
 
   std::string server_url_;
   std::string device_id_;
@@ -273,6 +308,7 @@ class SubwaveDisplay
   // on the incoming online_image, because C++ cannot reach that object directly.
   std::string pending_art_url_;
   std::string shown_art_url_;
+  std::string bind_code_;
 
   bool claimed_{false};
   bool server_reachable_{false};

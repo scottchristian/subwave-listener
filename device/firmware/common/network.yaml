@@ -57,6 +57,10 @@ script:
     then:
       - lambda: id(wifi_joined) = false;
       - script.execute: update_setup_label
+      # Show the setup screen. show_setup_screen used to only update the label,
+      # which meant the setup screen was never actually displayed — the
+      # connectivity ladder was the only path, and it only fires 18s after boot.
+      - script.execute: { id: window_go, target: 3 }
 
   - id: update_setup_label
     mode: restart

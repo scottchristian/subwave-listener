@@ -6,6 +6,7 @@
 #include "esphome/core/log.h"
 #include "esphome/core/scheduler.h"
 #include "esphome/components/wifi/wifi_component.h"
+#include "esphome/core/preferences.h"
 
 // The IDF WiFi API, for log_radio_state(). Not reachable from a YAML lambda:
 // main.cpp includes esphome.h, which brings in the wifi COMPONENT's headers
@@ -126,6 +127,8 @@ void SetupWebHandler::save_(AsyncWebServerRequest *request) {
   std::string tz = request->arg("tz");
   std::string lat = request->arg("lat");
   std::string lon = request->arg("lon");
+  std::string server_url = request->arg("server_url");
+  std::string bind_code = request->arg("bind_code");
 
   if (ssid.empty()) {
     ESP_LOGW(TAG, "save: rejected, no ssid");
@@ -155,9 +158,29 @@ void SetupWebHandler::save_(AsyncWebServerRequest *request) {
   // `App.scheduler.set_timeout` rather than `Component::defer` because this
   // handler is not a Component — it is only an AsyncWebHandler that happens to
   // be owned by one.
-  App.scheduler.set_timeout(this, 0, [ssid, psk]() {
+  App.scheduler.set_timeout(this, 0, [ssid, psk, server_url, bind_code]() {
     if (wifi::global_wifi_component != nullptr)
       wifi::global_wifi_component->save_wifi_sta(ssid.c_str(), psk.c_str());
+
+    // Store the server URL and bind code in flash so the device can bind
+    // after it reboots with WiFi connected.
+    if (esphome::global_preferences != nullptr) {
+      if (!server_url.empty()) {
+        char buf[256] = {0};
+        size_t n = std::min(server_url.size(), (size_t)255);
+        memcpy(buf, server_url.data(), n);
+        auto pref = esphome::global_preferences->make_preference<char[256]>(0x53574232, true);  // "SWB2"
+        pref.save(&buf);
+      }
+      if (!bind_code.empty()) {
+        char buf[16] = {0};
+        size_t n = std::min(bind_code.size(), (size_t)15);
+        memcpy(buf, bind_code.data(), n);
+        auto pref = esphome::global_preferences->make_preference<char[16]>(0x53574235, true);  // "SWB5"
+        pref.save(&buf);
+      }
+      esphome::global_preferences->sync();
+    }
   });
 
   request->send(200, "text/plain", "Saved. Connecting...");
@@ -269,6 +292,15 @@ footer{margin-top:26px;padding-top:16px;border-top:1px solid var(--line);color:v
     </div>
     <div class="hint">Used for sunrise and sunset, so the screen's night mode matches the room. Change it later in the screen's own settings.</div>
   </div></li>
+
+  <li><div class="card">
+    <label for="server_url">Server address</label>
+    <input id="server_url" type="url" placeholder="https://your-station.example.com" style="margin-bottom:12px">
+    <div class="hint" style="margin-bottom:12px">The address of your SUB/WAVE station. The screen will fetch its identity from here.</div>
+    <label for="bind_code">Bind code</label>
+    <input id="bind_code" type="text" placeholder="AB1-C23" style="text-transform:uppercase;letter-spacing:0.15em;font-weight:bold;text-align:center">
+    <div class="hint">The code shown on the admin panel when you created this screen. Single-use.</div>
+  </div></li>
 </ol>
 <button id="go" type="submit">Connect this screen</button>
 <div id="status"></div>
@@ -333,6 +365,8 @@ document.getElementById("f").onsubmit = function(e){
   body.set("tz", tzVal ? tzVal.value : tz);
   body.set("lat", document.getElementById("lat").value);
   body.set("lon", document.getElementById("lon").value);
+  body.set("server_url", document.getElementById("server_url").value);
+  body.set("bind_code", document.getElementById("bind_code").value);
   document.getElementById("go").disabled = true;
   say("busy", "Saving…");
   fetch("/save", {method:"POST", body:body}).then(function(r){ return r.text(); }).then(function(t){

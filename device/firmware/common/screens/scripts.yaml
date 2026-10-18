@@ -453,9 +453,19 @@ script:
           auto result = c->check_connectivity();
           const char *message = c->connectivity_message(result);
 
-          if (result == subwave_display::SubwaveDisplay::Connectivity::OK) {
+          if (result == subwave_display::SubwaveDisplay::Connectivity::OK && !id(display_client)->needs_bind()) {
             lv_label_set_text(id(status_line), "");
             ESP_LOGI("subwave.setup", "Network is fine. Not asking for setup.");
+            return;
+          }
+
+          // Unbound device: the network is fine but the screen has no identity.
+          // Show the setup screen so the operator can enter the server URL and
+          // bind code.
+          if (id(display_client)->needs_bind()) {
+            ESP_LOGI("subwave.setup", "Unbound device. Showing setup.");
+            lv_label_set_text(id(status_line), "");
+            window_go->execute(3);
             return;
           }
 
@@ -565,14 +575,23 @@ script:
       - lambda: |-
           lv_obj_add_flag(id(window_1), LV_OBJ_FLAG_HIDDEN);
           lv_obj_add_flag(id(window_2), LV_OBJ_FLAG_HIDDEN);
-          lv_obj_add_flag(id(setup_screen), LV_OBJ_FLAG_HIDDEN);
-          // window_0 is the one that shows, so it is the one that must be the
-          // only one WITHOUT the flag. Clearing it rather than leaving it means a
-          // future change to which window opens is one line, here.
-          lv_obj_clear_flag(id(window_0), LV_OBJ_FLAG_HIDDEN);
-          lv_obj_set_x(id(window_0), 0);
+          // An unbound device has no identity and no server URL. Show the setup
+          // screen so the operator can enter the server address and bind code.
+          // A bound device shows the now-playing window.
+          auto *c = id(display_client);
+          bool bound = !c->device_id().empty() && !c->claim_token().empty() && !c->server_url().empty();
+          if (bound) {
+            lv_obj_add_flag(id(setup_screen), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(window_0), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_x(id(window_0), 0);
+            ESP_LOGI("subwave.ui", "Boot window is 0; the other three slots hidden.");
+          } else {
+            lv_obj_clear_flag(id(setup_screen), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(window_0), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_set_x(id(setup_screen), 0);
+            ESP_LOGI("subwave.ui", "Unbound device. Boot window is setup.");
+          }
           window_draw_rail->execute();
-          ESP_LOGI("subwave.ui", "Boot window is 0; the other three slots hidden.");
 
   # ---------------------------------------------------------------------------
   # Window switching (moved from window.yaml to avoid duplicate script: key).

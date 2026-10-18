@@ -1,9 +1,8 @@
 # The Guition ESP32-P4 JC8012P4A1, running SUB/WAVE.
 #
-# Built PER DEVICE, not once per station: `device_id` and `claim_token` are
-# compiled in, so the binary a screen flashes is the binary that screen can
-# claim with. There is no second credential part and no partition table to get
-# the offset of wrong — which is what buying a slower build actually bought.
+# STANDARD IMAGE. One binary serves every screen. The device collects the
+# server URL and a bind code during setup, fetches its identity from the
+# station's bind endpoint, and stores it in flash. No per-device build step.
 #
 # server_url is the app's OWN public URL. Never the station backend: a screen
 # knows exactly one host, and everything it needs is proxied. See
@@ -11,8 +10,7 @@
 # that keeps a foreign hostname out of this file.
 #
 #   esphome compile \
-#     -s device_id '<cuid>' -s claim_token '<token>' \
-#     -s server_url 'https://causewayfm.com' -s firmware_version '1.0.0' \
+#     -s firmware_version '1.0.0' \
 #     device/firmware/builds/subwave-jc8012p4a1.yaml
 #
 # Output to upload from: .esphome/build/subwave-jc8012p4a1/.pioenvs/
@@ -20,10 +18,10 @@
 substitutions:
   name: subwave-screen
   friendly_name: SUB/WAVE Screen
-  device_id: "unprovisioned"
-  claim_token: "unprovisioned"
-  server_url: "https://causewayfm.com"
-  firmware_version: "1.10.5"
+  device_id: ""
+  claim_token: ""
+  server_url: ""
+  firmware_version: "1.10.8"
 
   # The panel is natively 800x1280 portrait and driven as 1280x800 landscape.
   # Getting this backwards is the single most common mistake with this board.

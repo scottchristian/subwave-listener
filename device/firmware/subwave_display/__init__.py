@@ -34,9 +34,13 @@ CONFIG_SCHEMA = cv.Schema(
         cv.GenerateID(http_request.CONF_HTTP_REQUEST_ID): cv.use_id(
             http_request.HttpRequestComponent
         ),
-        cv.Required(CONF_SERVER_URL): cv.url,
-        cv.Required(CONF_DEVICE_ID): cv.string,
-        cv.Required(CONF_CLAIM_TOKEN): cv.string,
+        # Identity is now OPTIONAL. A standard image carries none of it; the
+        # device collects the server URL and a bind code during setup and stores
+        # the resulting identity in flash. Per-device builds still work by
+        # passing these substitutions, which is what the admin panel used to do.
+        cv.Optional(CONF_SERVER_URL, default=""): cv.string,
+        cv.Optional(CONF_DEVICE_ID, default=""): cv.string,
+        cv.Optional(CONF_CLAIM_TOKEN, default=""): cv.string,
         cv.Optional(CONF_SETUP_AP_SSID, default="SUBWAVE-SCREEN"): cv.string,
         cv.Optional(CONF_ARTWORK_SIZE, default=640): cv.int_range(16, 2048),
         cv.Optional(CONF_ART_BUFFER_BYTES, default=65536): cv.int_range(8192, 1048576),
@@ -79,9 +83,12 @@ async def to_code(config):
     #
     # `check:firmware-setters` fails on an unwrapped setter in any external
     # component, so this cannot come back.
-    cg.add(var.set_server_url(config[CONF_SERVER_URL]))
-    cg.add(var.set_device_id(config[CONF_DEVICE_ID]))
-    cg.add(var.set_claim_token(config[CONF_CLAIM_TOKEN]))
+    if config.get(CONF_SERVER_URL):
+        cg.add(var.set_server_url(config[CONF_SERVER_URL]))
+    if config.get(CONF_DEVICE_ID):
+        cg.add(var.set_device_id(config[CONF_DEVICE_ID]))
+    if config.get(CONF_CLAIM_TOKEN):
+        cg.add(var.set_claim_token(config[CONF_CLAIM_TOKEN]))
     cg.add(var.set_setup_ap_ssid(config[CONF_SETUP_AP_SSID]))
 
     await cg.register_component(var, config)

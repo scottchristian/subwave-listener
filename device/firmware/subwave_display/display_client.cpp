@@ -78,12 +78,14 @@ static bool bool_at(cJSON *obj, const char *key, bool fallback = false) {
 void SubwaveDisplay::setup() {
   this->api_base_ = this->server_url_;
 
-  // The token lives in flash and nowhere else. The device's entire persistent
-  // state is these credentials plus the WiFi ones — settings, schedule, branding
-  // and artwork are all re-fetched from the server on demand, which is why a
-  // factory reset costs nothing but a re-flash.
+  // The identity lives in flash. A standard image carries none of it; the
+  // device collects the server URL and a bind code during setup and stores the
+  // result here. Per-device builds still work by passing substitutions, which
+  // set these fields before setup() runs.
   if (esphome::global_preferences != nullptr) {
     this->load_token_();
+    this->load_identity_from_flash_();
+    this->load_bind_code_();
   }
 
   if (this->claim_token_ == "unprovisioned" && !this->claimed_) {
@@ -122,7 +124,11 @@ void SubwaveDisplay::loop() {
 // produces a screen that silently never shows a song.
 // ---------------------------------------------------------------------------
 bool SubwaveDisplay::claim_device_() {
-  if (this->claimed_ || this->claim_token_ == "unprovisioned") return this->claimed_;
+  if (this->claimed_) return true;
+  if (this->device_id_.empty() || this->claim_token_.empty() || this->server_url_.empty()) {
+    ESP_LOGW(TAG, "Cannot claim: no identity. Setup required.");
+    return false;
+  }
 
   std::string body = "{";
   body += "\"deviceId\":\"" + this->device_id_ + "\",";
@@ -451,6 +457,20 @@ void SubwaveDisplay::update() {
     this->server_reachable_ = false;
     return;
   }
+
+  // Bind step: if we have a bind code but no identity, try to bind now.
+  if (this->needs_bind()) {
+    ESP_LOGI(TAG, "Attempting bind with code %s", this->bind_code_.c_str());
+    if (this->bind(this->server_url_, this->bind_code_)) {
+      this->bind_code_.clear();
+      this->save_bind_code_();
+      ESP_LOGI(TAG, "Bind successful. Claiming...");
+    } else {
+      ESP_LOGW(TAG, "Bind failed. Will retry.");
+      return;
+    }
+  }
+
   this->poll_state_();
 }
 
@@ -488,6 +508,174 @@ void SubwaveDisplay::load_token_() {
   this->bearer_ = stored;
   this->claimed_ = true;
   ESP_LOGI(TAG, "Found a stored credential; this screen is set up.");
+}
+
+// ---------------------------------------------------------------------------
+// Bound identity: server URL, device ID, claim token.
+//
+// A standard image carries none of these at compile time. The device collects
+// the server URL and a bind code during setup, POSTs them to the station's bind
+// endpoint, and stores the resulting identity here. Subsequent boots load it
+// and skip setup entirely.
+// ---------------------------------------------------------------------------
+void SubwaveDisplay::save_identity_() {
+  if (esphome::global_preferences == nullptr) return;
+
+  // Server URL
+  {
+    char buf[URL_BYTES] = {0};
+    size_t n = std::min(this->server_url_.size(), URL_BYTES - 1);
+    memcpy(buf, this->server_url_.data(), n);
+    auto pref = esphome::global_preferences->make_preference<char[URL_BYTES]>(URL_KEY, true);
+    pref.save(&buf);
+  }
+  // Device ID
+  {
+    char buf[ID_BYTES] = {0};
+    size_t n = std::min(this->device_id_.size(), ID_BYTES - 1);
+    memcpy(buf, this->device_id_.data(), n);
+    auto pref = esphome::global_preferences->make_preference<char[ID_BYTES]>(DEVICE_ID_KEY, true);
+    pref.save(&buf);
+  }
+  // Claim token
+  {
+    char buf[CLAIM_BYTES] = {0};
+    size_t n = std::min(this->claim_token_.size(), CLAIM_BYTES - 1);
+    memcpy(buf, this->claim_token_.data(), n);
+    auto pref = esphome::global_preferences->make_preference<char[CLAIM_BYTES]>(CLAIM_TOKEN_KEY, true);
+    pref.save(&buf);
+  }
+  esphome::global_preferences->sync();
+  ESP_LOGI(TAG, "Identity saved: %s", this->device_id_.c_str());
+}
+
+void SubwaveDisplay::load_identity_from_flash_() {
+  if (esphome::global_preferences == nullptr) return;
+
+  // Server URL
+  {
+    char buf[URL_BYTES] = {0};
+    auto pref = esphome::global_preferences->make_preference<char[URL_BYTES]>(URL_KEY, true);
+    if (pref.load(&buf)) {
+      buf[URL_BYTES - 1] = '\0';
+      std::string stored(buf);
+      if (!stored.empty()) this->server_url_ = stored;
+    }
+  }
+  // Device ID
+  {
+    char buf[ID_BYTES] = {0};
+    auto pref = esphome::global_preferences->make_preference<char[ID_BYTES]>(DEVICE_ID_KEY, true);
+    if (pref.load(&buf)) {
+      buf[ID_BYTES - 1] = '\0';
+      std::string stored(buf);
+      if (!stored.empty()) this->device_id_ = stored;
+    }
+  }
+  // Claim token
+  {
+    char buf[CLAIM_BYTES] = {0};
+    auto pref = esphome::global_preferences->make_preference<char[CLAIM_BYTES]>(CLAIM_TOKEN_KEY, true);
+    if (pref.load(&buf)) {
+      buf[CLAIM_BYTES - 1] = '\0';
+      std::string stored(buf);
+      if (!stored.empty()) this->claim_token_ = stored;
+    }
+  }
+
+  if (!this->server_url_.empty() && !this->device_id_.empty() && !this->claim_token_.empty()) {
+    ESP_LOGI(TAG, "Found stored identity: %s @ %s", this->device_id_.c_str(), this->server_url_.c_str());
+  } else {
+    ESP_LOGI(TAG, "No stored identity. Setup required.");
+  }
+}
+
+void SubwaveDisplay::save_bind_code_() {
+  if (esphome::global_preferences == nullptr) return;
+  char buf[BIND_CODE_BYTES] = {0};
+  size_t n = std::min(this->bind_code_.size(), BIND_CODE_BYTES - 1);
+  memcpy(buf, this->bind_code_.data(), n);
+  auto pref = esphome::global_preferences->make_preference<char[BIND_CODE_BYTES]>(BIND_CODE_KEY, true);
+  pref.save(&buf);
+  esphome::global_preferences->sync();
+}
+
+void SubwaveDisplay::load_bind_code_() {
+  if (esphome::global_preferences == nullptr) return;
+  char buf[BIND_CODE_BYTES] = {0};
+  auto pref = esphome::global_preferences->make_preference<char[BIND_CODE_BYTES]>(BIND_CODE_KEY, true);
+  if (!pref.load(&buf)) return;
+  buf[BIND_CODE_BYTES - 1] = '\0';
+  std::string stored(buf);
+  if (stored.empty()) return;
+  this->bind_code_ = stored;
+  ESP_LOGI(TAG, "Found stored bind code.");
+}
+
+bool SubwaveDisplay::bind(const std::string &server_url, const std::string &bind_code) {
+  if (server_url.empty() || bind_code.empty()) return false;
+
+  this->server_url_ = server_url;
+  this->api_base_ = server_url;
+
+  // POST to the bind endpoint
+  std::string body = "{\"bindCode\":\"" + bind_code + "\"}";
+
+  auto *client = this->http();
+  if (client == nullptr) return false;
+
+  std::vector<esphome::http_request::Header> headers;
+  headers.push_back({"Content-Type", "application/json"});
+
+  auto container = client->start(server_url + "/api/devices/bind", "POST", body, headers);
+  if (container == nullptr) {
+    ESP_LOGW(TAG, "bind: could not start request");
+    return false;
+  }
+
+  // Read response
+  constexpr size_t MAX_BODY = 4096;
+  std::string out;
+  out.reserve(512);
+  uint8_t chunk[512];
+  while (!container->is_read_complete()) {
+    int n = container->read(chunk, sizeof(chunk));
+    if (n > 0) {
+      if (out.size() + static_cast<size_t>(n) > MAX_BODY) {
+        container->end();
+        return false;
+      }
+      out.append(reinterpret_cast<char *>(chunk), static_cast<size_t>(n));
+    }
+  }
+  container->end();
+
+  // Parse response
+  cJSON *root = cJSON_Parse(out.c_str());
+  if (root == nullptr) {
+    ESP_LOGW(TAG, "bind: invalid response");
+    return false;
+  }
+
+  const char *device_id = cJSON_GetStringValue(cJSON_GetObjectItem(root, "deviceId"));
+  const char *claim_token = cJSON_GetStringValue(cJSON_GetObjectItem(root, "claimToken"));
+
+  if (device_id == nullptr || claim_token == nullptr) {
+    cJSON_Delete(root);
+    ESP_LOGW(TAG, "bind: missing fields in response");
+    return false;
+  }
+
+  this->device_id_ = device_id;
+  this->claim_token_ = claim_token;
+  this->claimed_ = false;  // reset so claim_device_() runs with new credentials
+  cJSON_Delete(root);
+
+  // Store in flash
+  this->save_identity_();
+
+  ESP_LOGI(TAG, "Bound successfully: %s", this->device_id_.c_str());
+  return true;
 }
 
 namespace {
@@ -744,6 +932,18 @@ SubwaveDisplay::Connectivity SubwaveDisplay::check_connectivity() {
   }
 
   // 3. THE NAME. The route works, so this is DNS and nothing else.
+  //
+  // UNBOUND DEVICES HAVE NO SERVER URL YET. A standard image carries none, so
+  // on first boot server_url_ is empty and the device has not been told where
+  // the station is. The connectivity ladder cannot check a name that does not
+  // exist, so it stops at "route works" and reports OK — the station check
+  // happens later, once the operator types the URL into the setup wizard.
+  if (this->server_url_.empty()) {
+    this->connectivity_ = Connectivity::OK;
+    ESP_LOGI(TAG, "Connectivity: route works. No server URL yet (unbound device).");
+    return this->connectivity_;
+  }
+
   std::string host;
   uint16_t port = 443;
   split_url(this->server_url_, &host, &port);
