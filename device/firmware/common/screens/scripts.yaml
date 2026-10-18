@@ -366,9 +366,11 @@ script:
           // braced list. Declaring `lv_obj_t *` is fine even though the type is
           // incomplete: a pointer to an incomplete type may be declared, just
           // not dereferenced.
+          // Only the action buttons and status hide while typing. The field being
+          // typed in MUST stay visible — hiding it is what made the keyboard
+          // look like it had swallowed the input.
           lv_obj_t *hidden_while_typing[] = {id(setup_connect_button), id(wifi_status),
-                                   id(bind_server_url), id(bind_code), id(bind_test_button),
-                                   id(bind_button), id(bind_status)};
+                                   id(bind_test_button), id(bind_button), id(bind_status)};
           lv_obj_t *shown_while_typing[] = {id(wifi_mode_lower), id(wifi_mode_upper), id(wifi_mode_special),
                                    id(wifi_mode_number), id(wifi_keyboard_done)};
 
