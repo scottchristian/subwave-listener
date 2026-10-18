@@ -1035,9 +1035,30 @@ export default function Home() {
             const leadMs = Math.min(Math.max(bufSec, 0), 60) * 1000;
             const cur = newState?.current;
             let serverStart = NaN;
-            if (np?.title && cur && cur.title === np.title && cur.startedAt) {
+            // Match on the stable identity (subsonic_id) first; fall back to an
+            // exact title match for feeds that don't carry an id. The exact-title
+            // match alone was the failure mode: a curly apostrophe, a "feat.",
+            // a live-set title, or any re-render difference left serverStart at
+            // NaN, which made audibleAt "now" and promoted the art ~bufferSeconds
+            // early. That is the "changes over a few seconds early" symptom.
+            const sameTrack = np?.subsonic_id && cur?.subsonic_id
+              ? np.subsonic_id === cur.subsonic_id
+              : Boolean(np?.title && cur?.title && cur.title === np.title);
+            if (sameTrack && cur?.startedAt) {
               const t = Date.parse(cur.startedAt);
               if (Number.isFinite(t) && t <= Date.now()) serverStart = t;
+            }
+            // cur.startedAt can be missing (state not yet loaded) or the two
+            // feeds can disagree on identity — but now-playing carries its own
+            // start time (unix seconds), so use it rather than snapping to "now".
+            if (!Number.isFinite(serverStart) && np?.timestamp) {
+              const t = Number(np.timestamp) * 1000;
+              if (Number.isFinite(t) && t <= Date.now()) serverStart = t;
+            }
+            if (!Number.isFinite(serverStart)) {
+              plog.warn("promote: no usable start time, committing immediately", {
+                np: np?.subsonic_id, cur: cur?.subsonic_id, titleMatch: cur?.title === np?.title,
+              });
             }
             const audibleAt = Number.isFinite(serverStart) ? serverStart + leadMs : Date.now();
             wait = audibleAt - Date.now();
