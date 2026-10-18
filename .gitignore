@@ -40,6 +40,11 @@ yarn-error.log*
 # local sqlite data (never publish listening history / secrets)
 data/
 *.db
+
+# build stamp, written by deploy.sh from the local commit SHA and verified against
+# the release tag on the host. Untracked by design: it describes a deployment,
+# not a commit.
+public/build-sha.txt
 *.db-journal
 
 # setup wizard marker. Its presence IS the "this station is configured" flag, so
