@@ -67,8 +67,18 @@ export async function POST(req: NextRequest) {
   const body = await req.json().catch(() => ({}));
   const name = typeof body?.name === "string" && body.name.trim() ? body.name.trim().slice(0, 60) : "Screen";
 
+  // A short human-readable code the device operator types in during setup.
+  // Single-use: consumed on first bind. Format: "AB1-C23" (3 chars, dash, 3 chars).
+  const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no I/O/0/1 to avoid confusion
+  let bindCode = "";
+  for (let i = 0; i < 6; i++) {
+    if (i === 3) bindCode += "-";
+    bindCode += chars[Math.floor(Math.random() * chars.length)];
+  }
+  const bindCodeExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000); // 7 days
+
   const row = await prisma.device.create({
-    data: { name, status: "building", buildStatus: "building", createdById: admin.id },
+    data: { name, status: "building", buildStatus: "building", createdById: admin.id, bindCode, bindCodeExpires },
   });
 
   const claim = await mintClaimToken(row);
@@ -99,10 +109,8 @@ export async function POST(req: NextRequest) {
   return NextResponse.json(
     {
       device: { id: row.id, name: row.name },
-      buildCommand: command,
-      // The row's deviceId is null until a build completes — it is compiled into
-      // the firmware, which does not exist yet. The substitution uses the cuid so
-      // the command works now and the claim still matches once deviceId is set.
+      bindCode,
+      bindCodeExpires: bindCodeExpires.toISOString(),
       claimExpiresAt: claim.expires.toISOString(),
     },
     { status: 201, headers: { "Cache-Control": "no-store" } },

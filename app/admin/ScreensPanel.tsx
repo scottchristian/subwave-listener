@@ -27,6 +27,7 @@ type ScreenRow = {
   model: string;
   status: string;
   hasFirmware: boolean;
+  bindCode: string | null;
   firmwareVer: string | null;
   lastSeenAt: string | null;
   settingsRev: number;
@@ -109,8 +110,8 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
       if (!res.ok) throw new Error(data?.error || `Could not add that screen (HTTP ${res.status}).`);
       setCommand({
         label: name.trim() || "Screen",
-        text: data.buildCommand,
-        note: `Setup codes expire ${new Date(data.claimExpiresAt).toLocaleString()}. Build it before then, and upload the result below.`,
+        text: data.bindCode,
+        note: `Enter this code on the device along with the server address. Expires ${new Date(data.bindCodeExpires).toLocaleString()}.`,
       });
       setName("");
       await load();
@@ -266,7 +267,7 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
             <li>Run the command below. The first build takes a few minutes; later ones are cached.</li>
             <li>When it finishes, find the <code>.bin</code> file it produced (ESPHome prints the path at the end, under <code>.esphome/build/</code>) and upload it with <strong>Upload firmware</strong> below.</li>
           </ol>
-          <pre style={{ background: "var(--color-bg)", padding: "0.75rem", borderRadius: "6px", overflowX: "auto", fontSize: "0.8rem" }}>{command.text}</pre>
+          <pre style={{ background: "var(--color-bg)", padding: "1rem", borderRadius: "6px", overflowX: "auto", fontSize: "1.5rem", fontWeight: "bold", textAlign: "center", letterSpacing: "0.2em" }}>{command.text}</pre>
           <div style={{ display: "flex", gap: "0.75rem", marginTop: "0.5rem" }}>
             <button id="btn-copy-build" className="primary-btn" type="button" onClick={async () => {
               await navigator.clipboard.writeText(command.text);
@@ -317,6 +318,7 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
               </div>
               <dl className="db-ledger" style={{ marginTop: "0.75rem", fontSize: "0.85rem" }}>
                 <div><dt>Model</dt><dd>{r.model}</dd></div>
+               {r.bindCode && <div><dt>Bind code</dt><dd style={{ fontFamily: "monospace", fontSize: "1.1rem", fontWeight: "bold", letterSpacing: "0.15em" }}>{r.bindCode}</dd></div>}
                 <div><dt>Firmware</dt><dd>{r.firmwareVer ?? "not reported yet"}</dd></div>
                 <div><dt>Last seen</dt><dd>{r.lastSeenAt ? new Date(r.lastSeenAt).toLocaleString() : "never"}</dd></div>
                 <div><dt>Orientation</dt><dd>{r.orientation}</dd></div>

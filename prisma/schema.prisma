@@ -273,12 +273,18 @@ model Device {
   model String @default("jc8012p4a1")
 
   // ---- credentials -------------------------------------------------------
-  // Single-use, 7-day TTL, minted at row creation and compiled into the firmware.
-  // Seven days rather than minutes because the developer builds locally and may
-  // not touch it for a day; regenerating invalidates any binary built against
-  // the old value, and the panel says so rather than letting it fail at claim.
+  // Single-use, 7-day TTL, minted at row creation. Delivered to the device
+  // through the bind flow (server URL + bind code) rather than compiled into
+  // the firmware, so one standard image serves every screen.
   claimToken   String?
   claimExpires DateTime?
+
+  // Short human-readable code (e.g. "AB1-C23") shown in the admin panel and
+  // typed into the device during setup. The device sends it to the bind
+  // endpoint along with the server URL it was given, and receives the
+  // deviceId + claimToken in return. Single-use: consumed on first bind.
+  bindCode        String?   @unique
+  bindCodeExpires DateTime?
 
   // sha256 of the long-lived bearer token. The raw token is returned exactly once,
   // at claim, and is never retrievable afterwards.
