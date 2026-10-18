@@ -416,7 +416,7 @@
     x: 40px
     y: 620px
     width: 1200px
-    height: 180px
+    height: 160px
     textarea: wifi_password
     # Lower case first: most WiFi passwords are mostly lower case, and starting
     # in upper case means the first character typed is wrong half the time.
