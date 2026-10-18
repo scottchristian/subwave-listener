@@ -12,34 +12,11 @@
 # isn't handy.
 #
 # Layout: Single column, left-aligned. Everything fits within 800px height.
-# Large touch targets for wall mounting. No decorative chrome — every pixel
-# serves setup.
-#
-# THE QR ENCODES WIFI CONNECTION INFO, NOT A URL. A phone scanning it joins the
-# SUBWAVE-SCREEN access point directly using WPA2 with the password below; the
-# captive portal then serves the setup wizard automatically, like a public
-# Wi-Fi login portal.
-#
-# THE SCREEN SHOWS SSID AND PASSWORD so a phone can connect without scanning —
-# just type them in. The setup page appears automatically once the phone is on
-# the access point.
-#
-# The screen itself can also do setup: scan for networks, pick one, enter a
-# password, connect. Mesh networks may appear multiple times — duplicates are
-# collapsed to a single entry with the strongest signal.
+# The bottom 72px is the chrome rail — keyboard never goes below y=700px.
 #
 # Page 1 of 2: connect to Wi-Fi. Tap "Next →" to go to the bind screen.
 #
 # The CONTENT of the setup screen — the widgets only.
-#
-# The slot that holds these (id, size, and the fact that it slides inside
-# window_stack) is declared in ../window.yaml, because the sliding mechanism
-# belongs to neither this screen nor the others. Since ESPHome dropped the
-# `parent:` key, a widget's parent is simply the `widgets:` list it sits in,
-# and a list can only come from the file that encloses it.
-#
-# Anything this screen used to declare BESIDE its widgets — scripts, globals —
-# is now in ./scripts.yaml, because a bare list cannot have siblings.
 
 # ── Top: phone-first setup ──────────────────────────────────────────────
 
@@ -130,7 +107,7 @@
     height: 1px
     align: TOP_LEFT
     x: 40px
-    y: 448px
+    y: 352px
     bg_color: 0x1A3050
     bg_opa: COVER
     border_width: 0
@@ -144,7 +121,7 @@
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 40px
-    y: 452px
+    y: 364px
     width: 400px
 
 - button:
@@ -152,7 +129,7 @@
     text: "Scan"
     align: TOP_LEFT
     x: 40px
-    y: 400px
+    y: 412px
     width: 100px
     height: 40px
     bg_color: 0x0D1F35
@@ -167,7 +144,7 @@
     id: wifi_network_dropdown
     align: TOP_LEFT
     x: 160px
-    y: 400px
+    y: 412px
     width: 1080px
     height: 40px
     options:
@@ -181,14 +158,14 @@
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 40px
-    y: 444px
+    y: 456px
     width: 200px
 
 - textarea:
     id: wifi_password
     align: TOP_LEFT
     x: 40px
-    y: 472px
+    y: 484px
     width: 400px
     height: 40px
     one_line: true
@@ -203,7 +180,7 @@
     text: "Connect"
     align: TOP_LEFT
     x: 460px
-    y: 472px
+    y: 484px
     width: 140px
     height: 40px
     bg_color: 0x0D1F35
@@ -221,7 +198,7 @@
     text_color: 0x4E9FD4
     align: TOP_LEFT
     x: 620px
-    y: 568px
+    y: 484px
     width: 620px
 
 - button:
@@ -229,7 +206,7 @@
     text: "Next →"
     align: TOP_LEFT
     x: 1060px
-    y: 472px
+    y: 484px
     width: 140px
     height: 40px
     bg_color: 0x0D1F35
@@ -242,15 +219,15 @@
 
 # ── The on-screen keyboard ──────────────────────────────────────────────
 # Hidden until a field is tapped. Sits at the bottom with a safe margin so
-# all four rows of keys are visible.
-# Mode buttons sit in the row above (y=520px), hidden when keyboard is closed.
+# all four rows of keys are visible above the chrome rail.
+# Mode buttons sit above the keyboard, shown when typing.
 
 - button:
     id: wifi_mode_lower
     text: "abc"
     align: TOP_LEFT
     x: 460px
-    y: 472px
+    y: 484px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -267,7 +244,7 @@
     text: "ABC"
     align: TOP_LEFT
     x: 604px
-    y: 472px
+    y: 484px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -284,7 +261,7 @@
     text: "#+="
     align: TOP_LEFT
     x: 748px
-    y: 472px
+    y: 484px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -301,7 +278,7 @@
     text: "123"
     align: TOP_LEFT
     x: 892px
-    y: 472px
+    y: 484px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -318,7 +295,7 @@
     text: "Done"
     align: TOP_LEFT
     x: 1036px
-    y: 472px
+    y: 484px
     width: 104px
     height: 40px
     bg_color: 0x0D1F35
@@ -334,9 +311,9 @@
     id: wifi_kb
     align: TOP_LEFT
     x: 40px
-    y: 520px
+    y: 532px
     width: 1200px
-    height: 200px
+    height: 168px
     textarea: wifi_password
     mode: TEXT_LOWER
     hidden: true
