@@ -34,6 +34,11 @@ export default function AdminPage() {
   const [stats, setStats] = useState<any[]>([]);
   const [signedInUsers, setSignedInUsers] = useState<any[]>([]);
   const [streamingUsers, setStreamingUsers] = useState<any[]>([]);
+  // When the dashboard stopped polling. `loadPresence` is gated on `shouldHeartbeat`
+  // so an idle tab sends nothing and the database can sleep — which is correct.
+  // The bug was that it kept showing the last answer as if it were live. This
+  // timestamp makes the staleness visible instead of silent.
+  const [presenceFetchedAt, setPresenceFetchedAt] = useState<number | null>(null);
   const loadPresence = () => {
     // Same rule as the player: a buried, untouched admin tab is not using
     // anything, so it sends no heartbeat and the database can sleep.
@@ -43,6 +48,7 @@ export default function AdminPage() {
       .then(d => {
         if (Array.isArray(d.users)) setSignedInUsers(d.users);
         if (Array.isArray(d.streaming)) setStreamingUsers(d.streaming);
+        setPresenceFetchedAt(Date.now());
       })
       .catch(() => {});
   };
@@ -1373,6 +1379,11 @@ export default function AdminPage() {
         {/* Now Streaming */}
         <section className="card" id="section-streaming" style={activeTab === "stats" ? undefined : { display: "none" }}>
           <h2>Now Streaming ({streamingUsers.length})</h2>
+          {presenceFetchedAt !== null && Date.now() - presenceFetchedAt > 60_000 && (
+            <p id="presence-stale" style={{ color: "var(--color-muted)", fontSize: "0.8rem", marginTop: "0.25rem" }}>
+              Paused — this tab has been idle, so polling stopped to let the database sleep. Move or click to resume.
+            </p>
+          )}
           <div style={{ marginTop: "1rem" }}>
             {streamingUsers.length === 0 && <p className="about-text">Nobody streaming right now.</p>}
             {streamingUsers.map((u: any) => {
@@ -1391,6 +1402,11 @@ export default function AdminPage() {
         {/* Now Signed In */}
         <section className="card" id="section-signed-in" style={activeTab === "stats" ? undefined : { display: "none" }}>
           <h2>Now Signed In ({signedInUsers.length})</h2>
+          {presenceFetchedAt !== null && Date.now() - presenceFetchedAt > 60_000 && (
+            <p id="presence-stale-signed-in" style={{ color: "var(--color-muted)", fontSize: "0.8rem", marginTop: "0.25rem" }}>
+              Paused — this tab has been idle, so polling stopped to let the database sleep. Move or click to resume.
+            </p>
+          )}
           <div style={{ marginTop: "1rem" }}>
             {signedInUsers.length === 0 && <p className="about-text">Nobody signed in right now.</p>}
             {signedInUsers.map((u: any) => {
