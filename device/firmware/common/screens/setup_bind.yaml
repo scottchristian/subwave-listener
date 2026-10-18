@@ -139,7 +139,7 @@
     text: "abc"
     align: TOP_LEFT
     x: 460px
-    y: 512px
+    y: 500px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -156,7 +156,7 @@
     text: "ABC"
     align: TOP_LEFT
     x: 604px
-    y: 512px
+    y: 500px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -169,45 +169,11 @@
       - script.execute: { id: wifi_keyboard_mode, mode: 1 }
 
 - button:
-    id: bind_mode_special
-    text: "#+="
-    align: TOP_LEFT
-    x: 748px
-    y: 512px
-    width: 136px
-    height: 40px
-    bg_color: 0x0D1F35
-    border_width: 0
-    radius: 8px
-    text_color: 0xDCE8F5
-    text_font: font_body
-    hidden: true
-    on_click:
-      - script.execute: { id: wifi_keyboard_mode, mode: 2 }
-
-- button:
-    id: bind_mode_number
-    text: "123"
-    align: TOP_LEFT
-    x: 892px
-    y: 512px
-    width: 136px
-    height: 40px
-    bg_color: 0x0D1F35
-    border_width: 0
-    radius: 8px
-    text_color: 0xDCE8F5
-    text_font: font_body
-    hidden: true
-    on_click:
-      - script.execute: { id: wifi_keyboard_mode, mode: 3 }
-
-- button:
     id: bind_keyboard_done
     text: "Done"
     align: TOP_LEFT
     x: 1036px
-    y: 512px
+    y: 500px
     width: 104px
     height: 40px
     bg_color: 0x0D1F35
@@ -223,9 +189,9 @@
     id: bind_kb
     align: TOP_LEFT
     x: 40px
-    y: 560px
+    y: 548px
     width: 1200px
-    height: 200px
+    height: 240px
     textarea: bind_server_url
     mode: TEXT_LOWER
     hidden: true

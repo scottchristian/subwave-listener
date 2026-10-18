@@ -188,7 +188,7 @@
     id: wifi_password
     align: TOP_LEFT
     x: 40px
-    y: 512px
+    y: 500px
     width: 400px
     height: 40px
     one_line: true
@@ -203,7 +203,7 @@
     text: "Connect"
     align: TOP_LEFT
     x: 460px
-    y: 512px
+    y: 500px
     width: 140px
     height: 40px
     bg_color: 0x0D1F35
@@ -229,7 +229,7 @@
     text: "Next →"
     align: TOP_LEFT
     x: 1060px
-    y: 512px
+    y: 500px
     width: 140px
     height: 40px
     bg_color: 0x0D1F35
@@ -250,7 +250,7 @@
     text: "abc"
     align: TOP_LEFT
     x: 460px
-    y: 512px
+    y: 500px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -267,7 +267,7 @@
     text: "ABC"
     align: TOP_LEFT
     x: 604px
-    y: 512px
+    y: 500px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -284,7 +284,7 @@
     text: "#+="
     align: TOP_LEFT
     x: 748px
-    y: 512px
+    y: 500px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -301,7 +301,7 @@
     text: "123"
     align: TOP_LEFT
     x: 892px
-    y: 512px
+    y: 500px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -318,7 +318,7 @@
     text: "Done"
     align: TOP_LEFT
     x: 1036px
-    y: 512px
+    y: 500px
     width: 104px
     height: 40px
     bg_color: 0x0D1F35
@@ -334,9 +334,9 @@
     id: wifi_kb
     align: TOP_LEFT
     x: 40px
-    y: 560px
+    y: 548px
     width: 1200px
-    height: 200px
+    height: 240px
     textarea: wifi_password
     mode: TEXT_LOWER
     hidden: true
