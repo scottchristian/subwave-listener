@@ -19,10 +19,10 @@ present as a clean boot and an empty screen.
 - Chip revision v1.3. MAC e8:f6:0a:e6:f3:7f.
 - Firmware: ESPHome 2026.7.0, esp-idf v5.5.4 toolchain, Docker container
   `esphome/esphome:2026.7.0`.
-- Provisioning: flash the compiled binary over native USB1. The binary carries
-  `device_id` and `claim_token` compiled in — there is no second credential
-  part and no `*_factory` build variant. Admin-only provisioning; confers
-  nothing afterwards.
+- Provisioning: ONE standard image for every screen. Flash it, then on the
+  device's setup screen enter the server URL and the bind code shown in the
+  admin panel. The device fetches its identity from the station's bind endpoint
+  and stores it in flash. No per-device build step.
 
 ## Entry point and project files
 
