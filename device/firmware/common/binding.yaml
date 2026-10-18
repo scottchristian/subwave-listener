@@ -126,6 +126,7 @@ script:
           bind_object("window_2", id(window_2));
           bind_object("setup_wifi_screen", id(setup_wifi_screen));
           bind_object("setup_bind_screen", id(setup_bind_screen));
+          bind_object("chrome", id(chrome));
           bind_object("sleep_hint", id(sleep_hint));
 
           // ---- the palette and the window state -------------------------
