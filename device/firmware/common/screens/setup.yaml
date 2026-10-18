@@ -43,7 +43,7 @@
 
 - label:
     id: setup_title
-    text: "Setup Wi-Fi"
+    text: "Setup"
     text_font: font_title
     text_color: 0xDCE8F5
     align: TOP_LEFT
@@ -58,7 +58,7 @@
 # still be able to read what their options are.
 - label:
     id: setup_instruction
-    text: "Two ways to do this. Join the screen's Wi-Fi with your phone, or set it up here."
+    text: "If Wi-Fi already works, open this screen's address in a browser to bind it to your station."
     text_font: font_body
     text_color: 0x6A8BA8
     align: TOP_LEFT
