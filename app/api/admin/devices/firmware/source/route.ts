@@ -18,7 +18,7 @@ export async function GET() {
   try {
     const { stdout } = await run(
       "tar",
-      ["-czf", "-", "-C", process.cwd(), "device/firmware", "--exclude", "device/firmware/.esphome"],
+      ["-czf", "-", "--exclude=.esphome", "-C", process.cwd(), "device/firmware"],
       { encoding: "buffer" }
     );
     return new NextResponse(stdout, {
