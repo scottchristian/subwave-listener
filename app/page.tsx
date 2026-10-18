@@ -912,6 +912,7 @@ export default function Home() {
   // polls that change nothing apply silently instead of snapshotting.
   const lastCommitSigRef = useRef<string | null>(null);
   const lastLineupRef = useRef<string | null>(null);
+  const lastLinksFetchedRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (status === "authenticated" && (session?.user as any)?.isApproved) {
@@ -1282,6 +1283,18 @@ export default function Home() {
     // Session-gated independently of the feed: even a populated lineup must
     // not reach for links signed out.
     if (status !== "authenticated" || !(session?.user as any)?.isApproved) return;
+
+    const np = stationData?.nowPlaying;
+    if (!np?.subsonic_id) return;
+
+    // De-dupe: the effect can re-fire when `status` or `session` change identity
+    // between polls (next-auth hands back a fresh object on some renders), and a
+    // re-fetch for a track we already have links for is pure waste — the server
+    // has the answer cached in SongLinkCache and would just echo it. Track the
+    // last id we asked about and skip when nothing has moved.
+    const id = np.subsonic_id;
+    if (lastLinksFetchedRef.current === id) return;
+    lastLinksFetchedRef.current = id;
     fetchDirectLinks();
   }, [stationData?.nowPlaying?.subsonic_id, status, session]);
 
