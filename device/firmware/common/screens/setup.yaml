@@ -368,7 +368,10 @@
     id: setup_address
     text: "—"
     text_font: font_body
-    text_color: 0x6A8BA8
+    text_color: 0x4E9FD4
     align: BOTTOM_RIGHT
     x: -40px
     y: -24px
+    # Make the address more prominent so the operator knows where to go.
+    # This is the only thing on the screen that tells them how to finish setup
+    # when Wi-Fi already works.

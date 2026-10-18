@@ -21,7 +21,7 @@ substitutions:
   device_id: ""
   claim_token: ""
   server_url: ""
-  firmware_version: "1.10.9"
+  firmware_version: "1.11.0"
 
   # The panel is natively 800x1280 portrait and driven as 1280x800 landscape.
   # Getting this backwards is the single most common mistake with this board.
