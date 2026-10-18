@@ -130,7 +130,7 @@
     height: 1px
     align: TOP_LEFT
     x: 40px
-    y: 420px
+    y: 448px
     bg_color: 0x1A3050
     bg_opa: COVER
     border_width: 0
@@ -144,7 +144,7 @@
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 40px
-    y: 440px
+    y: 452px
     width: 400px
 
 - button:
@@ -152,7 +152,7 @@
     text: "Scan"
     align: TOP_LEFT
     x: 40px
-    y: 444px
+    y: 400px
     width: 100px
     height: 40px
     bg_color: 0x0D1F35
@@ -167,7 +167,7 @@
     id: wifi_network_dropdown
     align: TOP_LEFT
     x: 160px
-    y: 444px
+    y: 400px
     width: 1080px
     height: 40px
     options:
@@ -181,14 +181,14 @@
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 40px
-    y: 490px
+    y: 444px
     width: 200px
 
 - textarea:
     id: wifi_password
     align: TOP_LEFT
     x: 40px
-    y: 500px
+    y: 472px
     width: 400px
     height: 40px
     one_line: true
@@ -203,7 +203,7 @@
     text: "Connect"
     align: TOP_LEFT
     x: 460px
-    y: 500px
+    y: 472px
     width: 140px
     height: 40px
     bg_color: 0x0D1F35
@@ -229,7 +229,7 @@
     text: "Next →"
     align: TOP_LEFT
     x: 1060px
-    y: 500px
+    y: 472px
     width: 140px
     height: 40px
     bg_color: 0x0D1F35
@@ -250,7 +250,7 @@
     text: "abc"
     align: TOP_LEFT
     x: 460px
-    y: 500px
+    y: 472px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -267,7 +267,7 @@
     text: "ABC"
     align: TOP_LEFT
     x: 604px
-    y: 500px
+    y: 472px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -284,7 +284,7 @@
     text: "#+="
     align: TOP_LEFT
     x: 748px
-    y: 500px
+    y: 472px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -301,7 +301,7 @@
     text: "123"
     align: TOP_LEFT
     x: 892px
-    y: 500px
+    y: 472px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -318,7 +318,7 @@
     text: "Done"
     align: TOP_LEFT
     x: 1036px
-    y: 500px
+    y: 472px
     width: 104px
     height: 40px
     bg_color: 0x0D1F35
@@ -334,9 +334,9 @@
     id: wifi_kb
     align: TOP_LEFT
     x: 40px
-    y: 548px
+    y: 520px
     width: 1200px
-    height: 240px
+    height: 200px
     textarea: wifi_password
     mode: TEXT_LOWER
     hidden: true

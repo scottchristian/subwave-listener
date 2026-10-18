@@ -139,7 +139,7 @@
     text: "abc"
     align: TOP_LEFT
     x: 460px
-    y: 500px
+    y: 472px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -156,7 +156,7 @@
     text: "ABC"
     align: TOP_LEFT
     x: 604px
-    y: 500px
+    y: 472px
     width: 136px
     height: 40px
     bg_color: 0x0D1F35
@@ -173,7 +173,7 @@
     text: "Done"
     align: TOP_LEFT
     x: 1036px
-    y: 500px
+    y: 472px
     width: 104px
     height: 40px
     bg_color: 0x0D1F35
@@ -189,9 +189,9 @@
     id: bind_kb
     align: TOP_LEFT
     x: 40px
-    y: 548px
+    y: 520px
     width: 1200px
-    height: 240px
+    height: 200px
     textarea: bind_server_url
     mode: TEXT_LOWER
     hidden: true
