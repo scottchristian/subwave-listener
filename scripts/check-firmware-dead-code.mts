@@ -360,8 +360,9 @@ assert(
 );
 assert(
   /boot_windows/.test(yamlAndScripts) &&
-    /lv_obj_add_flag\(id\(setup_screen\), LV_OBJ_FLAG_HIDDEN\)/.test(yamlAndScripts),
-  "boot must hide setup_screen — every slot in window_stack is created visible, " +
+    /lv_obj_add_flag\(id\(setup_wifi_screen\), LV_OBJ_FLAG_HIDDEN\)/.test(yamlAndScripts) &&
+    /lv_obj_add_flag\(id\(setup_bind_screen\), LV_OBJ_FLAG_HIDDEN\)/.test(yamlAndScripts),
+  "boot must hide both setup screens — every slot in window_stack is created visible, " +
     "so without this the setup screen draws over the now-playing screen",
 );
 

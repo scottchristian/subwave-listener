@@ -208,7 +208,7 @@ void theme_paint_all() {
   for (lv_obj_t *w : {OBJ(window_0), OBJ(window_1), OBJ(window_2)}) {
     lv_obj_set_style_bg_color(w, bg, LV_PART_MAIN);
   }
-  for (lv_obj_t *o : {OBJ(setup_screen), OBJ(sleep_hint)}) {
+  for (lv_obj_t *o : {OBJ(setup_wifi_screen), OBJ(sleep_hint)}) {
     lv_obj_set_style_bg_color(o, bg, LV_PART_MAIN);
   }
   lv_obj_set_style_bg_color(OBJ(shows_expanded), surface, LV_PART_MAIN);
