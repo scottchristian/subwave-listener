@@ -241,7 +241,7 @@ for (const name of SCREENS) {
     console.log(`  SKIP  ${name} — no widgets parsed`);
     continue;
   }
-  if (name === "setup") {
+  if (name === "setup_wifi" || name === "setup_bind") {
     jobs.push([`${name}-keyboard-closed`, closedState(widgets), `${name} · keyboard closed`]);
     jobs.push([`${name}-keyboard-open`, openState(widgets, kb), `${name} · keyboard open`]);
   } else {

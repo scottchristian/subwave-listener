@@ -134,7 +134,9 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(data?.error || "That did not work.");
-      if (data.buildCommand) {
+      if (data.bindCode) {
+        setCommand({ label: rows.find((r) => r.id === id)?.name ?? "Screen", text: data.bindCode, note: data.note ?? "" });
+      } else if (data.buildCommand) {
         setCommand({ label: rows.find((r) => r.id === id)?.name ?? "Screen", text: data.buildCommand, note: data.note ?? "" });
       }
       await load();

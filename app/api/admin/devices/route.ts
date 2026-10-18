@@ -168,29 +168,29 @@ export async function PATCH(req: NextRequest) {
       break;
     }
     case "newClaim": {
+      // Generate a fresh bind code for re-provisioning
+      const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+      let bindCode = "";
+      for (let i = 0; i < 6; i++) {
+        if (i === 3) bindCode += "-";
+        bindCode += chars[Math.floor(Math.random() * chars.length)];
+      }
+      const bindCodeExpires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
       const claim = await mintClaimToken(row);
-      const forwardedProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim();
-      const forwardedHost = req.headers.get("x-forwarded-host")?.split(",")[0]?.trim();
-      const host = forwardedHost || req.headers.get("host") || "localhost:3000";
-      const proto = forwardedProto || (req.url.startsWith("https") ? "https" : "http");
-      const serverUrl = `${proto}://${host}`;
+      await prisma.device.update({
+        where: { id },
+        data: { bindCode, bindCodeExpires },
+      });
       return NextResponse.json(
         {
-          buildCommand: [
-            "python3 -m esphome \\",
-            `  -s device_id '${row.deviceId ?? row.id}' \\`,
-            `  -s claim_token '${claim.raw}' \\`,
-            `  -s server_url '${serverUrl}' \\`,
-            "  -s firmware_version '1.0.0' \\",
-            "  compile firmware/builds/subwave-jc8012p4a1.yaml",
-          ].join("\n"),
+          bindCode,
+          bindCodeExpires: bindCodeExpires.toISOString(),
           claimExpiresAt: claim.expires.toISOString(),
-          note: "Any firmware already built with the old setup code will no longer claim. Flash the new build.",
+          note: "New bind code generated. Enter this code on the device along with the server address.",
         },
         { headers: { "Cache-Control": "no-store" } },
       );
-    }
-    default:
+    }    default:
       return NextResponse.json({ error: "That is not something a screen can do." }, { status: 400 });
   }
 
