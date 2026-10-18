@@ -374,20 +374,27 @@ script:
           lv_obj_t *shown_while_typing[] = {id(wifi_mode_lower), id(wifi_mode_upper), id(wifi_mode_special),
                                    id(wifi_mode_number), id(wifi_keyboard_done)};
 
-          if (opening) {
-            // Switch the keyboard's target based on keyboard_target.
-            // 0 = wifi_password (default), 1 = (unused), 2 = bind_server_url, 3 = bind_code
-            lv_obj_t *target = id(wifi_password);
-            if (id(keyboard_target) == 2) target = id(bind_server_url);
-            else if (id(keyboard_target) == 3) target = id(bind_code);
-            lv_keyboard_set_textarea(kb, target);
+          // Switch the keyboard's target based on keyboard_target.
+          // 0 = wifi_password (default), 2 = bind_server_url, 3 = bind_code
+          lv_obj_t *target = id(wifi_password);
+          if (id(keyboard_target) == 2) target = id(bind_server_url);
+          else if (id(keyboard_target) == 3) target = id(bind_code);
 
+          if (opening) {
+            // Keyboard was hidden — show it with the new target.
+            lv_keyboard_set_textarea(kb, target);
             lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
             for (auto *o : hidden_while_typing)
               lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
             for (auto *o : shown_while_typing)
               lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
+          } else if (lv_keyboard_get_textarea(kb) != target) {
+            // Keyboard is visible but on a different field — switch target,
+            // don't toggle off. Tapping a field while the keyboard is up
+            // should retarget it, not hide it.
+            lv_keyboard_set_textarea(kb, target);
           } else {
+            // Keyboard is visible on the same field — toggle off.
             lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
             for (auto *o : hidden_while_typing)
               lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
