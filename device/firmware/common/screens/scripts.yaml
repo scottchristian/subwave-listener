@@ -25,6 +25,10 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
+  - id: keyboard_target
+    type: int
+    restore_value: no
+    initial_value: '0'
 
 
 script:
@@ -253,6 +257,78 @@ script:
   # still visible. They were found by drawing the screen (npm run render:setup),
   # which is the argument for drawing it.
   # ---------------------------------------------------------------------------
+  # Test the server connection. Normalises the URL (adds https:// if no scheme)
+  # and checks DNS + TCP. If it works, the bind code field is ready to use.
+  - id: bind_test_connection
+    mode: single
+    then:
+      - lambda: |-
+          const char *raw = lv_textarea_get_text(id(bind_server_url));
+          std::string url = raw ? raw : "";
+          // Trim
+          while (!url.empty() && (url.front() == ' ' || url.front() == '\t')) url.erase(url.begin());
+          while (!url.empty() && (url.back() == ' ' || url.back() == '\t' || url.back() == '/')) url.pop_back();
+          if (url.empty()) {
+            lv_label_set_text(id(bind_status), "Enter a server address first.");
+            return;
+          }
+          // Add scheme if missing
+          if (url.find("://") == std::string::npos) {
+            url = "https://" + url;
+            lv_textarea_set_text(id(bind_server_url), url.c_str());
+          }
+          // Store for the bind step
+          id(display_client)->set_server_url(url);
+          auto *c = id(display_client);
+          c->set_server_url(url);
+
+          // Test connectivity
+          lv_label_set_text(id(bind_status), "Testing connection...");
+          auto result = c->check_connectivity();
+          if (result == subwave_display::SubwaveDisplay::Connectivity::OK ||
+              result == subwave_display::SubwaveDisplay::Connectivity::NO_SERVER) {
+            // NO_SERVER means DNS resolved but the host didn't answer on the port.
+            // For an unbound device, the bind endpoint might be on a different
+            // path. Report what we found.
+            if (result == subwave_display::SubwaveDisplay::Connectivity::OK) {
+              lv_label_set_text(id(bind_status), "Connected. Enter the bind code and tap Bind.");
+            } else {
+              lv_label_set_text(id(bind_status), "Server not responding. Check the address.");
+            }
+          } else {
+            const char *msg = c->connectivity_message(result);
+            lv_label_set_text(id(bind_status), msg);
+          }
+
+  # Bind the device to the station. Uses the server URL and bind code from the
+  # on-screen fields. On success, stores identity in flash and reboots.
+  - id: bind_device
+    mode: single
+    then:
+      - lambda: |-
+          const char *url_raw = lv_textarea_get_text(id(bind_server_url));
+          const char *code_raw = lv_textarea_get_text(id(bind_code));
+          std::string url = url_raw ? url_raw : "";
+          std::string code = code_raw ? code_raw : "";
+          if (url.empty() || code.empty()) {
+            lv_label_set_text(id(bind_status), "Enter both the server address and bind code.");
+            return;
+          }
+          if (url.find("://") == std::string::npos) {
+            url = "https://" + url;
+          }
+          lv_label_set_text(id(bind_status), "Binding...");
+          auto *c = id(display_client);
+          c->set_server_url(url);
+          c->set_bind_code(code);
+          if (c->bind(url, code)) {
+            lv_label_set_text(id(bind_status), "Bound! Rebooting...");
+            // Reboot to pick up the new identity
+            App.safe_reboot();
+          } else {
+            lv_label_set_text(id(bind_status), "Bind failed. Check the code and try again.");
+          }
+
   - id: wifi_keyboard_toggle
     mode: single
     then:
@@ -295,6 +371,13 @@ script:
                                    id(wifi_mode_number), id(wifi_keyboard_done)};
 
           if (opening) {
+            // Switch the keyboard's target based on keyboard_target.
+            // 0 = wifi_password (default), 1 = (unused), 2 = bind_server_url, 3 = bind_code
+            lv_obj_t *target = id(wifi_password);
+            if (id(keyboard_target) == 2) target = id(bind_server_url);
+            else if (id(keyboard_target) == 3) target = id(bind_code);
+            lv_keyboard_set_textarea(kb, target);
+
             lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
             for (auto *o : hidden_while_typing)
               lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);

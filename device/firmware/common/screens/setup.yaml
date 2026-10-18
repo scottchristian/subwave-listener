@@ -225,6 +225,93 @@
     on_click:
       - script.execute: wifi_keyboard_toggle
 
+# ── Server binding (on-screen) ───────────────────────────────────────────
+#
+# The device can bind itself without a phone: type the server address and the
+# bind code from the admin panel, test the connection, and bind. The same
+# keyboard used for the WiFi password is reused — its target is switched by
+# keyboard_target.
+
+- label:
+    id: bind_section_label
+    text: "Bind to station"
+    text_font: font_small
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 620px
+    y: 428px
+    width: 200px
+
+- textarea:
+    id: bind_server_url
+    align: TOP_LEFT
+    x: 620px
+    y: 456px
+    width: 620px
+    height: 44px
+    one_line: true
+    placeholder_text: "https://your-station.example.com"
+    on_click:
+      - lambda: id(keyboard_target) = 2;
+      - script.execute: wifi_keyboard_toggle
+
+- textarea:
+    id: bind_code
+    align: TOP_LEFT
+    x: 620px
+    y: 508px
+    width: 300px
+    height: 44px
+    one_line: true
+    placeholder_text: "AB1-C23"
+    on_click:
+      - lambda: id(keyboard_target) = 3;
+      - script.execute: wifi_keyboard_toggle
+
+- button:
+    id: bind_test_button
+    text: "Test"
+    align: TOP_LEFT
+    x: 940px
+    y: 508px
+    width: 100px
+    height: 44px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x4E9FD4
+    radius: 8px
+    text_color: 0x4E9FD4
+    text_font: font_body
+    on_click:
+      - script.execute: bind_test_connection
+
+- button:
+    id: bind_button
+    text: "Bind"
+    align: TOP_LEFT
+    x: 1060px
+    y: 508px
+    width: 180px
+    height: 44px
+    bg_color: 0x1A1214
+    border_width: 1
+    border_color: 0xEF4444
+    radius: 8px
+    text_color: 0xF2F2F2
+    text_font: font_body
+    on_click:
+      - script.execute: bind_device
+
+- label:
+    id: bind_status
+    text: ""
+    text_font: font_small
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 620px
+    y: 560px
+    width: 620px
+
 # ── The on-screen keyboard ──────────────────────────────────────────────
 #
 # Hidden until the password field is tapped. It occupies the bottom of the
