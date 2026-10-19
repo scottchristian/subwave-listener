@@ -29,7 +29,7 @@ present as a clean boot and an empty screen.
 
 | File | Purpose |
 |---|---|
-| `device/firmware/builds/subwave-jc8012p4a1.yaml` | Build entry point. `project: causewayfm.subwave-screen`. Carries `device_id`, `claim_token`, `firmware_version`. |
+| `device/firmware/builds/subwave-jc8012p4a1.yaml` | Build entry point. `project: causewayfm.subwave-screen`. `device_id`, `claim_token` and `server_url` are all **optional** (empty by default) — the standard image carries no identity. The device collects them during setup via `bind_code`. `firmware_version` is baked in. |
 | `device/firmware/builds/network_adapter_esp32c6.bin` | C6 coprocessor firmware (sha256 pinned). 1.1 MB binary, committed next to the build file. |
 | `device/firmware/common/display.yaml` | Panel + LVGL. `display: !include ${panel_include}` — the panel block is swappable via substitution. |
 | `device/firmware/common/panel.yaml` | Stock ESPHome panel (old revision). |
@@ -256,16 +256,55 @@ The AP uses a WPA2 password, auto-generated per device at build time
 (`device/firmware/tools/gen_setup_password.py`). The password is displayed on
 the screen and in the QR code so a phone can join without typing manually.
 
-## On-screen setup
+## On-screen setup — two stages
 
-The setup screen (`setup.yaml`) works from the display itself:
+Setup is **two screens**, navigated with `window_go` targets 3 and 4:
+
+### Stage 1 — Connect to Wi-Fi (`setup_wifi_screen`, window target 3)
+
+Shown on boot when the screen has no WiFi association yet. It has:
 
 - **QR code** — encodes WiFi connection info (SSID + password), scannable by phone
 - **Network** — shows the AP SSID (SUBWAVE-SCREEN)
 - **Password** — shows the AP WPA2 password
-- **"Connect"** — reboots the device so it picks up any credentials configured
-  via the web wizard and claims itself
+- **"Scan"** — starts an ESP32-C6 WiFi scan, populates the network picker
+- **Network picker** — shows scan results, deduped by SSID, strongest first
+- **Password field** — tap to enter via on-screen keyboard
+- **"Connect"** — calls `save_wifi_sta()` then `retry_connect()`. No reboot.
+- **"Next →"** — advances to the bind screen (target 4) once WiFi is connected
 - **Status label** — shows connection progress messages
+
+WiFi scan results are retained because removing `captive_portal` removed the
+only thing calling `needs_full_scan_results_()`. The fix:
+```cpp
+wifi->set_keep_scan_results(true);
+```
+placed in `subwave_setup_web`'s `setup()` at priority 260 (`WIFI + 10`), which
+wins over `web_server`'s 249 under ESPHome's descending-priority sort. This runs
+before wifi's own setup at 250, so the boot scan retains everything.
+
+### Stage 2 — Bind to station (`setup_bind_screen`, window target 4)
+
+Shown on boot when WiFi is already connected but the screen has no identity.
+Shown after Stage 1 completes. It has:
+
+- **Server address** — the app's public URL (e.g. `https://causewayfm.com`).
+  `https://` is added automatically if omitted.
+- **Bind code** — the 7-character code shown on the admin panel when the screen
+  was created (e.g. `AB1-C23`). Single-use, 7-day TTL.
+- **"Test"** — normalises the server URL and runs `check_connectivity()`.
+- **"Bind"** — POSTs the bind code to `/api/devices/bind`, receives
+  `deviceId` + `claimToken`, stores them in flash via `save_identity_()`,
+  reboots.
+- **Status label** — test result / bind result messages
+
+**Boot window selection** (`boot_windows` script):
+
+| Condition | Window shown |
+|---|---|
+| Identity present | `window_0` (now-playing) |
+| No identity, WiFi up | `setup_bind_screen` |
+| No identity, no WiFi | `setup_wifi_screen` |
 
 WiFi scan results are retained because removing `captive_portal` removed the
 only thing calling `needs_full_scan_results_()`. The fix:
@@ -403,8 +442,9 @@ Window switching: `window_go` slides the two adjacent slots across `window_stack
 at 24px steps, ~570ms total, with a 2 s gap in the API. Skip is 1:1 with the web
 app including solo-mode behaviour.
 
-There are four window slots in `window_stack`: window_0 (now), window_1 (shows),
-window_2 (settings), setup_screen (setup). The rail has four segments matching.
+There are five window slots in `window_stack`: window_0 (now-playing),
+window_1 (shows), window_2 (settings), setup_wifi_screen (WiFi setup),
+setup_bind_screen (bind to station). The rail has four segments matching.
 `window_draw_rail` script highlights the active segment.
 
 ### `dropdown` and `textarea` do NOT crash LVGL — an earlier note here was wrong
@@ -418,37 +458,36 @@ screen's `wifi_password` textarea reads back correctly.
 What actually caused the crash is not established. Do not re-add the claim, and do
 not avoid these widgets on the strength of it.
 
-The setup screen uses: `qrcode` (WiFi connection string), `label` (text),
+The setup screens use: `qrcode` (WiFi connection string), `label` (text),
 `button`, `dropdown` (network picker), `textarea` (password), `keyboard`.
 
 ### The on-screen keyboard, and why it covers the network list
 
-Tapping the password field opens an LVGL `keyboard`; tapping it again, or Done,
-closes it. `lv_keyboard_set_textarea()` is wired by ESPHome from the widget's
-`textarea:` key — no LVGL group needed.
+Tapping a field opens an LVGL `keyboard`; tapping it again, or Done, closes it.
+`lv_keyboard_set_textarea()` is wired by ESPHome from the widget's
+`textarea:` key — no LVGL group needed. `keyboard_target` (a global) selects
+which field receives input: `0` = WiFi password, `2` = server address,
+`3` = bind code.
 
-The keyboard rises over the **bottom** of the screen (y 520–788) and covers the
-network picker while it is up. That is deliberate. The panel is 800px tall and
-already full, and at arm's length on a wall a keyboard squeezed beside a list
-leaves neither usable — and anyone typing a password has already picked a
-network. The password field steps **up** to y=468 so it stays visible above the
-keyboard's top edge; that is the only hard layout constraint, and it is why the
-field's y changes rather than the keyboard's.
+The keyboard rises over the bottom of the screen and covers the network picker
+while it is up. That is deliberate. The panel is 800px tall and already full,
+and at arm's length on a wall a keyboard squeezed beside a list leaves neither
+usable — and anyone typing a password has already picked a network. The keyboard
+sits at y=532 with height 168 (ends y=700), above the chrome rail at y=728.
 
-**The Scan button and the picker are HIDDEN while the keyboard is up**, not left
-buried. They share the row the field moves into, so without the hide the field
-lands on top of them. `check:screen-layout` asserts both that those are the only
-two things in that row and that the opening branch actually hides them —
-checking that the ids merely *appear* in the script is not enough, because they
-appear in the array that collects the row, so deleting the hide leaves every
-mention intact and the check passes.
+**The chrome rail is hidden while the keyboard is open**, and shown again when
+it closes. This is the thing that failed on hardware the first time — the rail
+covered the bottom two rows of keys. `check:screen-layout` asserts the keyboard
+clears the password field with an 8px gap and fits entirely above the rail.
 
 **Four mode buttons are not optional.** LVGL's keyboard shows exactly one
 character set at a time and does not cycle. Its modes are `TEXT_LOWER`,
 `TEXT_UPPER`, `SPECIAL`, `NUMBER` (`SPECIAL`, not `TEXT_SPECIAL` — a wrong name
 here fails validation). A WiFi password commonly needs all four, so `abc` / `ABC`
 / `#+=` / `123` call `lv_keyboard_set_mode`. Without them the keyboard is stuck
-in one case and most passwords cannot be typed at all.
+in one case and most passwords cannot be typed at all. The bind page drops the
+`SPECIAL` and `NUMBER` modes — bind codes like `AB1-C23` need letters and
+numbers only — and keeps `abc` / `ABC` / `Done`.
 
 The mode parameter is an `int` index into a `lv_keyboard_mode_t[4]` rather than a
 string, because ESPHome script parameters are typed.
@@ -506,8 +545,8 @@ wizard back where it was, with the bad credentials still on flash to correct.
 
 ## Drawing the screen (`npm run render:setup`)
 
-`scripts/render-setup-screen.mts` renders the setup screen to PNG from the same
-parser the gate uses, in both states, into `.preview/`.
+`scripts/render-setup-screen.mts` renders both setup screens to PNG from the same
+parser the gate uses, in both keyboard states, into `.preview/`.
 
 **Why this exists.** The panel is on a wall, there is no camera on this bench,
 and `check:screen-layout` can prove the geometry is *sound* without being able to
