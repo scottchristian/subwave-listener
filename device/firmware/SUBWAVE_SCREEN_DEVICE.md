@@ -183,48 +183,101 @@ interchangeable and using either for the wrong job wastes a cycle:
 | `/dev/cu.usbmodem*` (native USB1) | **flash only** | Fast (2.7 MB in ~43 s) and reliable, but the device RE-ENUMERATES on every reset, so macOS hands it a new number. It is usually gone by the time you go to read the log. |
 | `/dev/cu.usbserial-*` (CH340) | **log capture only** | Stable port. But it WEDGES on write — reliably around 67% of the image — and never recovers without a physical replug. |
 
-If the native port is missing, pulse the CH340's DTR/RTS to reset the chip and
-wait ~5s for the native port to reappear:
-```python
-import serial, time
-s = serial.Serial('/dev/cu.usbserial-214220', 115200, timeout=0.3)
-s.dtr = False; s.rts = True; time.sleep(0.2); s.dtr = True; s.rts = False
-time.sleep(3); s.close()
-```
+### The end-to-end flash sequence (what actually works)
 
-Flash (460800 works reliably; 921600 has also succeeded but is no faster):
-```
-python3 -m esptool --chip esp32p4 -p /dev/cu.usbmodem1101 --baud 460800 \
-  --before default_reset --after hard_reset write_flash -z \
-  --flash_mode dio --flash_freq 40m --flash_size 16MB \
-  0x0 builds/.esphome/build/subwave-screen/build/firmware.factory.bin
-```
+1. **Build first.** Always bump `firmware_version` before flashing, so the boot log proves a new image landed:
 
-**`Hash of data verified.` is the only success signal.** After it you may get
-`termios.error: (6, 'Device not configured')` or `OSError: Device not
-configured` from the trailing `hard_reset` — that is the port disappearing under
-the tool as the chip resets. The write already succeeded.
+   ```
+   cd device/firmware && docker run --rm --privileged -v /dev:/dev -v $(pwd):/config -w /config esphome/esphome:2026.7.0 compile builds/subwave-jc8012p4a1.yaml
+   ```
 
-Build (never touch the binary by hand):
-```
-cd device/firmware && docker run --rm --privileged -v /dev:/dev -v $(pwd):/config -w /config esphome/esphome:2026.7.0 compile builds/subwave-jc8012p4a1.yaml
-```
+   Confirm `INFO Successfully compiled program.` at the end. The artifact is
+   `builds/.esphome/build/subwave-screen/build/firmware.factory.bin` (~2.7 MB).
 
-Always bump `firmware_version` in `builds/subwave-jc8012p4a1.yaml` before
-flashing, so the boot log proves a new image landed:
-`[app:153]: Project causewayfm.subwave-screen version X.Y.Z`
+2. **Get the native port to appear.** The native USB port vanishes on every reset.
+   Pulse the CH340's DTR/RTS to reset the chip, then wait ~5 s for
+   `/dev/cu.usbmodem*` to reappear:
 
-### Log capture
+   ```python
+   import serial, time, glob
+   port = '/dev/cu.usbserial-214220'
+   s = serial.Serial(port, 115200, timeout=0.1)
+   s.dtr = False   # IO0 high: run the app (not ROM download mode)
+   s.rts = True    # EN low: assert reset
+   time.sleep(0.5)
+   s.dtr = True    # IO0 high still
+   s.rts = False   # EN high: release reset
+   time.sleep(0.5)
+   s.dtr = False   # both released, chip runs
+   s.rts = False
+   s.close()
+   print("reset sent, waiting for native port...")
+   for i in range(15):
+       time.sleep(1)
+       if glob.glob('/dev/cu.usbmodem*'):
+           print("NATIVE PORT:", glob.glob('/dev/cu.usbmodem*'))
+           break
+   ```
 
-Use the script — the DTR/RTS lines are the auto-download circuit, not a reset,
-and getting them backwards produces four lines of ROM output and silence:
+   **Truth table:** DTR low + RTS high = reset asserted; release both = run app.
+   Asserting both puts the chip in ROM download mode (`ESP-ROM` then silence) —
+   reads like a dead device but isn't.
+
+3. **Flash.** 460800 baud works reliably; 921600 has also succeeded but is no faster:
+
+   ```
+   python3 -m esptool --chip esp32p4 -p /dev/cu.usbmodem1101 --baud 460800 \
+     --before default_reset --after hard_reset write_flash -z \
+     --flash_mode dio --flash_freq 40m --flash_size 16MB \
+     0x0 builds/.esphome/build/subwave-screen/build/firmware.factory.bin
+   ```
+
+   The port number (`usbmodem1101`) changes every reset — check `ls /dev/cu.usbmodem*` right before flashing.
+
+   **`Hash of data verified.` is the only success signal.** After it you may get
+   `termios.error: (6, 'Device not configured')` or `OSError: Device not
+   configured` from the trailing `hard_reset` — that is the port disappearing
+   under the tool as the chip resets. The write already succeeded. Do not
+   re-flash because of it.
+
+4. **Reboot happens automatically** via `--after hard_reset`. The chip runs the
+   new image immediately.
+
+5. **Read the boot log on the CH340** (stable port, never flash on it):
+
+   ```
+   python3 device/firmware/tools/capture_log.py 45
+   ```
+
+   This pulses DTR/RTS the same way as step 2, then captures 45 s of boot log.
+   Look for:
+   - `Project causewayfm.subwave-screen version X.Y.Z` — proves the new image landed
+   - `Connectivity: all four steps pass. Not asking for setup.` — network is good
+   - `Boot window is ...` — which window is on the glass
+   - `Guru Meditation Error` / `panic` — a crash, investigate
+
+### Failure modes seen in practice
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Failed to connect: Download mode successfully detected, but getting no sync reply` | CH340 wedged on a previous write | Unplug the CH340 cable, replug it, retry |
+| Native port never appears after reset pulse | Chip didn't leave reset | Re-pulse DTR/RTS (step 2), wait up to 15 s |
+| `esptool` can't find `/dev/cu.usbmodem*` | Port renumbered after reset | `ls /dev/cu.usbmodem*` right before flashing, use that exact path |
+| Boot log shows `Guru Meditation Error` | Firmware crash | Capture full log with `capture_log.py`, look at the register dump |
+| Boot log clean but screen shows nothing | Wrong panel revision | Try `panel_vendor.yaml` (old revision, 198 commands, 60 MHz) |
+
+### Log capture details
+
+`capture_log.py` holds DTR low, pulses RTS high to reset, releases both — that is
+the run-then-reset sequence. Getting DTR/RTS backwards produces four lines of
+`ESP-ROM` then silence: the chip is in ROM download mode, not dead, but it won't
+run your app until you release both straps.
 
 ```
 python3 device/firmware/tools/capture_log.py 45
 ```
 
-Asserting DTR and RTS puts the chip in ROM download mode (`waiting for
-download`); deasserting both releases the strap and lets the app run.
+Capture 45 s; the boot completes in ~30 s and the rest is steady-state log.
 
 ## Panel timing specifics (the other half of the root cause)
 
