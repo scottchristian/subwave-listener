@@ -160,23 +160,26 @@ script:
     then:
       - delay: 4s
       - lambda: |-
+          auto *wifi = wifi::global_wifi_component;
+          if (wifi != nullptr && (wifi->has_sta() || wifi->is_connected())) {
+            ESP_LOGI("subwave.setup", "Saved Wi-Fi configured; skipping automatic boot scan.");
+            return;
+          }
           ESP_LOGI("subwave.setup", "Starting a WiFi scan for the on-screen list.");
           id(setup_web)->request_scan();
-      # Poll rather than sleep once, so the log says WHICH of three very
-      # different situations this is: the scan never started, it started and
-      # heard nothing, or it heard plenty and the completion event never
-      # reached ESPHome. Only the third is a lost event; the first two are the
-      # radio's own answer and should not be reported as a fault. The poll goes
-      # quiet on its own once a scan lands.
       - repeat:
           count: 20
           then:
             - delay: 2s
             - lambda: |-
+                auto *wifi = wifi::global_wifi_component;
+                if (wifi != nullptr && (wifi->has_sta() || wifi->is_connected()))
+                  return;
                 id(setup_web)->log_radio_state();
       - lambda: |-
-          // Only reached if no scan landed. If one did, the listener in
-          // subwave_setup_web already logged every network it heard.
+          auto *wifi = wifi::global_wifi_component;
+          if (wifi != nullptr && (wifi->has_sta() || wifi->is_connected()))
+            return;
           ESP_LOGW("subwave.setup", "No scan result after 40s. A scan that reports nothing "
                                    "and a scan that never finished look identical from here.");
           wifi_populate_dropdown->execute();
@@ -194,15 +197,10 @@ script:
     then:
       - lambda: |-
           if (!id(setup_web)->scan_completed()) {
-            // Still scanning. Saying so is the whole point: an empty dropdown
-            // with no explanation is indistinguishable from a dead radio, and
-            // on a wall screen nobody is going to work that out.
             lv_label_set_text(id(wifi_status), "Still scanning for networks...");
             return;
           }
 
-          // SSID -> strongest RSSI seen, so a later, weaker beacon for a network
-          // already recorded cannot drag its entry down the list.
           std::map<std::string, int> best;
           auto &results = wifi::global_wifi_component->get_scan_result();
           for (auto &scan : results) {
@@ -217,9 +215,6 @@ script:
               best[ssid] = rssi;
           }
 
-          // Strongest first. A stable tiebreak on the SSID keeps the order from
-          // shifting between two scans that report the same networks equally
-          // well, which would otherwise move someone's entry under their finger.
           std::vector<std::pair<int, std::string>> sorted;
           sorted.reserve(best.size());
           for (auto &kv : best)
@@ -243,59 +238,37 @@ script:
           id(wifi_network_dropdown)->set_options(options);
           lv_label_set_text(id(wifi_status), options.size() == 1 && options[0] == "No networks found"
                                               ? "No networks found."
-                                              : "Pick a network below.");
+                                              : "Pick a network and enter password.");
 
-  # ---------------------------------------------------------------------------
-  # The on-screen keyboard.
-  #
-  # Tapping the password field opens it; tapping the field again, or Done, closes
-  # it. Nothing else on the screen opens it, because there is nothing else that
-  # needs it.
-  #
-  # NOTHING MOVES WHEN IT OPENS. The keyboard sits UNDER the password field, so
-  # opening it only changes which widgets are visible. An earlier version raised
-  # the field into the row above the keyboard, which needed the field's caption,
-  # the Connect button and two hidden controls all to move together — and they
-  # collided twice anyway. Neither collision was detectable by an assertion:
-  # every widget was still inside the panel and nothing overlapped anything
-  # still visible. They were found by drawing the screen (npm run render:setup),
-  # which is the argument for drawing it.
   # ---------------------------------------------------------------------------
   # Test the server connection. Normalises the URL (adds https:// if no scheme)
   # and checks DNS + TCP. If it works, the bind code field is ready to use.
+  # ---------------------------------------------------------------------------
   - id: bind_test_connection
     mode: single
     then:
       - lambda: |-
           const char *raw = lv_textarea_get_text(id(bind_server_url));
           std::string url = raw ? raw : "";
-          // Trim
           while (!url.empty() && (url.front() == ' ' || url.front() == '\t')) url.erase(url.begin());
           while (!url.empty() && (url.back() == ' ' || url.back() == '\t' || url.back() == '/')) url.pop_back();
           if (url.empty()) {
             lv_label_set_text(id(bind_status), "Enter a server address first.");
             return;
           }
-          // Add scheme if missing
           if (url.find("://") == std::string::npos) {
             url = "https://" + url;
             lv_textarea_set_text(id(bind_server_url), url.c_str());
           }
-          // Store for the bind step
-          id(display_client)->set_server_url(url);
           auto *c = id(display_client);
           c->set_server_url(url);
 
-          // Test connectivity
-          lv_label_set_text(id(bind_status), "Testing connection...");
+          lv_label_set_text(id(bind_status), "Testing connection to server...");
           auto result = c->check_connectivity();
           if (result == subwave_display::SubwaveDisplay::Connectivity::OK ||
               result == subwave_display::SubwaveDisplay::Connectivity::NO_SERVER) {
-            // NO_SERVER means DNS resolved but the host didn't answer on the port.
-            // For an unbound device, the bind endpoint might be on a different
-            // path. Report what we found.
             if (result == subwave_display::SubwaveDisplay::Connectivity::OK) {
-              lv_label_set_text(id(bind_status), "Connected. Enter the bind code and tap Bind.");
+              lv_label_set_text(id(bind_status), "Server reachable! Enter bind code and tap Bind Station.");
             } else {
               lv_label_set_text(id(bind_status), "Server not responding. Check the address.");
             }
@@ -314,20 +287,24 @@ script:
           const char *code_raw = lv_textarea_get_text(id(bind_code));
           std::string url = url_raw ? url_raw : "";
           std::string code = code_raw ? code_raw : "";
+          while (!url.empty() && (url.front() == ' ' || url.front() == '\t')) url.erase(url.begin());
+          while (!url.empty() && (url.back() == ' ' || url.back() == '\t' || url.back() == '/')) url.pop_back();
+          while (!code.empty() && (code.front() == ' ' || code.front() == '\t')) code.erase(code.begin());
+          while (!code.empty() && (code.back() == ' ' || code.back() == '\t')) code.pop_back();
           if (url.empty() || code.empty()) {
             lv_label_set_text(id(bind_status), "Enter both the server address and bind code.");
             return;
           }
           if (url.find("://") == std::string::npos) {
             url = "https://" + url;
+            lv_textarea_set_text(id(bind_server_url), url.c_str());
           }
-          lv_label_set_text(id(bind_status), "Binding...");
+          lv_label_set_text(id(bind_status), "Binding station display...");
           auto *c = id(display_client);
           c->set_server_url(url);
           c->set_bind_code(code);
           if (c->bind(url, code)) {
             lv_label_set_text(id(bind_status), "Bound! Rebooting...");
-            // Reboot to pick up the new identity
             App.safe_reboot();
           } else {
             lv_label_set_text(id(bind_status), "Bind failed. Check the code and try again.");
@@ -337,46 +314,47 @@ script:
     mode: single
     then:
       - lambda: |-
-          // Pick the keyboard for the current screen.
-          // Wi-Fi page (setup_page == 3): wifi_kb -> textarea wifi_password
-          // Bind page   (setup_page == 4): bind_kb -> textarea bind_server_url / bind_code
-          lv_obj_t *kb_sel = id(id(setup_page) == 3 ? wifi_kb : bind_kb).obj;
-          bool kb_was_hidden = lv_obj_has_flag(kb_sel, LV_OBJ_FLAG_HIDDEN);
+          // Choose the keyboard that matches the target field (or active setup screen when closing).
+          // keyboard_target: 0 = wifi_password, 2 = bind_server_url, 3 = bind_code, -1 = close keyboard
+          bool on_wifi = (id(keyboard_target) == 0) ||
+                         (id(keyboard_target) < 0 && id(window_index) == 3 && id(setup_page) == 3);
+          lv_obj_t *kb_sel = on_wifi ? id(wifi_kb).obj : id(bind_kb).obj;
+          bool kb_was_hidden = (id(keyboard_target) >= 0) && lv_obj_has_flag(kb_sel, LV_OBJ_FLAG_HIDDEN);
 
-          // Only the action buttons and status hide while typing. The field being
-          // typed in MUST stay visible — hiding it is what made the keyboard
-          // look like it had swallowed the input.
-          lv_obj_t *hidden_while_typing[] = {id(setup_connect_button), id(wifi_status),
-                                   id(setup_next_button),
-                                   id(bind_test_button), id(bind_button), id(bind_status),
-                                   id(chrome)};
+          // Action controls on the password row hide while typing so the mode buttons fit cleanly.
+          lv_obj_t *hidden_while_typing[] = {id(setup_connect_button), id(wifi_status)};
           lv_obj_t *shown_while_typing[] = {id(wifi_mode_lower), id(wifi_mode_upper), id(wifi_mode_special),
                                    id(wifi_mode_number), id(wifi_keyboard_done),
-                                   id(bind_mode_lower), id(bind_mode_upper),  id(bind_keyboard_done),
-                                   id(chrome)};
+                                   id(bind_mode_lower), id(bind_mode_upper), id(bind_mode_special),
+                                   id(bind_mode_number), id(bind_keyboard_done)};
 
-          // Switch the keyboard's target based on keyboard_target.
-          // 0 = wifi_password (default), 2 = bind_server_url, 3 = bind_code
           lv_obj_t *target = id(wifi_password);
           if (id(keyboard_target) == 2) target = id(bind_server_url);
           else if (id(keyboard_target) == 3) target = id(bind_code);
 
           if (kb_was_hidden) {
-            // Keyboard was hidden — show it with the new target.
+            // Keyboard was hidden — show it and focus the tapped textarea.
             lv_keyboard_set_textarea(kb_sel, target);
+            lv_keyboard_set_mode(kb_sel, id(keyboard_target) == 3
+                                             ? LV_KEYBOARD_MODE_TEXT_UPPER
+                                             : LV_KEYBOARD_MODE_TEXT_LOWER);
             lv_obj_clear_flag(kb_sel, LV_OBJ_FLAG_HIDDEN);
             for (auto *o : hidden_while_typing)
               lv_obj_add_flag(o, LV_OBJ_FLAG_HIDDEN);
             for (auto *o : shown_while_typing)
               lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
-          } else if (lv_keyboard_get_textarea(kb_sel) != target) {
-            // Keyboard is visible but on a different field — switch target,
-            // don't toggle off. Tapping a field while the keyboard is up
-            // should retarget it, not hide it.
+          } else if (id(keyboard_target) >= 0) {
+            // Keyboard is already visible and user tapped a text field — retarget without hiding.
             lv_keyboard_set_textarea(kb_sel, target);
+            if (id(keyboard_target) == 3) {
+              lv_keyboard_set_mode(kb_sel, LV_KEYBOARD_MODE_TEXT_UPPER);
+            } else if (id(keyboard_target) == 2) {
+              lv_keyboard_set_mode(kb_sel, LV_KEYBOARD_MODE_TEXT_LOWER);
+            }
           } else {
-            // Keyboard is visible on the same field — toggle off.
-            lv_obj_add_flag(kb_sel, LV_OBJ_FLAG_HIDDEN);
+            // Explicit close (Done button or keyboard built-in Ready/Cancel key).
+            lv_obj_add_flag(id(wifi_kb).obj, LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(bind_kb).obj, LV_OBJ_FLAG_HIDDEN);
             for (auto *o : hidden_while_typing)
               lv_obj_clear_flag(o, LV_OBJ_FLAG_HIDDEN);
             for (auto *o : shown_while_typing)
@@ -385,11 +363,6 @@ script:
           lv_obj_invalidate(kb_sel);
 
   # Switch the keyboard's character set.
-  #
-  # LVGL's keyboard shows exactly one set at a time and does not cycle, so a
-  # password containing a digit and a lowercase letter needs this. The parameter
-  # indexes the mode rather than naming it because ESPHome's script parameters
-  # are typed, and the alternative — four near-identical scripts — is worse.
   - id: wifi_keyboard_mode
     mode: restart
     parameters:
@@ -407,16 +380,6 @@ script:
           lv_keyboard_set_mode(id(wifi_kb).obj, modes[mode]);
           lv_keyboard_set_mode(id(bind_kb).obj, modes[mode]);
 
-  # Run when a scan actually lands.
-  #
-  # The trigger has to be the real event, not a timer. The on-screen list is the
-  # only place someone standing at the wall can see the result, so it has to be
-  # right at the moment it is looked at; a list filled on a schedule is either
-  # empty on arrival or stale.
-  #
-  # NOT NAMED `on_wifi_scan_results`: ESPHome's id namespace is global, and using
-  # the same string as both the script id and the `on_scan_script:` option value
-  # makes the validator report the id as defined twice.
   - id: wifi_scan_landed
     mode: restart
     then:
@@ -428,62 +391,33 @@ script:
       - lambda: |-
           std::string ssid = id(wifi_network_dropdown)->get_selected_text();
           const char *psk = lv_textarea_get_text(id(wifi_password));
-          if (ssid.empty() || ssid == "No networks found") {
-            lv_label_set_text(id(wifi_status), "No network selected.");
+          if (ssid.empty() || ssid == "No networks found" || ssid == "Scanning…") {
+            lv_label_set_text(id(wifi_status), "Select a Wi-Fi network first.");
             return;
           }
           if (psk == nullptr)
             psk = "";
           lv_label_set_text(id(wifi_status), ("Connecting to " + ssid + "...").c_str());
 
-          // NO REBOOT ON THE HAPPY PATH. This is what the button used to do, and
-          // it was wrong in the way a wall-mounted screen makes wrong things
-          // obvious: tapping Connect blanked the panel for four seconds and came
-          // back — including on every FAILED attempt, which is exactly when
-          // somebody is standing in front of it wondering what they did.
-          //
-          // The reboot was never necessary. save_wifi_sta already does both jobs
-          // that matter: it writes the credentials to flash (pref_.save followed
-          // by global_preferences->sync) and it registers them with the runtime
-          // network list via set_sta(). All that is left is to start the
-          // association, and retry_connect() does that through
-          // start_connecting(), which moves the state machine to
-          // STA_CONNECTING and begins associating on the next loop.
-          //
-          // retry_connect() is called explicitly because save_wifi_sta's own
-          // connect_soon() only fires from COOLDOWN, and this device sits in
-          // WIFI_COMPONENT_STATE_AP — no configured station network, because it
-          // has not been provisioned yet. From AP it is a no-op, which is the
-          // same reason the original code rebooted instead of connecting.
+          // Close keyboard if open.
+          id(keyboard_target) = -1;
+          wifi_keyboard_toggle->execute();
+
+          // Show full-screen connection progress overlay while associating and testing.
+          lv_label_set_text(id(boot_kicker), "WIFI CONNECTION");
+          lv_label_set_text(id(boot_title), ("Connecting to " + ssid).c_str());
+          lv_label_set_text(id(boot_step), "Trying to connect to Wi-Fi…");
+          lv_label_set_text(id(boot_detail), "Step 1 of 3 · Associating with access point");
+          lv_obj_set_width(id(boot_bar_fill), 160);
+          lv_obj_clear_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(chrome), LV_OBJ_FLAG_HIDDEN);
+
           auto *wifi = wifi::global_wifi_component;
           wifi->save_wifi_sta(ssid, psk);
           wifi->retry_connect();
           wifi_connect_watchdog->execute();
+          check_connectivity->execute();
 
-  # The failure path, and why a reboot is still the right answer THERE.
-  #
-  # THE ACCESS POINT CANNOT COME BACK BY ITSELF. WiFiComponent::loop() restarts
-  # the fallback access point under `if (this->has_ap() && !this->ap_setup_)` —
-  # but ap_setup_ is assigned exactly once in the entire component, in
-  # setup_ap_config_(), and is never cleared: not on WIFI_EVENT_AP_STOP, not
-  # anywhere else. So that branch can never be true again after first setup, and
-  # the 90-second ap_timeout fallback is unreachable on this build.
-  #
-  # That matters because starting a connection DROPS the access point:
-  # wifi_sta_connect_ calls wifi_mode_(true, {}), which is STA-only. A wrong
-  # password therefore leaves the screen with no network AND no access point,
-  # retrying in silence, until somebody physically power-cycles a panel bolted to
-  # a wall.
-  #
-  # A reboot is not a workaround here; it IS the recovery. At boot,
-  # setup_wifi_ap() starts the access point unconditionally and only declines to
-  # leave the AP state when no station network is configured — so restarting puts
-  # the wizard back exactly where it was, with the bad credentials still on flash
-  # for the person to correct from the screen or the wizard.
-  #
-  # 45 seconds is longer than a healthy association takes on any ordinary network
-  # and short enough that somebody watching the screen sees it resolve one way or
-  # the other rather than standing in front of it.
   - id: wifi_connect_watchdog
     mode: restart
     then:
@@ -493,99 +427,131 @@ script:
             return;
           ESP_LOGW("subwave.setup",
                    "No association after 45s. Restarting so the setup access point comes back.");
+          lv_label_set_text(id(boot_title), "Wi-Fi Connection Failed");
+          lv_label_set_text(id(boot_step), "Could not join that network. Restarting setup…");
           lv_label_set_text(id(wifi_status), "Could not join that network. Restarting...");
           delay(1500);
           App.safe_reboot();
 
   # ---------------------------------------------------------------------------
-  # The connectivity ladder, run ONCE at boot.
+  # Full-screen boot & connectivity test sequence.
   #
-  # THE POINT OF THIS SCRIPT IS THAT IT CAN DO NOTHING. A screen whose WiFi works
-  # comes up, checks, finds nothing wrong, and goes about its business. Setup is
-  # demanded only when a step actually fails — which is the whole reason the
-  # ladder exists rather than a single "is it connected" boolean.
-  #
-  # WHY IT RUNS ONCE. Re-running it means a cafe router that stops routing at 4pm
-  # turns a wall screen into a Wi-Fi prompt with no warning, for a problem the
-  # person standing there cannot fix. The station's own error state is the right
-  # thing to show when the network drops mid-session, and the person who CAN fix
-  # it should be the one who chose the network — which is what the Settings row
-  # is for.
-  #
-  # WHY 18 SECONDS. Long enough for an association to have settled and for the
-  # server to have answered at least one heartbeat, so step four has something to
-  # judge. Short enough that nobody notices they were waiting. The ladder blocks
-  # for a few seconds itself; that is a script action, not the main loop.
-  #
-  # The quiet line on the now-playing window says what is being checked while
-  # this runs, so the screen is doing something legible rather than sitting blank.
+  # Drives `boot_overlay` step-by-step:
+  #   Step 1: Waiting for Wi-Fi association ("Trying to connect to Wi-Fi…")
+  #   Step 2: Testing local network & gateway
+  #   Step 3: Testing internet & Subwave station reachability
   # ---------------------------------------------------------------------------
   - id: check_connectivity
-    mode: single
+    mode: restart
     then:
-      - delay: 18s
       - lambda: |-
+          auto *wifi = wifi::global_wifi_component;
+          if (wifi == nullptr || (!wifi->has_sta() && !wifi->is_connected())) {
+            // No saved Wi-Fi credentials at all — stay on Wi-Fi setup screen.
+            lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
+            return;
+          }
+          lv_obj_clear_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(chrome), LV_OBJ_FLAG_HIDDEN);
+          lv_label_set_text(id(boot_kicker), "SUBWAVE STATION DISPLAY");
+          lv_label_set_text(id(boot_title), "Connecting to Wi-Fi");
+          lv_label_set_text(id(boot_step), "Trying to connect to Wi-Fi…");
+          lv_label_set_text(id(boot_detail), "Step 1 of 3 · Waiting for Wi-Fi connection");
+          lv_obj_set_width(id(boot_bar_fill), 180);
+      - repeat:
+          count: 25
+          then:
+            - if:
+                condition:
+                  lambda: |-
+                    auto *wifi = wifi::global_wifi_component;
+                    return wifi == nullptr || !wifi->is_connected();
+                then:
+                  - delay: 1s
+      - lambda: |-
+          auto *wifi = wifi::global_wifi_component;
+          if (wifi == nullptr || !wifi->has_sta()) {
+            lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
+            return;
+          }
+          if (!wifi->is_connected()) {
+            lv_label_set_text(id(boot_title), "Wi-Fi Connection Timed Out");
+            lv_label_set_text(id(boot_step), "Could not connect to saved Wi-Fi network");
+            lv_label_set_text(id(boot_detail), "Opening Wi-Fi Setup…");
+            lv_obj_set_width(id(boot_bar_fill), 560);
+            return;
+          }
+          lv_label_set_text(id(boot_title), "Testing Network");
+          lv_label_set_text(id(boot_step), "Wi-Fi connected · Testing local gateway…");
+          lv_label_set_text(id(boot_detail), "Step 2 of 3 · Verifying IP address and router reachability");
+          lv_obj_set_width(id(boot_bar_fill), 360);
+      - delay: 500ms
+      - lambda: |-
+          auto *wifi = wifi::global_wifi_component;
+          if (wifi == nullptr || !wifi->is_connected())
+            return;
+          lv_label_set_text(id(boot_title), "Testing Internet & Station");
+          lv_label_set_text(id(boot_step), "Testing internet and station connection…");
+          lv_label_set_text(id(boot_detail), "Step 3 of 3 · Checking DNS and Subwave server");
+          lv_obj_set_width(id(boot_bar_fill), 480);
+      - delay: 400ms
+      - lambda: |-
+          auto *wifi = wifi::global_wifi_component;
           auto *c = id(display_client);
+          if (wifi == nullptr || !wifi->has_sta()) {
+            lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
+            return;
+          }
+          if (!wifi->is_connected()) {
+            lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
+            lv_label_set_text(id(wifi_status), "Could not connect to saved Wi-Fi. Pick a network below.");
+            window_go->execute(3);
+            wifi_scan->execute();
+            return;
+          }
+
           auto result = c->check_connectivity();
           const char *message = c->connectivity_message(result);
+          lv_obj_set_width(id(boot_bar_fill), 560);
+          bool bound = !c->device_id().empty() && !c->claim_token().empty() && !c->server_url().empty();
 
-          if (result == subwave_display::SubwaveDisplay::Connectivity::OK && !id(display_client)->needs_bind()) {
+          // Unbound device with working Wi-Fi route: go straight to Bind Station (screen 4), NOT Wi-Fi setup!
+          if (!bound &&
+              result != subwave_display::SubwaveDisplay::Connectivity::NO_WIFI &&
+              result != subwave_display::SubwaveDisplay::Connectivity::NO_ROUTE) {
+            ESP_LOGI("subwave.setup", "Wi-Fi connected; device needs station bind. Opening Bind screen.");
+            lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(id(status_line), "");
-            ESP_LOGI("subwave.setup", "Network is fine. Not asking for setup.");
+            window_go->execute(4);
             return;
           }
 
-          // Unbound device: the network is fine but the screen has no identity.
-          // Show the setup screen so the operator can enter the server URL and
-          // bind code.
-          if (id(display_client)->needs_bind()) {
-            ESP_LOGI("subwave.setup", "Unbound device. Showing setup.");
+          if (result == subwave_display::SubwaveDisplay::Connectivity::OK && bound) {
+            ESP_LOGI("subwave.setup", "All connectivity checks passed. Showing Now Playing.");
+            lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(id(status_line), "");
-            window_go->execute(3);
+            window_go->execute(0);
+            c->refresh_now();
             return;
           }
 
-          // NO_SERVER is the one failure that setup cannot fix. The network is
-          // fine and the station is not answering — a server address problem, and
-          // the address is not editable from a wall screen. Showing a Wi-Fi picker
-          // would send somebody to re-enter a password that was never wrong.
-          //
-          // So this branch says what is wrong on the main window and stops. It is
-          // not "setup is needed", and logging that was the first version's
-          // mistake: the log then claimed a Wi-Fi prompt was on its way when none
-          // was, which is the kind of thing that sends you looking for a bug that
-          // is not there.
           if (result == subwave_display::SubwaveDisplay::Connectivity::NO_SERVER) {
+            lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(id(status_line), message);
+            window_go->execute(0);
             ESP_LOGW("subwave.setup", "Staying on the main screen. %s", message);
             return;
           }
 
           ESP_LOGW("subwave.setup", "Setup IS needed: %s", message);
+          lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
+          lv_label_set_text(id(wifi_status), message);
           lv_label_set_text(id(status_line), "");
           window_go->execute(3);
+          wifi_scan->execute();
 
   # ---------------------------------------------------------------------------
-  # Skip — the only control on the now-playing window.
-  #
-  # IT DID NOTHING. The button was drawn, the label had all four states wired to
-  # it, SubwaveDisplay::request_skip() was implemented and correct, and the button
-  # had no on_click at all. It was the single most visible affordance on the
-  # screen and it was inert. Nothing said so anywhere: the log was silent because
-  # there was no request to log, and the dead-code gate that would have found it
-  # did not exist yet.
-  #
-  # WHY THE LABEL IS NOT SET HERE. device/design.md is explicit that the device
-  # receives a finished label and never interprets a mode, and that is what stops
-  # the wall and a browser disagreeing about whether a skip worked. Inventing a
-  # local "Skipping…" would be exactly the disagreement the rule exists to
-  # prevent — and if the server refuses the skip, the screen would have to take
-  # the word back.
-  #
-  # SO: fire the request and go straight back to the server for the truth. The
-  # normal poll is up to ten seconds away, and a press with ten seconds of
-  # nothing after it does not read as a slow network — it reads as a dead button,
-  # which is what the button already was.
+  # Skip — the primary playback control on the now-playing window.
   # ---------------------------------------------------------------------------
   - id: skip_press
     mode: single
@@ -597,21 +563,7 @@ script:
 
   # ---------------------------------------------------------------------------
   # Idle: arm, tick, wake.
-  #
-  # ALL THREE PARTS WERE MISSING until 1.9.0. idle_apply() was called only from
-  # idle_touch(), and idle_touch() was called from nothing — so the screen never
-  # dimmed, never blanked, and had no way to wake, while the settings screen
-  # offered three working-looking idle modes. The globals were declared and bound.
-  # Nothing read them.
-  #
-  # A TICK, NOT A TIMER. The deadline is armed by a touch and re-armed by every
-  # wake, so a self-rescheduling timer would have to be cancelled and rebuilt
-  # each time and would eventually be the one that leaks. Asking a question on an
-  # interval cannot leave a timer behind.
-  #
-  # FIVE SECONDS, not one. The modes are measured in minutes; the only cost of a
-  # coarser tick is that the screen goes off up to five seconds late, which is
-  # invisible, and waking is immediate because it is driven by the touch itself.
+  # ---------------------------------------------------------------------------
   - id: idle_tick
     mode: single
     then:
@@ -624,76 +576,60 @@ script:
       - lambda: subwave_display::idle_touch();
 
   # ---------------------------------------------------------------------------
-  # What is on the glass at boot.
+  # Initial boot window selection.
   #
-  # EVERY SLOT IN window_stack IS CREATED VISIBLE. window_0, window_1,
-  # window_2 and setup_screen all sit at x=0, y=0 with no `hidden:` flag in
-  # display.yaml, so they stack, and the one created LAST draws on top.
-  #
-  # setup_screen is last in the list. So out of the box the setup screen covers
-  # the now-playing screen on every single boot, and a screen with working WiFi
-  # shows a Wi-Fi prompt to somebody who does not need one.
-  #
-  # THIS IS WHY IT SURVIVED THE CONNECTIVITY LADDER BEING CORRECT. The ladder
-  # logs "all four steps pass. Not asking for setup" and it is telling the
-  # truth — it did not navigate anywhere. The setup screen was simply already on
-  # top, and nothing in the boot log says what is being drawn.
-  #
-  # A lesson worth keeping: a log that reports what a component DID is not
-  # evidence about what is on the glass. Only the glass answers that.
-  #
-  # The initial state is set explicitly here rather than inferred from which
-  # window happens to be created last. window_go maintains it from then on.
+  # When Wi-Fi credentials are already configured (`wifi->has_sta()`), we NEVER
+  # flash the Wi-Fi setup screen at boot. Instead, `boot_overlay` covers the
+  # screen with live step-by-step progress while Wi-Fi associates and runs
+  # network/internet tests.
   # ---------------------------------------------------------------------------
   - id: boot_windows
     mode: single
     then:
       - lambda: |-
+          // Ensure LVGL's built-in keyboard checkmark/close buttons also sync our UI state.
+          auto kb_event_cb = [](lv_event_t *e) {
+            lv_event_code_t code = lv_event_get_code(e);
+            if (code == LV_EVENT_READY || code == LV_EVENT_CANCEL) {
+              id(keyboard_target) = -1;
+              id(wifi_keyboard_toggle)->execute();
+            }
+          };
+          lv_obj_add_event_cb(id(wifi_kb).obj, kb_event_cb, LV_EVENT_ALL, nullptr);
+          lv_obj_add_event_cb(id(bind_kb).obj, kb_event_cb, LV_EVENT_ALL, nullptr);
+
           lv_obj_add_flag(id(window_1), LV_OBJ_FLAG_HIDDEN);
           lv_obj_add_flag(id(window_2), LV_OBJ_FLAG_HIDDEN);
-          // An unbound device has no identity and no server URL. Show the Wi-Fi
-          // setup screen so the operator can connect and then bind.
-          // A bound device shows the now-playing window.
-          auto *c = id(display_client);
+          lv_obj_add_flag(id(setup_wifi_screen), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(id(setup_bind_screen), LV_OBJ_FLAG_HIDDEN);
+
           auto *wifi = esphome::wifi::global_wifi_component;
-          bool wifi_up = wifi != nullptr && wifi->is_connected();
-          bool bound = !c->device_id().empty() && !c->claim_token().empty() && !c->server_url().empty();
-          if (bound) {
-            lv_obj_add_flag(id(setup_wifi_screen), LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(id(setup_bind_screen), LV_OBJ_FLAG_HIDDEN);
+          bool has_wifi = wifi != nullptr && (wifi->has_sta() || wifi->is_connected());
+          if (has_wifi) {
+            id(window_index) = 0;
             lv_obj_clear_flag(id(window_0), LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_x(id(window_0), 0);
-            ESP_LOGI("subwave.ui", "Boot window is 0; the other slots hidden.");
-          } else if (wifi_up) {
-            // Wi-Fi is already up; skip the Wi-Fi page and go straight to bind.
-            id(setup_page) = 4;
-            lv_obj_add_flag(id(setup_wifi_screen), LV_OBJ_FLAG_HIDDEN);
-            lv_obj_clear_flag(id(setup_bind_screen), LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(id(window_0), LV_OBJ_FLAG_HIDDEN);
-            lv_obj_set_x(id(setup_bind_screen), 0);
-            ESP_LOGI("subwave.ui", "Boot window is bind (WiFi up, no identity).");
+            lv_label_set_text(id(boot_kicker), "SUBWAVE STATION DISPLAY");
+            lv_label_set_text(id(boot_title), "Connecting to Wi-Fi");
+            lv_label_set_text(id(boot_step), "Trying to connect to Wi-Fi…");
+            lv_label_set_text(id(boot_detail), "Step 1 of 3 · Waiting for Wi-Fi connection");
+            lv_obj_set_width(id(boot_bar_fill), 140);
+            lv_obj_clear_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(chrome), LV_OBJ_FLAG_HIDDEN);
+            ESP_LOGI("subwave.ui", "Saved Wi-Fi present; showing full-screen connection progress.");
           } else {
+            id(window_index) = 3;
             id(setup_page) = 3;
-            lv_obj_clear_flag(id(setup_wifi_screen), LV_OBJ_FLAG_HIDDEN);
-            lv_obj_add_flag(id(setup_bind_screen), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
             lv_obj_add_flag(id(window_0), LV_OBJ_FLAG_HIDDEN);
+            lv_obj_clear_flag(id(setup_wifi_screen), LV_OBJ_FLAG_HIDDEN);
             lv_obj_set_x(id(setup_wifi_screen), 0);
-            ESP_LOGI("subwave.ui", "Boot window is Wi-Fi setup (no WiFi, no identity).");
+            ESP_LOGI("subwave.ui", "No saved Wi-Fi; showing Wi-Fi setup screen.");
+            window_draw_rail->execute();
           }
-          window_draw_rail->execute();
 
   # ---------------------------------------------------------------------------
-  # Window switching (moved from window.yaml to avoid duplicate script: key).
-  #
-  # Four slots live side by side inside window_stack: window_0, window_1,
-  # window_2, setup_screen. Exactly one is visible; the rest are parked off to
-  # one side behind LV_OBJ_FLAG_HIDDEN. A slide is a loop that walks both the
-  # outgoing and incoming slot across the stack a few pixels at a time.
-  #
-  # THE ANIMATION IS PLAIN LVGL, NOT lv_anim. The crossfade in theme.yaml already
-  # blocks this script through art_fading, and adding a second, independent
-  # animation system here would mean two clocks driving one window — which is
-  # how a slide ends up fighting a crossfade and leaving the screen blank.
+  # Window switching.
   # ---------------------------------------------------------------------------
   - id: window_go
     mode: restart
@@ -701,41 +637,38 @@ script:
       target: int
     then:
       - lambda: |-
-          if (target == id(window_index)) return;
-          // A slide requested mid-crossfade is remembered, not dropped: the
-          // crossfade clears art_fading and window_tick picks this up.
+          if (target < 0 || target > 4) return;
           if (id(art_fading)) {
             id(window_queued) = target;
             return;
           }
           id(window_queued) = -1;
-          int from = id(window_index);
           id(window_index) = target;
-          // Keep setup_page in sync so the keyboard toggle picks the right keyboard.
           if (target == 3) id(setup_page) = 3;
           if (target == 4) id(setup_page) = 4;
 
-          // Pointers to an incomplete type — legal to hold, illegal to deref.
-          lv_obj_t *wins[5] = {id(window_0), id(window_1), id(window_2), id(setup_wifi_screen), id(setup_bind_screen)};
+          // Close any open on-screen keyboard when navigating between screens.
+          id(keyboard_target) = -1;
+          wifi_keyboard_toggle->execute();
 
-          const int32_t width = 800;   // the panel is 800x800
-          const int32_t step = 24;     // 800/24 = 34 frames, ~570ms at 16ms
-          int32_t direction = target > from ? 1 : -1;
+          lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
 
-          for (int32_t moved = 0; moved < width; moved += step) {
-            for (int32_t f = 0; f <= moved; f += step)
-              lv_obj_set_x(wins[from], direction > 0 ? -f : width - f);
-            for (int32_t f = width - moved; f >= 0; f -= step)
-              lv_obj_set_x(wins[target], direction > 0 ? f : width - f);
-            delay(16);
+          lv_obj_t *wins[5] = {
+            id(window_0),
+            id(window_1),
+            id(window_2),
+            id(setup_wifi_screen),
+            id(setup_bind_screen),
+          };
+          for (int i = 0; i < 5; i++) {
+            lv_obj_set_x(wins[i], 0);
+            if (i == target) {
+              lv_obj_clear_flag(wins[i], LV_OBJ_FLAG_HIDDEN);
+            } else {
+              lv_obj_add_flag(wins[i], LV_OBJ_FLAG_HIDDEN);
+            }
+            lv_obj_invalidate(wins[i]);
           }
-
-          lv_obj_set_x(wins[from], direction > 0 ? -width : width);
-          lv_obj_set_x(wins[target], 0);
-          lv_obj_add_flag(wins[from], LV_OBJ_FLAG_HIDDEN);
-          lv_obj_clear_flag(wins[target], LV_OBJ_FLAG_HIDDEN);
-          lv_obj_invalidate(wins[from]);
-          lv_obj_invalidate(wins[target]);
           window_draw_rail->execute();
 
   - id: window_prev
@@ -743,7 +676,7 @@ script:
     then:
       - if:
           condition:
-            lambda: return id(window_index) > 0;
+            lambda: return id(window_index) > 0 && id(window_index) <= 2;
           then:
             - script.execute: { id: window_go, target: (int)id(window_index) - 1 }
 
@@ -752,7 +685,7 @@ script:
     then:
       - if:
           condition:
-            lambda: return id(window_index) < 3;
+            lambda: return id(window_index) < 2;
           then:
             - script.execute: { id: window_go, target: (int)id(window_index) + 1 }
 
@@ -763,4 +696,5 @@ script:
           condition:
             lambda: return id(window_queued) >= 0 && !id(art_fading);
           then:
-            - script.execute: { id: window_go, target: (int)id(window_index) + 1 }
+            - script.execute: { id: window_go, target: (int)id(window_queued) }
+

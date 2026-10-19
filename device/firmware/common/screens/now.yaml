@@ -1,83 +1,89 @@
-# Window 1 of 3 — what is playing.
+# Window 1 of 3 — Now Playing.
 #
-# THREE TIERS, READ TOP TO BOTTOM, WHICH IS EXACTLY HOW A RADIO STATION WORKS:
-# who is on, what is playing, and how many people are here.
-#
-# TIER 1 IS AT THE TOP BECAUSE *WHO'S ON* IS THE FIRST QUESTION ANYBODY ASKS. The
-# byline is not a caption on the record — it is the most important thing on the
-# screen, and putting it underneath the track title would be the wrong hierarchy
-# for this medium specifically.
-#
-# EVERYTHING IS LEFT-ALIGNED. Centred would fight the grid and make the artwork
-# crossfade feel like a slideshow, which is the opposite of what a 650ms dissolve
-# is for.
-#
-# ALL OF IT IS BUILT AT BOOT and then only shown or hidden. A screen that builds
-# a tree on switch and destroys the old one fragments PSRAM a little every time,
-# and one switched every twenty seconds fails after a day or two in a way that
-# looks nothing like a memory problem.
+# Three tiers read top to bottom:
+#   1. Who is on air (live lamp, presenter, show title, time remaining)
+#   2. What is playing (large serif track title, artist, 520x520 cover art well)
+#   3. Station activity (listener counts, skip track control, status line)
 
-# The CONTENT of window now — the widgets only.
-#
-# The slot that holds these (id, size, and the fact that it slides inside
-# window_stack) is declared in ../window.yaml, because the sliding mechanism
-# belongs to neither this screen nor the others. Since ESPHome dropped the
-# `parent:` key, a widget's parent is simply the `widgets:` list it sits in,
-# and a list can only come from the file that encloses it.
-#
-# Anything this screen used to declare BESIDE its widgets — scripts, globals —
-# is now in ./scripts.yaml, because a bare list cannot have siblings.
-
-# ---- tier 1: the voice --------------------------------------
-# A 12px lamp, not a badge. Presence is a light, which is what it is
-# on real broadcast equipment, and it goes muted when the stream is
-# idle rather than disappearing.
+# ---- Tier 1: On-Air Voice & Show -----------------------------
 - obj:
     id: live_lamp
-    width: 12px
-    height: 12px
-    radius: 6px
+    width: 14px
+    height: 14px
+    radius: 7px
     align: TOP_LEFT
     x: 64px
-    y: 120px
+    y: 72px
     bg_color: 0x4E9FD4
     bg_opa: COVER
+    border_width: 0
 
 - label:
     id: byline_presenter
-    text: "Test Presenter"
+    text: "SUB/WAVE RADIO"
     text_font: font_body
     text_color: 0xDCE8F5
     align: TOP_LEFT
-    x: 88px
-    y: 116px
-    width: 520px
+    x: 90px
+    y: 64px
+    width: 566px
 
 - label:
     id: byline_show
-    text: "Test Show"
+    text: "24/7 Live Broadcast"
     text_font: font_body
-    text_color: 0x6A8BA8
+    text_color: 0x4E9FD4
     align: TOP_LEFT
-    x: 88px
-    y: 150px
-    width: 520px
+    x: 90px
+    y: 100px
+    width: 566px
 
 - label:
     id: byline_runway
-    text: "Test Runway"
+    text: "ON AIR"
     text_font: font_small
     text_color: 0x6A8BA8
     align: TOP_LEFT
-    x: 88px
-    y: 182px
-    width: 520px
+    x: 90px
+    y: 138px
+    width: 566px
 
-# ---- the record ----------------------------------------------
-# Two image widgets, never one. The outgoing cover sits underneath at
-# full opacity while the incoming one decodes, so there is never a
-# frame with no artwork on it — see theme.yaml's art_swap for why this
-# matters more here than it does on the web.
+# ---- Framed Artwork Well & Double-Buffered Cover Images ------
+# `art_well` sits behind `art_out` and `art_in` at (696, 64, 520x520) via
+# TOP_RIGHT (-64px) so the right half of the screen has a crisp vinyl sleeve
+# frame before cover art finishes loading or while the stream is idle.
+- obj:
+    id: art_well
+    width: 520px
+    height: 520px
+    radius: 12px
+    align: TOP_RIGHT
+    x: -64px
+    y: 64px
+    bg_color: 0x0A182B
+    bg_opa: COVER
+    border_width: 2
+    border_color: 0x1A3050
+    border_opa: COVER
+    pad_all: 0
+    scrollable: false
+    clickable: false
+    widgets:
+      - label:
+          id: art_well_title
+          text: "SUB/WAVE"
+          text_font: font_title
+          text_color: 0x294A6E
+          align: CENTER
+          y: -16px
+      - label:
+          id: art_well_sub
+          text: "STATION BROADCAST DISPLAY"
+          text_font: font_small
+          text_color: 0x1E3856
+          align: CENTER
+          y: 28px
+
 - image:
     id: art_out
     src: art_out_image
@@ -85,7 +91,7 @@
     height: 520px
     align: TOP_LEFT
     x: 696px
-    y: 116px
+    y: 64px
     bg_color: 0x0D1F35
     bg_opa: COVER
     clickable: false
@@ -98,117 +104,103 @@
     height: 520px
     align: TOP_LEFT
     x: 696px
-    y: 116px
+    y: 64px
     bg_color: 0x0D1F35
     bg_opa: COVER
     clickable: false
     hidden: true
 
-# Newsreader at 48. A screen is read from across a room, not from 40
-# centimetres, and a serif display face at this size is the one place
-# the station's voice is allowed to come through typographically.
+# ---- Tier 2: Current Track -----------------------------------
 - label:
     id: track_title
-    text: "Test Track Title"
+    text: "Tuning In…"
     text_font: font_title
     text_color: 0xDCE8F5
     align: TOP_LEFT
     x: 64px
-    y: 240px
+    y: 200px
     width: 592px
     long_mode: DOT
-    text_line_space: 0
+    text_line_space: 2
 
 - label:
     id: track_artist
-    text: "Test Artist"
+    text: "Waiting for live station metadata"
     text_font: font_body
-    text_color: 0x6A8BA8
+    text_color: 0x8FB4D4
     align: TOP_LEFT
     x: 64px
-    y: 356px
+    y: 324px
     width: 592px
     long_mode: DOT
 
-# ---- the station ----------------------------------------------
-# The ONE rule on the whole screen, and it earns its place: it
-# separates what is playing from what the station is doing. Everything
-# above is the record; everything below is the station.
+# ---- Tier 3: Station Presence & Controls ---------------------
 - obj:
     id: now_rule
     width: 592px
-    height: 1px
+    height: 2px
     align: TOP_LEFT
     x: 64px
-    y: 410px
+    y: 388px
     bg_color: 0x1A3050
     bg_opa: COVER
+    border_width: 0
 
 - label:
     id: count_signed_in
-    text: "42"
+    text: "0"
     text_font: font_title
     text_color: 0xDCE8F5
     align: TOP_LEFT
     x: 64px
-    y: 442px
+    y: 414px
     width: 280px
 
 - label:
     id: count_signed_label
-    text: "signed in"
+    text: "SIGNED IN"
     text_font: font_small
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 64px
-    y: 494px
+    y: 472px
     width: 280px
 
 - label:
     id: count_listening
-    text: "128"
+    text: "0"
     text_font: font_title
     text_color: 0xDCE8F5
     align: TOP_LEFT
     x: 376px
-    y: 442px
+    y: 414px
     width: 280px
 
 - label:
     id: count_listening_label
-    text: "listening"
+    text: "LISTENING NOW"
     text_font: font_small
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 376px
-    y: 494px
+    y: 472px
     width: 280px
 
-# ---- Skip -------------------------------------------------------
-# The ONLY control on this window, and the only control-shaped element
-# anywhere in the design. Sized for a finger on glass rather than for
-# a mouse: 260x72, against 14px of icon on the web.
-#
-# Styled verbatim from app/page.tsx — red fill, light text, pill. A
-# mirrored control should look like the mirrored control, and the
-# content-has-no-radius rule does not apply to something that IS the
-# web's control at a different size.
+# ---- Skip Control --------------------------------------------
 - button:
     id: btn_skip
-    width: 260px
-    height: 72px
-    radius: 36px
+    width: 280px
+    height: 68px
+    radius: 34px
     align: TOP_LEFT
     x: 64px
-    y: 560px
-    bg_color: 0x1A1214
+    y: 536px
+    bg_color: 0x241219
     bg_opa: COVER
-    border_width: 1
+    border_width: 2
     border_color: 0xEF4444
     border_opa: COVER
     checkable: false
-    # THE ONE on_click on this window. It was missing, which made the only
-    # control on the screen a decoration. See skip_press in scripts.yaml.
     on_click:
       - script.execute: skip_press
     widgets:
@@ -216,23 +208,10 @@
           id: btn_skip_label
           text: "Skip track"
           text_font: font_body
-          text_color: 0xF2F2F2
+          text_color: 0xF8FAFC
           align: CENTER
 
-# ---- the quiet line -----------------------------------------------------
-#
-# ONE line, below everything, in the muted colour, and it is empty most of the
-# time. It carries whatever the screen needs to say that is not the music: what
-# is going wrong with the network, and that the station refused a skip.
-#
-# It was carrying nothing at all before. SubwaveDisplay::last_error_ was written
-# in eight places — a refused claim, a removed screen, a skip somebody else got
-# first, a malformed response — and read by nobody. Every one of those was an
-# event the screen had decided was worth explaining and then explained to an
-# empty buffer.
-#
-# x=64 lines it up with the byline column rather than centring it: the screen
-# has one left margin and this is not a place to introduce a second.
+# ---- Status Line ---------------------------------------------
 - label:
     id: status_line
     text: ""
@@ -240,7 +219,5 @@
     text_color: 0x6A8BA8
     align: TOP_LEFT
     x: 64px
-    y: 672px
-    width: 1100px
-
-
+    y: 636px
+    width: 1152px

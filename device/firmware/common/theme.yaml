@@ -109,27 +109,43 @@ script:
     mode: restart
     then:
       - lambda: |-
-          // Filled segment is the current window; the others are the rule colour.
-          lv_obj_set_style_bg_color(id(rail_0), lv_color_hex(id(window_index) == 0 ? id(c_accent) : id(c_rule)), LV_PART_MAIN);
-          lv_obj_set_style_bg_color(id(rail_1), lv_color_hex(id(window_index) == 1 ? id(c_accent) : id(c_rule)), LV_PART_MAIN);
-          lv_obj_set_style_bg_color(id(rail_2), lv_color_hex(id(window_index) == 2 ? id(c_accent) : id(c_rule)), LV_PART_MAIN);
-          lv_obj_set_style_bg_color(id(rail_3), lv_color_hex(id(window_index) == 3 ? id(c_accent) : id(c_rule)), LV_PART_MAIN);
+          // Setup screens (slots 3 and 4) own the full 1280x800 canvas and hide
+          // the station navigation dock.
+          if (id(window_index) >= 3) {
+            lv_obj_add_flag(id(chrome), LV_OBJ_FLAG_HIDDEN);
+            return;
+          }
+          lv_obj_clear_flag(id(chrome), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_set_style_bg_color(id(chrome), lv_color_hex(id(c_bg)), LV_PART_MAIN);
+          lv_obj_set_style_bg_color(id(chrome_rule), lv_color_hex(id(c_rule)), LV_PART_MAIN);
 
-          // NO WRAP. At either end the arrow dims to 40% of the muted colour and
-          // stops responding — a readable state, rather than a dead control that
-          // looks like a bug.
-          bool at_start = id(window_index) == 0;
-          bool at_end   = id(window_index) == 3;
+          lv_obj_t *tabs[3]  = {id(nav_tab_0), id(nav_tab_1), id(nav_tab_2)};
+          lv_obj_t *lbls[3]  = {id(nav_lbl_0), id(nav_lbl_1), id(nav_lbl_2)};
+          lv_obj_t *rails[3] = {id(rail_0),    id(rail_1),    id(rail_2)};
+          for (int i = 0; i < 3; i++) {
+            bool active = (id(window_index) == i);
+            lv_obj_set_style_bg_color(tabs[i], lv_color_hex(active ? id(c_surface) : id(c_bg)), LV_PART_MAIN);
+            lv_obj_set_style_border_color(tabs[i], lv_color_hex(active ? id(c_accent) : id(c_rule)), LV_PART_MAIN);
+            lv_obj_set_style_text_color(lbls[i], lv_color_hex(active ? id(c_text) : id(c_muted)), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(rails[i], lv_color_hex(active ? id(c_accent) : id(c_rule)), LV_PART_MAIN);
+          }
+
+          // NO WRAP. At either end of the 3 station screens (0..2) the arrow dims
+          // to 40% and stops responding.
+          bool at_start = id(window_index) <= 0;
+          bool at_end   = id(window_index) >= 2;
           lv_obj_set_style_opa(id(glyph_prev), at_start ? LV_OPA_40 : LV_OPA_COVER, LV_PART_MAIN);
           lv_obj_set_style_opa(id(glyph_next), at_end   ? LV_OPA_40 : LV_OPA_COVER, LV_PART_MAIN);
-          lv_obj_set_style_bg_color(id(btn_prev), lv_color_hex(id(c_bg)), LV_PART_MAIN);
-          lv_obj_set_style_bg_color(id(btn_next), lv_color_hex(id(c_bg)), LV_PART_MAIN);
+          lv_obj_set_style_bg_color(id(btn_prev), lv_color_hex(id(c_surface)), LV_PART_MAIN);
+          lv_obj_set_style_bg_color(id(btn_next), lv_color_hex(id(c_surface)), LV_PART_MAIN);
+          lv_obj_set_style_border_color(id(btn_prev), lv_color_hex(id(c_rule)), LV_PART_MAIN);
+          lv_obj_set_style_border_color(id(btn_next), lv_color_hex(id(c_rule)), LV_PART_MAIN);
           lv_obj_clear_state(id(btn_prev), LV_STATE_DISABLED);
           lv_obj_clear_state(id(btn_next), LV_STATE_DISABLED);
           if (at_start) lv_obj_add_state(id(btn_prev), LV_STATE_DISABLED);
           if (at_end)   lv_obj_add_state(id(btn_next), LV_STATE_DISABLED);
-          lv_obj_set_style_text_color(id(glyph_prev), lv_color_hex(id(c_muted)), LV_PART_MAIN);
-          lv_obj_set_style_text_color(id(glyph_next), lv_color_hex(id(c_muted)), LV_PART_MAIN);
+          lv_obj_set_style_text_color(id(glyph_prev), lv_color_hex(at_start ? id(c_muted) : id(c_text)), LV_PART_MAIN);
+          lv_obj_set_style_text_color(id(glyph_next), lv_color_hex(at_end   ? id(c_muted) : id(c_text)), LV_PART_MAIN);
 
 # ---------------------------------------------------------------------------
 # Day and night.

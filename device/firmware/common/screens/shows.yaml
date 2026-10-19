@@ -1,170 +1,185 @@
-# Window 2 of 3 — the show list.
+# Window 2 of 3 — Broadcast Schedule ("Now & Next").
 #
-# A DIFFERENT REGISTER, not the same template with a list swapped in. No art, no
-# serif: this is the data screen. Everything is Archivo at tabular widths with
-# hairline separators, because rotation between this and the now-playing window
-# should feel like a change of instrument.
-#
-# "NOW AND NEXT" ONLY — NO DAY NAVIGATION. That is a deliberate reduction. A wall
-# display answers "what is on"; it does not need a browsable week. The full
-# interactive schedule stays one tap away in the browser, and the firmware never
-# implements day-run merging or timezone navigation at all: the server sends six
-# slots already resolved and already formatted in station time, so there is only
-# ever one implementation of those rules.
-#
-# AVATARS ONLY ON THE EXPANDED ROW, exactly as SchedulePanel.tsx does it — one row
-# open at a time, collapsed by default. A list whose every row carries a face is
-# harder to scan, not easier, and on a wall the scan is the whole job.
-
-# The CONTENT of window shows — the widgets only.
-#
-# The slot that holds these (id, size, and the fact that it slides inside
-# window_stack) is declared in ../window.yaml, because the sliding mechanism
-# belongs to neither this screen nor the others. Since ESPHome dropped the
-# `parent:` key, a widget's parent is simply the `widgets:` list it sits in,
-# and a list can only come from the file that encloses it.
-#
-# Anything this screen used to declare BESIDE its widgets — scripts, globals —
-# is now in ./scripts.yaml, because a bare list cannot have siblings.
+# Tabular broadcast schedule with explicit row coordinates so all five rows
+# stack cleanly without overlapping at y=0.
 
 - obj:
     id: live_lamp_shows
-    width: 12px
-    height: 12px
-    radius: 6px
+    width: 14px
+    height: 14px
+    radius: 7px
     align: TOP_LEFT
     x: 64px
-    y: 48px
+    y: 46px
     bg_color: 0x4E9FD4
     bg_opa: COVER
+    border_width: 0
 
 - label:
     id: shows_station
-    text: "SUB/WAVE"
+    text: "SUB/WAVE SCHEDULE"
     text_font: font_body
     text_color: 0xDCE8F5
     align: TOP_LEFT
-    x: 88px
-    y: 44px
-    width: 520px
+    x: 90px
+    y: 38px
+    width: 620px
 
 - label:
     id: shows_day
-    text: ""
+    text: "ON AIR & UP NEXT"
     text_font: font_body
     text_color: 0x6A8BA8
     align: TOP_RIGHT
     x: -64px
-    y: 44px
-    width: 300px
+    y: 38px
+    width: 420px
 
-# Fixed columns. A wall list read at an angle needs a stable vertical
-# edge to scan, and that means the times must not shift with the show
-# name beside them.
 - obj:
     id: shows_list
     width: 1152px
-    height: 560px
+    height: 576px
     align: TOP_LEFT
     x: 64px
-    y: 128px
-    scrollable: true
-    scrollbar_mode: LV_SCROLLBAR_MODE_AUTO
+    y: 104px
+    bg_opa: TRANSP
+    border_width: 0
+    pad_all: 0
+    scrollable: false
     widgets:
       - obj:
           id: row_0
-          width: 100%
-          height: 96px
+          x: 0px
+          y: 0px
+          width: 1152px
+          height: 100px
+          radius: 10px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
           widgets:
             - label:
                 id: row_0_time
-                text: ""
+                text: "NOW ON AIR"
                 text_font: font_body
-                text_color: 0x6A8BA8
-                align: LEFT_MID
-                x: 16px
-                y: 16px
-                width: 190px
+                text_color: 0x4E9FD4
+                align: TOP_LEFT
+                x: 24px
+                y: 20px
+                width: 240px
             - label:
                 id: row_0_name
-                text: ""
+                text: "Live Broadcast"
                 text_font: font_body
                 text_color: 0xDCE8F5
-                align: LEFT_MID
-                x: 216px
-                y: 16px
-                width: 560px
+                align: TOP_LEFT
+                x: 280px
+                y: 18px
+                width: 760px
             - label:
                 id: row_0_host
-                text: ""
+                text: "Continuous station stream"
                 text_font: font_small
                 text_color: 0x6A8BA8
-                align: LEFT_MID
-                x: 216px
-                y: 48px
-                width: 560px
+                align: TOP_LEFT
+                x: 280px
+                y: 56px
+                width: 760px
             - image:
                 id: row_0_avatar
                 src: row_0_avatar_image
                 width: 56px
                 height: 56px
                 align: RIGHT_MID
-                x: -16px
+                x: -24px
+                hidden: true
             - obj:
                 id: row_0_rule
-                width: 100%
+                width: 1152px
                 height: 1px
                 align: BOTTOM_MID
                 bg_color: 0x1A3050
                 bg_opa: COVER
+                border_width: 0
 
       - obj:
           id: row_1
-          width: 100%
-          height: 96px
+          x: 0px
+          y: 112px
+          width: 1152px
+          height: 100px
+          radius: 10px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
           widgets:
-            - label: { id: row_1_time, text: "", text_font: font_body, text_color: 0x6A8BA8, align: LEFT_MID, x: 16px, y: 16px, width: 190px }
-            - label: { id: row_1_name, text: "", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 216px, y: 16px, width: 560px }
-            - label: { id: row_1_host, text: "", text_font: font_small, text_color: 0x6A8BA8, align: LEFT_MID, x: 216px, y: 48px, width: 560px }
-            - image: { id: row_1_avatar, src: row_1_avatar_image, width: 56px, height: 56px, align: RIGHT_MID, x: -16px }
-            - obj:   { id: row_1_rule, width: "100%", height: 1px, align: BOTTOM_MID, bg_color: 0x1A3050, bg_opa: COVER }
+            - label: { id: row_1_time, text: "UP NEXT", text_font: font_body, text_color: 0x4E9FD4, align: TOP_LEFT, x: 24px, y: 20px, width: 240px }
+            - label: { id: row_1_name, text: "Station Rotation", text_font: font_body, text_color: 0xDCE8F5, align: TOP_LEFT, x: 280px, y: 18px, width: 760px }
+            - label: { id: row_1_host, text: "Subwave Auto DJ", text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, x: 280px, y: 56px, width: 760px }
+            - image: { id: row_1_avatar, src: row_1_avatar_image, width: 56px, height: 56px, align: RIGHT_MID, x: -24px, hidden: true }
+            - obj:   { id: row_1_rule, width: 1152px, height: 1px, align: BOTTOM_MID, bg_color: 0x1A3050, bg_opa: COVER, border_width: 0 }
 
       - obj:
           id: row_2
-          width: 100%
-          height: 96px
+          x: 0px
+          y: 224px
+          width: 1152px
+          height: 100px
+          radius: 10px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
           widgets:
-            - label: { id: row_2_time, text: "", text_font: font_body, text_color: 0x6A8BA8, align: LEFT_MID, x: 16px, y: 16px, width: 190px }
-            - label: { id: row_2_name, text: "", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 216px, y: 16px, width: 560px }
-            - label: { id: row_2_host, text: "", text_font: font_small, text_color: 0x6A8BA8, align: LEFT_MID, x: 216px, y: 48px, width: 560px }
-            - image: { id: row_2_avatar, src: row_2_avatar_image, width: 56px, height: 56px, align: RIGHT_MID, x: -16px }
-            - obj:   { id: row_2_rule, width: "100%", height: 1px, align: BOTTOM_MID, bg_color: 0x1A3050, bg_opa: COVER }
+            - label: { id: row_2_time, text: "LATER", text_font: font_body, text_color: 0x4E9FD4, align: TOP_LEFT, x: 24px, y: 20px, width: 240px }
+            - label: { id: row_2_name, text: "Scheduled Programming", text_font: font_body, text_color: 0xDCE8F5, align: TOP_LEFT, x: 280px, y: 18px, width: 760px }
+            - label: { id: row_2_host, text: "Updates automatically from station schedule", text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, x: 280px, y: 56px, width: 760px }
+            - image: { id: row_2_avatar, src: row_2_avatar_image, width: 56px, height: 56px, align: RIGHT_MID, x: -24px, hidden: true }
+            - obj:   { id: row_2_rule, width: 1152px, height: 1px, align: BOTTOM_MID, bg_color: 0x1A3050, bg_opa: COVER, border_width: 0 }
 
       - obj:
           id: row_3
-          width: 100%
-          height: 96px
+          x: 0px
+          y: 336px
+          width: 1152px
+          height: 100px
+          radius: 10px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
           widgets:
-            - label: { id: row_3_time, text: "", text_font: font_body, text_color: 0x6A8BA8, align: LEFT_MID, x: 16px, y: 16px, width: 190px }
-            - label: { id: row_3_name, text: "", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 216px, y: 16px, width: 560px }
-            - label: { id: row_3_host, text: "", text_font: font_small, text_color: 0x6A8BA8, align: LEFT_MID, x: 216px, y: 48px, width: 560px }
-            - image: { id: row_3_avatar, src: row_3_avatar_image, width: 56px, height: 56px, align: RIGHT_MID, x: -16px }
-            - obj:   { id: row_3_rule, width: "100%", height: 1px, align: BOTTOM_MID, bg_color: 0x1A3050, bg_opa: COVER }
+            - label: { id: row_3_time, text: "—", text_font: font_body, text_color: 0x4E9FD4, align: TOP_LEFT, x: 24px, y: 20px, width: 240px }
+            - label: { id: row_3_name, text: "", text_font: font_body, text_color: 0xDCE8F5, align: TOP_LEFT, x: 280px, y: 18px, width: 760px }
+            - label: { id: row_3_host, text: "", text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, x: 280px, y: 56px, width: 760px }
+            - image: { id: row_3_avatar, src: row_3_avatar_image, width: 56px, height: 56px, align: RIGHT_MID, x: -24px, hidden: true }
+            - obj:   { id: row_3_rule, width: 1152px, height: 1px, align: BOTTOM_MID, bg_color: 0x1A3050, bg_opa: COVER, border_width: 0 }
 
       - obj:
           id: row_4
-          width: 100%
-          height: 96px
+          x: 0px
+          y: 448px
+          width: 1152px
+          height: 100px
+          radius: 10px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
           widgets:
-            - label: { id: row_4_time, text: "", text_font: font_body, text_color: 0x6A8BA8, align: LEFT_MID, x: 16px, y: 16px, width: 190px }
-            - label: { id: row_4_name, text: "", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 216px, y: 16px, width: 560px }
-            - label: { id: row_4_host, text: "", text_font: font_small, text_color: 0x6A8BA8, align: LEFT_MID, x: 216px, y: 48px, width: 560px }
-            - image: { id: row_4_avatar, src: row_4_avatar_image, width: 56px, height: 56px, align: RIGHT_MID, x: -16px }
-            - obj:   { id: row_4_rule, width: "100%", height: 1px, align: BOTTOM_MID, bg_color: 0x1A3050, bg_opa: COVER }
+            - label: { id: row_4_time, text: "—", text_font: font_body, text_color: 0x4E9FD4, align: TOP_LEFT, x: 24px, y: 20px, width: 240px }
+            - label: { id: row_4_name, text: "", text_font: font_body, text_color: 0xDCE8F5, align: TOP_LEFT, x: 280px, y: 18px, width: 760px }
+            - label: { id: row_4_host, text: "", text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, x: 280px, y: 56px, width: 760px }
+            - image: { id: row_4_avatar, src: row_4_avatar_image, width: 56px, height: 56px, align: RIGHT_MID, x: -24px, hidden: true }
+            - obj:   { id: row_4_rule, width: 1152px, height: 1px, align: BOTTOM_MID, bg_color: 0x1A3050, bg_opa: COVER, border_width: 0 }
 
-# The expansion tray. One row open at a time — the same single-key
-# accordion the web uses, so "only one" is a rule rather than a
-# preference.
 - obj:
     id: shows_expanded
     width: 1152px
@@ -174,6 +189,7 @@
     y: -88px
     bg_color: 0x0D1F35
     bg_opa: COVER
+    border_width: 0
     hidden: true
     widgets:
       - label:

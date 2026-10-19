@@ -5,6 +5,7 @@
 
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
+#include "esphome/core/defines.h"
 #include "esphome/components/wifi/wifi_component.h"
 #include "esphome/components/network/util.h"
 // There is no `light/light.h`. The call API lives in light_call.h and the state
@@ -109,7 +110,11 @@ static void *lookup(const char *name) {
   return nullptr;
 }
 
-void ui_mark_ready() { g_ui_ready = true; }
+void ui_mark_ready() {
+  g_ui_ready = true;
+  shows_refresh();
+  settings_refresh();
+}
 
 void bindings_report_missing() {
   // One line, not one per object: a half-bound screen should say so once rather
@@ -214,12 +219,11 @@ void theme_paint_all() {
   lv_obj_set_style_bg_color(OBJ(shows_expanded), surface, LV_PART_MAIN);
   lv_obj_set_style_bg_color(OBJ(settings_rule), rule, LV_PART_MAIN);
 
-  // Tier 1, the voice. The presenter is full-contrast and the show is not,
-  // because a presenter is a person and a show is a title.
+  // Tier 1, the voice.
   lv_obj_set_style_bg_color(OBJ(live_lamp), accent, LV_PART_MAIN);
   lv_obj_set_style_bg_color(OBJ(live_lamp_shows), accent, LV_PART_MAIN);
   lv_obj_set_style_text_color(OBJ(byline_presenter), text, LV_PART_MAIN);
-  lv_obj_set_style_text_color(OBJ(byline_show), muted, LV_PART_MAIN);
+  lv_obj_set_style_text_color(OBJ(byline_show), accent, LV_PART_MAIN);
   lv_obj_set_style_text_color(OBJ(byline_runway), muted, LV_PART_MAIN);
 
   lv_obj_set_style_text_color(OBJ(track_title), text, LV_PART_MAIN);
@@ -239,15 +243,18 @@ void theme_paint_all() {
   for (lv_obj_t *o : {OBJ(expanded_tagline)}) lv_obj_set_style_text_color(o, muted, LV_PART_MAIN);
 
   for (lv_obj_t *o : {OBJ(row_0_time), OBJ(row_1_time), OBJ(row_2_time), OBJ(row_3_time), OBJ(row_4_time),
-                      OBJ(row_0_host), OBJ(row_1_host), OBJ(row_2_host), OBJ(row_3_host), OBJ(row_4_host),
-                      OBJ(settings_title), OBJ(settings_clock), OBJ(val_wifi), OBJ(val_addr),
-                      OBJ(val_model), OBJ(val_ver), OBJ(val_up), OBJ(lbl_brightness),
                       OBJ(lbl_brightness_value), OBJ(lbl_theme), OBJ(lbl_idle), OBJ(lbl_orientation),
                       OBJ(lbl_skip)}) {
+    if (o) lv_obj_set_style_text_color(o, accent, LV_PART_MAIN);
+  }
+  for (lv_obj_t *o : {OBJ(row_0_host), OBJ(row_1_host), OBJ(row_2_host), OBJ(row_3_host), OBJ(row_4_host),
+                      OBJ(settings_clock)}) {
     if (o) lv_obj_set_style_text_color(o, muted, LV_PART_MAIN);
   }
-  for (lv_obj_t *o : {OBJ(row_0_name), OBJ(row_1_name), OBJ(row_2_name), OBJ(row_3_name), OBJ(row_4_name)}) {
-    lv_obj_set_style_text_color(o, text, LV_PART_MAIN);
+  for (lv_obj_t *o : {OBJ(row_0_name), OBJ(row_1_name), OBJ(row_2_name), OBJ(row_3_name), OBJ(row_4_name),
+                      OBJ(settings_title), OBJ(lbl_brightness), OBJ(val_wifi), OBJ(val_addr),
+                      OBJ(val_model), OBJ(val_ver), OBJ(val_up)}) {
+    if (o) lv_obj_set_style_text_color(o, text, LV_PART_MAIN);
   }
   for (lv_obj_t *o : {OBJ(row_0_rule), OBJ(row_1_rule), OBJ(row_2_rule), OBJ(row_3_rule), OBJ(row_4_rule)}) {
     lv_obj_set_style_bg_color(o, rule, LV_PART_MAIN);
@@ -271,40 +278,29 @@ void now_refresh() {
   const auto &b = c->byline();
   const auto &s = c->skip();
 
-  // Empty rather than a placeholder. "Ready to broadcast" is the web player's
-  // line for a player with nothing loaded; a wall with nothing on it should just
-  // be empty, and the lamp going dim says why.
-  lv_label_set_text(OBJ(byline_presenter), b.presenter.c_str());
-  lv_label_set_text(OBJ(byline_show), b.show.c_str());
+  const std::string station = c->state_station_name().empty() ? "SUB/WAVE RADIO" : c->state_station_name();
+  const char *presenter_text = !b.presenter.empty() ? b.presenter.c_str() : station.c_str();
+  const char *show_text = !b.show.empty() ? b.show.c_str() : (n.live ? "Live Broadcast" : "24/7 Station Stream");
+  lv_label_set_text(OBJ(byline_presenter), presenter_text);
+  lv_label_set_text(OBJ(byline_show), show_text);
 
-  // THE QUIET LINE. SubwaveDisplay::last_error_ was written in eight places and
-  // read by nobody — a refused claim, a removed screen, a skip somebody else got
-  // first, a malformed response. Every one of those was an event the screen had
-  // decided was worth explaining, explained into an empty buffer.
-  //
-  // Cleared on an empty error rather than left to time out, so a transient
-  // refusal does not sit on the wall for the rest of the broadcast.
   const char *err = c->last_error().c_str();
   lv_label_set_text(OBJ(status_line), err);
 
   char runway[32];
-  // -1 is the "not known" sentinel; see Byline in client().h.
   if (b.ends_in_sec > 0) {
     int h = (int) (b.ends_in_sec / 3600), m = (int) ((b.ends_in_sec % 3600) / 60);
-    // The web's own phrasing, so the wall and the browser agree.
     if (h > 0) snprintf(runway, sizeof(runway), "%dh %dm left", h, m);
     else snprintf(runway, sizeof(runway), "%dm left", m);
   } else {
-    runway[0] = '\0';
+    snprintf(runway, sizeof(runway), "%s", n.live ? "ON AIR NOW" : "AUTO DJ");
   }
   lv_label_set_text(OBJ(byline_runway), runway);
 
-  // The lamp is a light, so idle means dim rather than off: a display that has
-  // lost its connection should still be visibly trying.
   lv_obj_set_style_opa(OBJ(live_lamp), n.live ? LV_OPA_COVER : LV_OPA_40, LV_PART_MAIN);
 
-  lv_label_set_text(OBJ(track_title), n.title.c_str());
-  lv_label_set_text(OBJ(track_artist), n.artist.c_str());
+  lv_label_set_text(OBJ(track_title), !n.title.empty() ? n.title.c_str() : "Station Stream Active");
+  lv_label_set_text(OBJ(track_artist), !n.artist.empty() ? n.artist.c_str() : station.c_str());
 
   char num[12];
   snprintf(num, sizeof(num), "%d", c->signed_in());
@@ -312,9 +308,6 @@ void now_refresh() {
   snprintf(num, sizeof(num), "%d", c->listening());
   lv_label_set_text(OBJ(count_listening), num);
 
-  // Skip. The server sent a finished label; there is no policy here to get
-  // wrong, only four strings to show. That is the entire point of sending the
-  // label rather than a mode plus a listener count.
   bool show = s.shown && c->settings().skip_enabled;
   if (show) {
     lv_obj_clear_flag(OBJ(btn_skip), LV_OBJ_FLAG_HIDDEN);
@@ -327,15 +320,46 @@ void now_refresh() {
 
 void shows_refresh() {
   if (!ui_ready()) return;
-  // Placeholder rows until the schedule lands. A list that renders its frame
-  // immediately and fills in is better than one that renders nothing, because a
-  // screen showing nothing reads as broken rather than as loading.
-  static bool painted = false;
-  if (painted) return;
-  painted = true;
   auto *c = client();
   if (c == nullptr) return;
-  lv_label_set_text(OBJ(shows_station), c->state_station_name().c_str());
+
+  std::string station = c->state_station_name().empty() ? "SUB/WAVE SCHEDULE" : c->state_station_name();
+  lv_label_set_text(OBJ(shows_station), station.c_str());
+
+  std::string day = c->schedule_day_label().empty() ? "ON AIR & UP NEXT" : c->schedule_day_label();
+  lv_label_set_text(OBJ(shows_day), day.c_str());
+
+  lv_obj_t *row_times[5] = {OBJ(row_0_time), OBJ(row_1_time), OBJ(row_2_time), OBJ(row_3_time), OBJ(row_4_time)};
+  lv_obj_t *row_names[5] = {OBJ(row_0_name), OBJ(row_1_name), OBJ(row_2_name), OBJ(row_3_name), OBJ(row_4_name)};
+  lv_obj_t *row_hosts[5] = {OBJ(row_0_host), OBJ(row_1_host), OBJ(row_2_host), OBJ(row_3_host), OBJ(row_4_host)};
+
+  const auto &slots = c->schedule_slots();
+  if (!slots.empty()) {
+    for (int i = 0; i < 5; i++) {
+      if (i < (int) slots.size()) {
+        const auto &slot = slots[i];
+        std::string time_lbl = slot.from;
+        if (!slot.to.empty()) time_lbl += " – " + slot.to;
+        if (slot.live) time_lbl = "LIVE · " + time_lbl;
+        lv_label_set_text(row_times[i], time_lbl.c_str());
+        lv_label_set_text(row_names[i], slot.name.empty() ? "Auto DJ" : slot.name.c_str());
+        lv_label_set_text(row_hosts[i], slot.host.empty() ? "Station Rotation" : slot.host.c_str());
+      } else {
+        lv_label_set_text(row_times[i], "—");
+        lv_label_set_text(row_names[i], "");
+        lv_label_set_text(row_hosts[i], "");
+      }
+    }
+    return;
+  }
+
+  // Fallback when schedule endpoint hasn't populated yet: reflect current byline in row 0.
+  const auto &b = c->byline();
+  if (!b.show.empty() || !b.presenter.empty()) {
+    lv_label_set_text(row_times[0], b.live ? "LIVE NOW" : "NOW ON AIR");
+    lv_label_set_text(row_names[0], !b.show.empty() ? b.show.c_str() : "Live Broadcast");
+    lv_label_set_text(row_hosts[0], !b.presenter.empty() ? b.presenter.c_str() : station.c_str());
+  }
 }
 
 void settings_refresh() {
@@ -347,9 +371,6 @@ void settings_refresh() {
   char buf[24];
   snprintf(buf, sizeof(buf), "%d%%", s.brightness);
   lv_label_set_text(OBJ(lbl_brightness_value), buf);
-  // Unfilled segments are rule; filled are the accent. Tapping a segment sets
-  // the level rather than dragging towards it, because dragging on glass on a
-  // wall is a precise gesture nobody can make.
   for (int i = 0; i < 10; i++) {
     bool on = (i + 1) * 10 <= s.brightness;
     lv_obj_t *seg = (i == 0) ? OBJ(seg_0) : (i == 1) ? OBJ(seg_1) : (i == 2) ? OBJ(seg_2)
@@ -366,27 +387,29 @@ void settings_refresh() {
   lv_label_set_text(OBJ(lbl_orientation), s.orientation == "portrait" ? "Portrait — restarts" : "Landscape");
   lv_label_set_text(OBJ(lbl_skip), s.skip_enabled ? "Allowed" : "Hidden");
 
-  // The settings screen's read-only facts. Someone WILL ask which network this
-  // thing is on, and the answer should not require a serial cable and a laptop —
-  // which is the whole reason these four rows exist.
   auto *wifi = esphome::wifi::global_wifi_component;
   if (wifi != nullptr && wifi->is_connected()) {
-    // wifi_ssid_to(), NOT wifi_ssid(): the latter is deprecated and due for
-    // removal in 2026.9, and this firmware should not start failing to build the
-    // day ESPHome bumps its floor.
     char ssid[esphome::wifi::SSID_BUFFER_SIZE];
-    lv_label_set_text(OBJ(val_wifi), wifi->wifi_ssid_to(ssid));
+    wifi->wifi_ssid_to(ssid);
     for (const auto &addr : wifi->get_ip_addresses()) {
       if (addr.is_set()) {
         lv_label_set_text(OBJ(val_addr), addr.str().c_str());
         break;
       }
     }
-    char sig[24];
-    snprintf(sig, sizeof(sig), "%s %ddBm", ssid, (int) wifi->wifi_rssi());
+    char sig[48];
+    snprintf(sig, sizeof(sig), "%s (%ddBm)", ssid, (int) wifi->wifi_rssi());
     lv_label_set_text(OBJ(val_wifi), sig);
+  } else {
+    lv_label_set_text(OBJ(val_wifi), "Not connected");
+    lv_label_set_text(OBJ(val_addr), "—");
   }
   lv_label_set_text(OBJ(val_model), "JC8012P4A1");
+#ifdef ESPHOME_PROJECT_VERSION
+  lv_label_set_text(OBJ(val_ver), ESPHOME_PROJECT_VERSION);
+#else
+  lv_label_set_text(OBJ(val_ver), "1.11.0");
+#endif
 
   // Uptime, from the local millisecond counter. The station's clock is only a
   // reference; uptime is a fact about this device.

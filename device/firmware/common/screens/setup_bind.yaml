@@ -4,58 +4,103 @@
 # bind code shown on the admin panel. The device tests the connection, then
 # binds to the station and stores its identity in flash.
 #
-# Tap "← Back" to return to the Wi-Fi page.
+# Tap "← Wi-Fi Setup" to return to the Wi-Fi page.
+
+- label:
+    id: bind_step_label
+    text: "STEP 2 OF 2 · STATION LINK"
+    text_font: font_small
+    text_color: 0x4E9FD4
+    align: TOP_LEFT
+    x: 48px
+    y: 20px
 
 - label:
     id: bind_title
-    text: "Bind to station"
+    text: "Bind to Station"
     text_font: font_title
     text_color: 0xDCE8F5
     align: TOP_LEFT
-    x: 40px
-    y: 12px
+    x: 48px
+    y: 44px
+
+- button:
+    id: bind_back_button
+    text: "← Wi-Fi Setup"
+    align: TOP_LEFT
+    x: 1012px
+    y: 36px
+    width: 220px
+    height: 52px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x1A3050
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    on_click:
+      - script.execute: { id: window_go, target: 3 }
 
 - label:
     id: bind_instruction
-    text: "Enter the server address and bind code from the admin panel."
+    text: "Enter your Subwave server URL and the 6-character bind code from Admin → Devices."
     text_font: font_body
     text_color: 0x6A8BA8
     align: TOP_LEFT
-    x: 40px
-    y: 64px
-    width: 1200px
+    x: 48px
+    y: 104px
+    width: 1184px
+
+- obj:
+    id: bind_rule
+    width: 1184px
+    height: 1px
+    align: TOP_LEFT
+    x: 48px
+    y: 148px
+    bg_color: 0x1A3050
+    bg_opa: COVER
+    border_width: 0
 
 - label:
     id: bind_server_label
-    text: "Server address"
+    text: "SERVER ADDRESS"
     text_font: font_small
     text_color: 0x6A8BA8
     align: TOP_LEFT
-    x: 40px
-    y: 112px
-    width: 200px
+    x: 48px
+    y: 168px
+    width: 300px
 
 - textarea:
     id: bind_server_url
     align: TOP_LEFT
-    x: 40px
-    y: 140px
-    width: 700px
-    height: 44px
+    x: 48px
+    y: 196px
+    width: 960px
+    height: 52px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x4E9FD4
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
     one_line: true
-    placeholder_text: "your-station.example.com"
+    placeholder_text: "https://your-station.example.com"
     on_click:
-      - lambda: id(keyboard_target) = 2;
+      - lambda: |-
+          id(setup_page) = 4;
+          id(keyboard_target) = 2;
       - script.execute: wifi_keyboard_toggle
 
 - button:
     id: bind_test_button
-    text: "Test"
+    text: "Test Server"
     align: TOP_LEFT
-    x: 760px
-    y: 140px
-    width: 100px
-    height: 44px
+    x: 1024px
+    y: 196px
+    width: 208px
+    height: 52px
     bg_color: 0x0D1F35
     border_width: 1
     border_color: 0x4E9FD4
@@ -67,40 +112,47 @@
 
 - label:
     id: bind_code_label
-    text: "Bind code"
+    text: "BIND CODE"
     text_font: font_small
     text_color: 0x6A8BA8
     align: TOP_LEFT
-    x: 40px
-    y: 196px
-    width: 200px
+    x: 48px
+    y: 268px
+    width: 300px
 
 - textarea:
     id: bind_code
     align: TOP_LEFT
-    x: 40px
-    y: 224px
-    width: 300px
-    height: 44px
+    x: 48px
+    y: 296px
+    width: 420px
+    height: 52px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x4E9FD4
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
     one_line: true
     placeholder_text: "AB1-C23"
     on_click:
-      - lambda: id(keyboard_target) = 3;
+      - lambda: |-
+          id(setup_page) = 4;
+          id(keyboard_target) = 3;
       - script.execute: wifi_keyboard_toggle
 
 - button:
     id: bind_button
-    text: "Bind"
+    text: "Bind Screen"
     align: TOP_LEFT
-    x: 360px
-    y: 224px
-    width: 140px
-    height: 44px
-    bg_color: 0x1A1214
-    border_width: 1
-    border_color: 0xEF4444
+    x: 484px
+    y: 296px
+    width: 220px
+    height: 52px
+    bg_color: 0x4E9FD4
+    border_width: 0
     radius: 8px
-    text_color: 0xF2F2F2
+    text_color: 0x06101E
     text_font: font_body
     on_click:
       - script.execute: bind_device
@@ -111,39 +163,25 @@
     text_font: font_body
     text_color: 0x4E9FD4
     align: TOP_LEFT
-    x: 40px
-    y: 280px
-    width: 1000px
-
-- button:
-    id: bind_back_button
-    text: "← Back"
-    align: TOP_LEFT
-    x: 40px
-    y: 340px
-    width: 140px
-    height: 44px
-    bg_color: 0x0D1F35
-    border_width: 0
-    radius: 8px
-    text_color: 0xDCE8F5
-    text_font: font_body
-    on_click:
-      - script.execute: { id: window_go, target: 3 }
+    x: 48px
+    y: 368px
+    width: 1184px
 
 # ── The on-screen keyboard ──────────────────────────────────────────────
-# Hidden until a field is tapped. Sits at the bottom with a safe margin.
+# Hidden until a field is tapped. Mode buttons sit at y=444 above the 280px
+# keyboard (y=504..784).
 
 - button:
     id: bind_mode_lower
     text: "abc"
     align: TOP_LEFT
-    x: 460px
-    y: 412px
+    x: 484px
+    y: 444px
     width: 136px
-    height: 40px
+    height: 48px
     bg_color: 0x0D1F35
-    border_width: 0
+    border_width: 1
+    border_color: 0x1A3050
     radius: 8px
     text_color: 0xDCE8F5
     text_font: font_body
@@ -155,12 +193,13 @@
     id: bind_mode_upper
     text: "ABC"
     align: TOP_LEFT
-    x: 604px
-    y: 412px
+    x: 628px
+    y: 444px
     width: 136px
-    height: 40px
+    height: 48px
     bg_color: 0x0D1F35
-    border_width: 0
+    border_width: 1
+    border_color: 0x1A3050
     radius: 8px
     text_color: 0xDCE8F5
     text_font: font_body
@@ -169,29 +208,70 @@
       - script.execute: { id: wifi_keyboard_mode, mode: 1 }
 
 - button:
-    id: bind_keyboard_done
-    text: "Done"
+    id: bind_mode_special
+    text: "#+="
     align: TOP_LEFT
-    x: 1036px
-    y: 412px
-    width: 104px
-    height: 40px
+    x: 772px
+    y: 444px
+    width: 136px
+    height: 48px
     bg_color: 0x0D1F35
-    border_width: 0
+    border_width: 1
+    border_color: 0x1A3050
     radius: 8px
     text_color: 0xDCE8F5
     text_font: font_body
     hidden: true
     on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 2 }
+
+- button:
+    id: bind_mode_number
+    text: "123"
+    align: TOP_LEFT
+    x: 916px
+    y: 444px
+    width: 136px
+    height: 48px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x1A3050
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 3 }
+
+- button:
+    id: bind_keyboard_done
+    text: "Done"
+    align: TOP_LEFT
+    x: 1060px
+    y: 444px
+    width: 172px
+    height: 48px
+    bg_color: 0x4E9FD4
+    border_width: 0
+    radius: 8px
+    text_color: 0x06101E
+    text_font: font_body
+    hidden: true
+    on_click:
+      - lambda: id(keyboard_target) = -1;
       - script.execute: wifi_keyboard_toggle
 
 - keyboard:
     id: bind_kb
     align: TOP_LEFT
-    x: 40px
-    y: 460px
-    width: 1200px
-    height: 168px
+    x: 48px
+    y: 504px
+    width: 1184px
+    height: 280px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x1A3050
+    radius: 10px
     textarea: bind_server_url
     mode: TEXT_LOWER
     hidden: true

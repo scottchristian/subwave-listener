@@ -87,7 +87,8 @@ function qrcodeBlock(w: Widget): string {
       }
     }
   }
-  return `${cells}<rect x="${x}" y="${y}" width="${size}" height="${size}" fill="none" stroke="#c8a76a" stroke-width="1" stroke-dasharray="4 4"/>`;
+  const plate = `<rect x="${x}" y="${y}" width="${size}" height="${size}" rx="8" fill="#e8edf3"/>`;
+  return `${plate}${cells}<rect x="${x}" y="${y}" width="${size}" height="${size}" rx="8" fill="none" stroke="#c8a76a" stroke-width="1"/>`;
 }
 
 /** A LVGL keyboard, drawn as the key grid it is. */
@@ -119,31 +120,72 @@ function keyboardBlock(w: Widget): string {
   return out;
 }
 
-function widgetSvg(w: Widget): string {
-  // HIDDEN WIDGETS ARE STILL DRAWN, as outlines.
-  //
-  // Not drawing them made the preview lie about the screen. Both artwork
-  // widgets are `hidden: true` until a cover arrives, so the now-playing window
-  // rendered as an empty right-hand half with nothing to say a 520-square cover
-  // belongs there — which is exactly the half of the layout most worth checking.
-  //
-  // A dashed outline says "this is empty right now, and this is the space it
-  // will occupy", which is both true and enough to catch an overlap.
+function resolveBox(w: Widget, byId: Map<string, Widget>): { x: number; y: number; w: number; h: number } {
+  let px = 0;
+  let py = 0;
+  let pw = PANEL_W;
+  let ph = PANEL_H;
+  if (w.parentId && byId.has(w.parentId)) {
+    const p = resolveBox(byId.get(w.parentId)!, byId);
+    px = p.x;
+    py = p.y;
+    pw = p.w;
+    ph = p.h;
+  }
+  const width = w.w === 100 && w.nested ? pw : (w.w ?? 0);
+  const height = w.h ?? 0;
+  const ox = w.x ?? 0;
+  const oy = w.y ?? 0;
+
+  let x = px + ox;
+  let y = py + oy;
+
+  switch (w.align) {
+    case "TOP_RIGHT":
+      x = px + pw - width + ox;
+      y = py + oy;
+      break;
+    case "LEFT_MID":
+      x = px + ox;
+      y = py + Math.round((ph - height) / 2) + oy;
+      break;
+    case "RIGHT_MID":
+      x = px + pw - width + ox;
+      y = py + Math.round((ph - height) / 2) + oy;
+      break;
+    case "CENTER":
+      x = px + Math.round((pw - width) / 2) + ox;
+      y = py + Math.round((ph - height) / 2) + oy;
+      break;
+    case "BOTTOM_MID":
+      x = px + Math.round((pw - width) / 2) + ox;
+      y = py + ph - height + oy;
+      break;
+    case "BOTTOM_LEFT":
+      x = px + ox;
+      y = py + ph - height + oy;
+      break;
+    default:
+      break;
+  }
+
+  return { x, y, w: width, h: height };
+}
+
+function widgetSvg(w: Widget, byId: Map<string, Widget>): string {
+  const box = resolveBox(w, byId);
+  const x = box.x;
+  const y = box.y;
+  const width = box.w;
+  const height = box.h;
+
   if (w.hidden) {
-    const x = w.x ?? 0;
-    const y = w.y ?? 0;
-    const width = w.w ?? 0;
-    const height = w.h ?? 0;
-    if (width === 0 || height === 0) return "";
+    if (width === 0 || height === 0 || y >= PANEL_H || y + height <= 0) return "";
 
     return `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${w.radius ?? 0}" fill="none" stroke="#2f4a6b" stroke-width="2" stroke-dasharray="8 6"/>`
       + `<text x="${x + width / 2}" y="${y + height / 2 + 5}" font-family="${familyOf(w)}" font-size="15" fill="#3c5c7d" text-anchor="middle">${esc(w.id)} (hidden)</text>`;
   }
 
-  const x = w.x ?? 0;
-  const y = w.y ?? 0;
-  const width = w.w ?? 0;
-  const height = w.h ?? 0;
   const radius = w.radius ?? 0;
   const font = FONT_SIZE[w.textFont ?? "font_body"] ?? { px: 20, serif: false };
   const family = font.serif ? "Georgia, Times, serif" : "Helvetica, Arial, sans-serif";
@@ -152,26 +194,28 @@ function widgetSvg(w: Widget): string {
 
   switch (w.kind) {
     case "qrcode":
-      return qrcodeBlock(w);
+      return qrcodeBlock({ ...w, x, y, w: width, h: height });
 
     case "keyboard":
-      return keyboardBlock(w);
+      return keyboardBlock({ ...w, x, y, w: width, h: height });
 
     case "button": {
-      out += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" fill="${w.bgColor ?? "#0d1f35"}"/>`;
-      out += `<text x="${x + width / 2}" y="${y + height / 2 + 8}" font-family="${family}" font-size="${font.px}" fill="${w.textColor ?? "#dce8f5"}" text-anchor="middle">${esc(w.text ?? "")}</text>`;
+      out += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" fill="${w.bgColor ?? "#0d1f35"}" stroke="#29527a" stroke-width="1"/>`;
+      if (w.text) {
+        out += `<text x="${x + width / 2}" y="${y + height / 2 + 8}" font-family="${family}" font-size="${font.px}" fill="${w.textColor ?? "#dce8f5"}" text-anchor="middle">${esc(w.text)}</text>`;
+      }
       return out;
     }
 
     case "textarea": {
-      out += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="4" fill="#0d1f35" stroke="#1a3050" stroke-width="2"/>`;
-      const hint = w.text ?? "Network password";
+      out += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius || 8}" fill="${w.bgColor ?? "#0d223a"}" stroke="#29527a" stroke-width="2"/>`;
+      const hint = w.text ?? "Enter text…";
       out += `<text x="${x + 14}" y="${y + height / 2 + 8}" font-family="${family}" font-size="${font.px}" fill="#6a8ba8">${esc(hint)}</text>`;
       return out;
     }
 
     case "dropdown": {
-      out += `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="#0d1f35" stroke="#1a3050" stroke-width="2"/>`;
+      out += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius || 8}" fill="${w.bgColor ?? "#0d223a"}" stroke="#29527a" stroke-width="2"/>`;
       const first = w.text ?? "Scanning…";
       out += `<text x="${x + 14}" y="${y + height / 2 + 8}" font-family="${family}" font-size="${font.px}" fill="#dce8f5">${esc(first)}</text>`;
       out += `<text x="${x + width - 20}" y="${y + height / 2 + 8}" font-family="${family}" font-size="${font.px}" fill="#6a8ba8" text-anchor="end">›</text>`;
@@ -180,9 +224,6 @@ function widgetSvg(w: Widget): string {
 
     case "image":
     case "img": {
-      // Artwork and avatars. Drawn as a labelled placeholder: the real bytes are
-      // fetched at runtime and a placeholder that says which image it is standing
-      // in for is more useful than a grey box.
       const tone = "#16304c";
       out += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" fill="${tone}"/>`;
       out += `<text x="${x + width / 2}" y="${y + height / 2 + 5}" font-family="Helvetica, Arial, sans-serif" font-size="13" fill="#4a6b85" text-anchor="middle">${esc(w.id)}</text>`;
@@ -190,36 +231,83 @@ function widgetSvg(w: Widget): string {
     }
 
     case "obj": {
-      if (height <= 2) {
-        // A hairline. Drawn at full opacity with a minimum width so a 1px rule
-        // is visible in a downscaled screenshot.
-        out += `<rect x="${x}" y="${y}" width="${width}" height="1" fill="${w.bgColor ?? "#1a3050"}"/>`;
+      if (height <= 2 && height > 0) {
+        out += `<rect x="${x}" y="${y}" width="${width}" height="${height}" fill="${w.bgColor ?? "#1a3050"}"/>`;
         return out;
       }
-      out += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" fill="${w.bgColor ?? "none"}"/>`;
+      if (width > 0 && height > 0) {
+        out += `<rect x="${x}" y="${y}" width="${width}" height="${height}" rx="${radius}" fill="${w.bgColor ?? "none"}"/>`;
+      }
       return out;
     }
 
     default: {
-      // label, and anything unrecognised drawn as its text so it cannot vanish.
       if (w.text === null) return "";
-      out += `<text x="${x}" y="${y + font.px * 0.75}" font-family="${family}" font-size="${font.px}" fill="${w.textColor ?? "#dce8f5"}">${esc(w.text)}</text>`;
+      let tx = x;
+      let ty = y + font.px * 0.78;
+      let anchor = "start";
+      if (w.align === "CENTER" && w.parentId && byId.has(w.parentId)) {
+        const p = resolveBox(byId.get(w.parentId)!, byId);
+        tx = p.x + p.w / 2 + (w.x ?? 0);
+        ty = p.y + p.h / 2 + font.px * 0.34 + (w.y ?? 0);
+        anchor = "middle";
+      } else if (w.align === "LEFT_MID" && w.parentId && byId.has(w.parentId)) {
+        const p = resolveBox(byId.get(w.parentId)!, byId);
+        tx = p.x + (w.x ?? 0);
+        ty = p.y + p.h / 2 + font.px * 0.34 + (w.y ?? 0);
+      } else if ((w.align === "RIGHT_MID" || w.align === "TOP_RIGHT") && w.parentId && byId.has(w.parentId)) {
+        const p = resolveBox(byId.get(w.parentId)!, byId);
+        tx = p.x + p.w + (w.x ?? 0);
+        ty = w.align === "RIGHT_MID" ? p.y + p.h / 2 + font.px * 0.34 + (w.y ?? 0) : p.y + (w.y ?? 0) + font.px * 0.78;
+        anchor = "end";
+      } else if (w.align === "TOP_RIGHT") {
+        tx = PANEL_W + (w.x ?? 0);
+        anchor = "end";
+      }
+      out += `<text x="${tx}" y="${ty}" font-family="${family}" font-size="${font.px}" fill="${w.textColor ?? "#dce8f5"}" text-anchor="${anchor}">${esc(w.text)}</text>`;
       return out;
     }
   }
 }
 
+function chromeSvg(activeTab: number | null): string {
+  if (activeTab === null) return "";
+  const y = 720;
+  let out = `<rect x="0" y="${y}" width="${PANEL_W}" height="80" fill="#081526"/>`;
+  out += `<rect x="0" y="${y}" width="${PANEL_W}" height="1" fill="#1a3050"/>`;
+  out += `<rect x="32" y="${y + 12}" width="96" height="56" rx="10" fill="#0d1f35"/>`;
+  out += `<text x="80" y="${y + 49}" font-family="Helvetica, Arial, sans-serif" font-size="26" fill="${activeTab > 0 ? "#dce8f5" : "#4a6580"}" text-anchor="middle">‹</text>`;
+
+  const tabs = [
+    { x: 268, label: "Now Playing" },
+    { x: 520, label: "Schedule" },
+    { x: 772, label: "Settings" },
+  ];
+  tabs.forEach((t, idx) => {
+    const active = idx === activeTab;
+    out += `<rect x="${t.x}" y="${y + 12}" width="240" height="56" rx="10" fill="${active ? "#122a46" : "#081526"}"/>`;
+    out += `<text x="${t.x + 120}" y="${y + 46}" font-family="Helvetica, Arial, sans-serif" font-size="24" fill="${active ? "#dce8f5" : "#6a8ba8"}" text-anchor="middle">${t.label}</text>`;
+    out += `<rect x="${t.x + 60}" y="${y + 64}" width="120" height="3" rx="2" fill="${active ? "#4e9fd4" : "#1a3050"}"/>`;
+  });
+
+  out += `<rect x="${PANEL_W - 128}" y="${y + 12}" width="96" height="56" rx="10" fill="#0d1f35"/>`;
+  out += `<text x="${PANEL_W - 80}" y="${y + 49}" font-family="Helvetica, Arial, sans-serif" font-size="26" fill="${activeTab < 2 ? "#dce8f5" : "#4a6580"}" text-anchor="middle">›</text>`;
+  return out;
+}
+
 const STRIP_H = 30;
 
-function render(widgets: Widget[], caption: string): string {
-  const body = widgets.map(widgetSvg).join("\n");
-  // The caption goes in a strip BELOW the panel, not on it. Drawn over the
-  // panel it covered the title; drawn at the bottom-right it covered the
-  // keyboard. A caption that sits on top of the thing it describes is worse
-  // than no caption, and this layout has no safe corner.
+function render(widgets: Widget[], caption: string, activeTab: number | null = null): string {
+  const byId = new Map<string, Widget>();
+  for (const w of widgets) {
+    if (w.id) byId.set(w.id, w);
+  }
+  const body = widgets.map((w) => widgetSvg(w, byId)).join("\n");
+  const nav = chromeSvg(activeTab);
   return `<svg xmlns="http://www.w3.org/2000/svg" width="${PANEL_W}" height="${PANEL_H + STRIP_H}" viewBox="0 0 ${PANEL_W} ${PANEL_H + STRIP_H}">
   <rect width="${PANEL_W}" height="${PANEL_H}" fill="#06101e"/>
 ${body}
+${nav}
   <rect x="0" y="${PANEL_H}" width="${PANEL_W}" height="${STRIP_H}" fill="#0d1f35"/>
   <text x="12" y="${PANEL_H + 20}" font-family="Helvetica, Arial, sans-serif" font-size="14" fill="#6a8ba8">${esc(caption)}</text>
 </svg>`;
@@ -232,9 +320,7 @@ const NOTE =
 
 fs.mkdirSync(OUT_DIR, { recursive: true });
 
-// Every screen, and for the setup screen both keyboard states — because the
-// interesting bugs live in the transition, which is not in the YAML at all.
-const jobs: Array<[string, Widget[], string]> = [];
+const jobs: Array<[string, Widget[], string, number | null]> = [];
 for (const name of SCREENS) {
   const widgets = parseWidgets(screenPath(ROOT, name));
   if (widgets.size === 0) {
@@ -242,18 +328,20 @@ for (const name of SCREENS) {
     continue;
   }
   if (name === "setup_wifi" || name === "setup_bind") {
-    jobs.push([`${name}-keyboard-closed`, closedState(widgets), `${name} · keyboard closed`]);
-    jobs.push([`${name}-keyboard-open`, openState(widgets, kb), `${name} · keyboard open`]);
+    jobs.push([`${name}-keyboard-closed`, closedState(widgets), `${name} · keyboard closed`, null]);
+    jobs.push([`${name}-keyboard-open`, openState(widgets, kb), `${name} · keyboard open`, null]);
   } else {
-    jobs.push([name, closedState(widgets), name]);
+    const tabIdx = name === "now" ? 0 : name === "shows" ? 1 : 2;
+    jobs.push([name, closedState(widgets), name, tabIdx]);
   }
 }
 
-for (const [name, widgets, caption] of jobs) {
-  const svg = render(widgets, `${caption} — ${NOTE}`);
+for (const [name, widgets, caption, tabIdx] of jobs) {
+  const svg = render(widgets, `${caption} — ${NOTE}`, tabIdx);
   const out = path.join(OUT_DIR, `${name}.png`);
   await sharp(Buffer.from(svg)).png().toFile(out);
   console.log(`  wrote ${path.relative(ROOT, out)}  (${widgets.filter((w) => !w.hidden).length} visible)`);
 }
 
 console.log("  NOTE: geometry is exact; typefaces are not. Text wrapping is indicative.");
+

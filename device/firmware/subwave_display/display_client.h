@@ -6,6 +6,7 @@
 #include "esphome/components/web_server_idf/web_server_idf.h"
 #include <string>
 #include <map>
+#include <vector>
 
 namespace subwave_display {
 
@@ -52,6 +53,14 @@ struct StationSettings {
   int idle_min = 15;
   int idle_pct = 20;
   bool skip_enabled = true;
+};
+
+struct ScheduleSlot {
+  std::string from;
+  std::string to;
+  bool live = false;
+  std::string name;
+  std::string host;
 };
 
 /**
@@ -154,6 +163,8 @@ class SubwaveDisplay
   /** The station's own name, for the shows window's header. */
   std::string state_station_name() const { return station_name_; }
   std::string state_logo_url() const { return logo_url_; }
+  const std::string &schedule_day_label() const { return schedule_day_label_; }
+  const std::vector<ScheduleSlot> &schedule_slots() const { return schedule_slots_; }
 
   // -------------------------------------------------------------------------
   // The connectivity ladder.
@@ -248,7 +259,7 @@ class SubwaveDisplay
    * table: a request says which kind it is, and handle_() decides what a given
    * status and body mean for it.
    */
-  enum class Req : uint8_t { CLAIM, STATE, ARTWORK, SKIP, HEARTBEAT, SETTINGS };
+  enum class Req : uint8_t { CLAIM, STATE, SCHEDULE, ARTWORK, SKIP, HEARTBEAT, SETTINGS };
 
   void request_(Req kind, const char *method, const std::string &path, const std::string &body, uint32_t timeout_ms);
   void handle_(Req kind, int status, const std::string &body);
@@ -257,6 +268,7 @@ class SubwaveDisplay
   void send_heartbeat_();
   bool claim_device_();
   void parse_state_(const std::string &json);
+  void parse_schedule_(const std::string &json);
 
   // The credential, in flash. A fixed-size buffer because preferences are stored
   // by memcpy of a trivially-copyable type — see the note on save_token_().
@@ -304,6 +316,9 @@ class SubwaveDisplay
   int poll_after_sec_{10};
   std::string station_name_;
   std::string logo_url_;
+  std::string schedule_day_label_;
+  std::vector<ScheduleSlot> schedule_slots_;
+  uint32_t last_schedule_poll_ms_{0};
   // The cover the server just named. Held here until the YAML layer has set it
   // on the incoming online_image, because C++ cannot reach that object directly.
   std::string pending_art_url_;

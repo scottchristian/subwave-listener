@@ -121,6 +121,11 @@ lvgl:
             height: 100%
             align: TOP_LEFT
             scrollable: false
+            bg_color: 0x06101E
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            radius: 0
             widgets:
               # 1 of 3 — what is playing.
               - obj:
@@ -131,6 +136,9 @@ lvgl:
                   scrollable: false
                   bg_color: 0x06101E
                   bg_opa: COVER
+                  border_width: 0
+                  pad_all: 0
+                  radius: 0
                   widgets: !include screens/now.yaml
 
               # 2 of 3 — the show list.
@@ -142,6 +150,9 @@ lvgl:
                   scrollable: false
                   bg_color: 0x06101E
                   bg_opa: COVER
+                  border_width: 0
+                  pad_all: 0
+                  radius: 0
                   widgets: !include screens/shows.yaml
 
               # 3 of 3 — the screen's own settings.
@@ -153,6 +164,9 @@ lvgl:
                   scrollable: false
                   bg_color: 0x06101E
                   bg_opa: COVER
+                  border_width: 0
+                  pad_all: 0
+                  radius: 0
                   widgets: !include screens/settings.yaml
 
               # The provisioning screens. Two slots in the same stack: Wi-Fi,
@@ -165,6 +179,9 @@ lvgl:
                   scrollable: false
                   bg_color: 0x06101E
                   bg_opa: COVER
+                  border_width: 0
+                  pad_all: 0
+                  radius: 0
                   widgets: !include screens/setup_wifi.yaml
 
               - obj:
@@ -175,6 +192,9 @@ lvgl:
                   scrollable: false
                   bg_color: 0x06101E
                   bg_opa: COVER
+                  border_width: 0
+                  pad_all: 0
+                  radius: 0
                   widgets: !include screens/setup_bind.yaml
 
               # The asleep notice — the last slot, bare label.
@@ -188,7 +208,7 @@ lvgl:
                   text_align: CENTER
                   hidden: true
 
-        # ---- chrome: arrows and rail, outside every window ----
+        # ---- chrome: navigation dock for the 3 station screens (hidden during setup) ----
         - obj:
             id: chrome
             width: 100%
@@ -197,89 +217,237 @@ lvgl:
             scrollable: false
             bg_color: 0x06101E
             bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            radius: 0
             widgets:
-              - button:
-                  id: btn_prev
-                  width: 88px
-                  height: 72px
-                  align: LEFT_MID
-                  bg_color: 0x06101E
+              - obj:
+                  id: chrome_rule
+                  x: 0px
+                  y: 0px
+                  width: 1280px
+                  height: 1px
+                  bg_color: 0x1A3050
                   bg_opa: COVER
                   border_width: 0
                   radius: 0
+
+              - button:
+                  id: btn_prev
+                  x: 24px
+                  y: 10px
+                  width: 64px
+                  height: 52px
+                  bg_color: 0x0D1F35
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 8px
                   on_click:
                     - script.execute: window_prev
-              - label:
-                  id: glyph_prev
-                  text: "‹"
-                  text_font: font_title
-                  text_color: 0x6A8BA8
-                  align: CENTER
-
-              # Four segments. Filled means "you are here".
-              - obj:
-                  id: rail
-                  width: 96px
-                  height: 4px
-                  align: CENTER
-                  bg_color: 0x1A3050
-                  bg_opa: COVER
-                  radius: 2px
                   widgets:
+                    - label:
+                        id: glyph_prev
+                        text: "‹"
+                        text_font: font_title
+                        text_color: 0xDCE8F5
+                        align: CENTER
+
+              # Direct-tap screen tabs (Now Playing, Schedule, Settings)
+              - button:
+                  id: nav_tab_0
+                  x: 344px
+                  y: 12px
+                  width: 184px
+                  height: 48px
+                  bg_color: 0x0D1F35
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x4E9FD4
+                  radius: 8px
+                  pad_all: 0
+                  on_click:
+                    - script.execute:
+                        id: window_go
+                        target: 0
+                  widgets:
+                    - label:
+                        id: nav_lbl_0
+                        text: "Now Playing"
+                        text_font: font_small
+                        text_color: 0xDCE8F5
+                        align: CENTER
                     - obj:
                         id: rail_0
-                        align: LEFT_MID
-                        x: 0px
-                        width: 22px
-                        height: 4px
+                        align: BOTTOM_MID
+                        width: 56px
+                        height: 3px
                         bg_color: 0x4E9FD4
                         bg_opa: COVER
+                        border_width: 0
                         radius: 2px
+
+              - button:
+                  id: nav_tab_1
+                  x: 548px
+                  y: 12px
+                  width: 184px
+                  height: 48px
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 8px
+                  pad_all: 0
+                  on_click:
+                    - script.execute:
+                        id: window_go
+                        target: 1
+                  widgets:
+                    - label:
+                        id: nav_lbl_1
+                        text: "Schedule"
+                        text_font: font_small
+                        text_color: 0x6A8BA8
+                        align: CENTER
                     - obj:
                         id: rail_1
-                        align: LEFT_MID
-                        x: 26px
-                        width: 22px
-                        height: 4px
+                        align: BOTTOM_MID
+                        width: 56px
+                        height: 3px
                         bg_color: 0x1A3050
                         bg_opa: COVER
+                        border_width: 0
                         radius: 2px
+
+              - button:
+                  id: nav_tab_2
+                  x: 752px
+                  y: 12px
+                  width: 184px
+                  height: 48px
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 8px
+                  pad_all: 0
+                  on_click:
+                    - script.execute:
+                        id: window_go
+                        target: 2
+                  widgets:
+                    - label:
+                        id: nav_lbl_2
+                        text: "Settings"
+                        text_font: font_small
+                        text_color: 0x6A8BA8
+                        align: CENTER
                     - obj:
                         id: rail_2
-                        align: LEFT_MID
-                        x: 52px
-                        width: 22px
-                        height: 4px
+                        align: BOTTOM_MID
+                        width: 56px
+                        height: 3px
                         bg_color: 0x1A3050
                         bg_opa: COVER
-                        radius: 2px
-                    - obj:
-                        id: rail_3
-                        align: LEFT_MID
-                        x: 78px
-                        width: 22px
-                        height: 4px
-                        bg_color: 0x1A3050
-                        bg_opa: COVER
+                        border_width: 0
                         radius: 2px
 
               - button:
                   id: btn_next
-                  width: 88px
-                  height: 72px
-                  align: RIGHT_MID
-                  bg_color: 0x06101E
+                  x: 1192px
+                  y: 10px
+                  width: 64px
+                  height: 52px
+                  bg_color: 0x0D1F35
                   bg_opa: COVER
-                  border_width: 0
-                  radius: 0
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 8px
                   on_click:
                     - script.execute: window_next
-              - label:
-                  id: glyph_next
-                  text: "›"
-                  text_font: font_title
-                  text_color: 0x6A8BA8
+                  widgets:
+                    - label:
+                        id: glyph_next
+                        text: "›"
+                        text_font: font_title
+                        text_color: 0xDCE8F5
+                        align: CENTER
+
+        # ---- boot_overlay: full-screen loading & connectivity test screen ----
+        - obj:
+            id: boot_overlay
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            scrollable: false
+            bg_color: 0x06101E
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            radius: 0
+            widgets:
+              - obj:
+                  id: boot_card
                   align: CENTER
+                  width: 680px
+                  height: 340px
+                  scrollable: false
+                  bg_color: 0x0D1F35
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 12px
+                  pad_all: 0
+                  widgets:
+                    - label:
+                        id: boot_kicker
+                        text: "SUB/WAVE"
+                        text_font: font_small
+                        text_color: 0x4E9FD4
+                        align: TOP_MID
+                        y: 36px
+                    - label:
+                        id: boot_title
+                        text: "Connecting to Wi-Fi"
+                        text_font: font_title
+                        text_color: 0xDCE8F5
+                        align: TOP_MID
+                        y: 76px
+                    - label:
+                        id: boot_step
+                        text: "Trying to connect to Wi-Fi…"
+                        text_font: font_body
+                        text_color: 0xDCE8F5
+                        align: TOP_MID
+                        y: 156px
+                    - label:
+                        id: boot_detail
+                        text: "Waiting for network association"
+                        text_font: font_small
+                        text_color: 0x6A8BA8
+                        align: TOP_MID
+                        y: 200px
+                    - obj:
+                        id: boot_bar_track
+                        x: 80px
+                        y: 268px
+                        width: 520px
+                        height: 8px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 0
+                        radius: 4px
+                    - obj:
+                        id: boot_bar_fill
+                        x: 80px
+                        y: 268px
+                        width: 130px
+                        height: 8px
+                        bg_color: 0x4E9FD4
+                        bg_opa: COVER
+                        border_width: 0
+                        radius: 4px
 
 # ---------------------------------------------------------------------------
 # Artwork.
@@ -461,7 +629,7 @@ font:
     bpp: 4
     glyphs: >-
       !"#$%&()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`
-      abcdefghijklmnopqrstuvwxyz{|}~©°·—'…
+      abcdefghijklmnopqrstuvwxyz{|}~©°·—'…‹›
 
   - file: "gfonts://Archivo@Medium"
     id: font_body
@@ -469,7 +637,7 @@ font:
     bpp: 4
     glyphs: >-
       !"#$%&()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`
-      abcdefghijklmnopqrstuvwxyz{|}~©°·—'…
+      abcdefghijklmnopqrstuvwxyz{|}~©°·—'…‹›
 
   - file: "gfonts://Archivo@Medium"
     id: font_small
@@ -477,4 +645,4 @@ font:
     bpp: 4
     glyphs: >-
       !"#$%&()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`
-      abcdefghijklmnopqrstuvwxyz{|}~©°·—'…
+      abcdefghijklmnopqrstuvwxyz{|}~©°·—'…‹›

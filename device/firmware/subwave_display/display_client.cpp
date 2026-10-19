@@ -76,8 +76,6 @@ static bool bool_at(cJSON *obj, const char *key, bool fallback = false) {
 }
 
 void SubwaveDisplay::setup() {
-  this->api_base_ = this->server_url_;
-
   // The identity lives in flash. A standard image carries none of it; the
   // device collects the server URL and a bind code during setup and stores the
   // result here. Per-device builds still work by passing substitutions, which
@@ -87,6 +85,7 @@ void SubwaveDisplay::setup() {
     this->load_identity_from_flash_();
     this->load_bind_code_();
   }
+  this->api_base_ = this->server_url_;
 
   if (this->claim_token_ == "unprovisioned" && !this->claimed_) {
     ESP_LOGW(TAG, "This firmware has no setup code in it. Flash it from the admin panel.");
@@ -130,15 +129,11 @@ bool SubwaveDisplay::claim_device_() {
     return false;
   }
 
+  this->api_base_ = this->server_url_;
   std::string body = "{";
   body += "\"deviceId\":\"" + this->device_id_ + "\",";
   body += "\"claimToken\":\"" + this->claim_token_ + "\",";
-  // The timezone is NOT sent here. The setup portal asks the browser for it and
-  // the station keeps it against the device row, so the screen never holds a
-  // clock it would have to trust — an earlier version of this file fetched the
-  // wifi interface here and sent an empty string either way, which looked like
-  // telemetry and was a no-op.
-  body += ",\"timezone\":\"\"";
+  body += "\"timezone\":\"\"";
   body += "}";
 
   this->request_(Req::CLAIM, "POST", "/api/devices/claim", body, 15000);
@@ -155,6 +150,11 @@ void SubwaveDisplay::poll_state_() {
   }
 
   this->request_(Req::STATE, "GET", "/api/devices/state", "", 12000);
+  uint32_t now_ms = esphome::millis();
+  if (this->schedule_slots_.empty() || (now_ms - this->last_schedule_poll_ms_ >= 60000u)) {
+    this->last_schedule_poll_ms_ = now_ms;
+    this->request_(Req::SCHEDULE, "GET", "/api/devices/schedule", "", 12000);
+  }
 }
 
 void SubwaveDisplay::parse_state_(const std::string &json) {
@@ -245,6 +245,7 @@ void SubwaveDisplay::parse_state_(const std::string &json) {
   // would still be running and the bug would still be there.
   now_refresh();
   shows_refresh();
+  settings_refresh();
 
   // Artwork. The URL is a path under the app's own host, so it has to be
   // turned into a full URL and handed to the incoming online_image — and that
@@ -256,6 +257,36 @@ void SubwaveDisplay::parse_state_(const std::string &json) {
     this->shown_art_url_ = this->now_.art_url;
     this->pending_art_url_ = this->now_.art_url;
   }
+}
+
+void SubwaveDisplay::parse_schedule_(const std::string &json) {
+  cJSON *root = cJSON_Parse(json.c_str());
+  if (root == nullptr) return;
+
+  std::string day = str_at(root, "dayLabel");
+  if (!day.empty()) this->schedule_day_label_ = day;
+
+  if (cJSON *slots = cJSON_GetObjectItem(root, "slots")) {
+    if (cJSON_IsArray(slots)) {
+      this->schedule_slots_.clear();
+      int count = cJSON_GetArraySize(slots);
+      for (int i = 0; i < count && i < 5; i++) {
+        cJSON *item = cJSON_GetArrayItem(slots, i);
+        if (item == nullptr) continue;
+        ScheduleSlot slot;
+        slot.from = str_at(item, "from");
+        slot.to = str_at(item, "to");
+        slot.live = bool_at(item, "live");
+        if (cJSON *show = cJSON_GetObjectItem(item, "show")) {
+          slot.name = str_at(show, "name");
+          slot.host = str_at(show, "host");
+        }
+        this->schedule_slots_.push_back(slot);
+      }
+    }
+  }
+  cJSON_Delete(root);
+  shows_refresh();
 }
 
 // ---------------------------------------------------------------------------
@@ -339,7 +370,13 @@ void SubwaveDisplay::handle_(Req kind, int status, const std::string &body) {
   switch (kind) {
     case Req::CLAIM:
       if (status == 200 || status == 201) {
-        this->claimed_ = true;
+        cJSON *root = cJSON_Parse(body.c_str());
+        if (root != nullptr) {
+          std::string tok = str_at(root, "token");
+          if (!tok.empty()) this->bearer_ = tok;
+          cJSON_Delete(root);
+        }
+        this->claimed_ = !this->bearer_.empty();
         // Persist immediately. A claim that is not written to flash is a claim
         // that is lost at the next power cut, and this screen is on a wall.
         this->save_token_();
@@ -363,6 +400,12 @@ void SubwaveDisplay::handle_(Req kind, int status, const std::string &body) {
       } else if (status == 200) {
         this->last_error_.clear();
         this->parse_state_(body);
+      }
+      return;
+
+    case Req::SCHEDULE:
+      if (status == 200) {
+        this->parse_schedule_(body);
       }
       return;
 

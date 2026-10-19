@@ -20,22 +20,16 @@ wifi:
   # ESPHome's error for the old spelling is "[on_connect] is an invalid option
   # for [esphome]" — which says the shape is wrong without saying where it went.
   on_connect:
-    - delay: 1500ms
-    # WiFi just came up. Decide which setup screen (if any) to show:
-    #   bound identity        → now-playing (window_0)
-    #   WiFi + no identity    → bind screen (setup_bind_screen)
-    #   no WiFi (can't happen here, but safe) → Wi-Fi setup (setup_wifi_screen)
+    - delay: 500ms
+    - script.execute: update_setup_label
     - if:
         condition:
-          lambda: |-
-            auto *c = id(display_client);
-            return !c->device_id().empty() && !c->claim_token().empty() && !c->server_url().empty();
+          lambda: return id(window_index) == 3;
         then:
-          - script.execute: { id: window_go, target: 0 }
-        else:
-          - script.execute: { id: window_go, target: 4 }
+          - script.execute: check_connectivity
   on_disconnect:
-    - script.execute: { id: window_go, target: 3 }
+    - lambda: |-
+        id(wifi_joined) = false;
 
 # captive_portal removed - we serve our own setup wizard via custom web handler
 # in subwave_display component. The captive portal component overrides our / route.
