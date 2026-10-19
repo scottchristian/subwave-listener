@@ -49,8 +49,8 @@ struct StationSettings {
   int brightness = 70;
   std::string orientation = "landscape";
   std::string theme_mode = "auto";
-  std::string idle_mode = "dim";
-  int idle_min = 15;
+  std::string idle_mode = "stay";
+  int idle_min = 9999;
   int idle_pct = 20;
   bool skip_enabled = true;
 };

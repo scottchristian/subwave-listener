@@ -507,7 +507,8 @@ void idle_touch() {
   // server's does, which would blank the screen early or never.
   idle_apply(false);
   auto *c = client();
-  const uint32_t minutes = c == nullptr ? 15u : (uint32_t) c->settings().idle_min;
+  const uint32_t minutes = c == nullptr || c->settings().idle_min == 0 ? 9999u : (uint32_t) c->settings().idle_min;
+  ESP_LOGI(TAG, "Idle deadline: %u minutes from now", minutes);
   U32(idle_deadline_ms) = (uint32_t) esphome::millis() + minutes * 60000u;
 }
 
