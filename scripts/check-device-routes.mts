@@ -112,6 +112,29 @@ try {
     void row;
   }
 
+  // ---- bind -> claim: the pair the bind route hands out must be claimable ----
+  // The bind route once overwrote the hashed claim token with the raw one, so
+  // every real screen bound fine and then 404'd at claim: it never got a bearer
+  // token, never polled, never heartbeated. Run the real route, then claim.
+  {
+    const row = await mkScreen({ name: "Bindable", status: "building", buildStatus: "building" });
+    await prisma.device.update({
+      where: { id: row.id },
+      data: { bindCode: "ZZ9-ZZ9", bindCodeExpires: new Date(Date.now() + 60_000) },
+    });
+    const out = await auth.bindDevice("zz9-zz9");
+    ok(out.ok === true, "bind accepts a live code (case-insensitive)");
+    if (out.ok) {
+      const stored = await prisma.device.findUniqueOrThrow({ where: { id: row.id } });
+      ok(stored.claimToken === auth.hashToken(out.claimToken), "the row stores the HASH of the claim token, never the raw value");
+      ok(stored.bindCode === null, "the bind code is single-use and cleared");
+      const claimed = await auth.consumeClaimToken(out.deviceId, out.claimToken);
+      ok(claimed.ok === true, "the token returned by bind is accepted by claim", claimed.ok ? "" : claimed.reason);
+    }
+    const again = await auth.bindDevice("ZZ9-ZZ9");
+    ok(again.ok === false && again.status === 404, "a spent bind code cannot be reused");
+  }
+
   // ---- rotation: the grace window is the whole design ------------------
   {
     const row = await mkScreen({ deviceId: "dev-3" });

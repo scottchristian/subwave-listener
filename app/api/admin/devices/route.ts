@@ -17,11 +17,19 @@ import { deleteFirmware } from "@/lib/firmware-upload";
  * browser, because the claim token in it must never be rendered into a page the
  * operator might screenshot, log, or leave on a projector.
  */
-export async function requireAdmin(): Promise<{ id: string } | null> {
+export async function requireAdmin(): Promise<{ id: string | null } | null> {
   const session = await getServerSession(authOptions);
   const user = session?.user as any;
   if (!user?.isAdmin) return null;
-  return { id: user.id ?? user.email };
+  if (typeof user.id === "string" && user.id) {
+    const row = await prisma.user.findUnique({ where: { id: user.id }, select: { id: true } });
+    if (row) return { id: row.id };
+  }
+  if (typeof user.email === "string" && user.email) {
+    const row = await prisma.user.findUnique({ where: { email: user.email }, select: { id: true } });
+    if (row) return { id: row.id };
+  }
+  return { id: null };
 }
 
 export async function GET() {
@@ -43,6 +51,7 @@ export async function GET() {
         // A row can exist before its binary does, which is what makes "flash
         // didn't complete" a visible state rather than a ghost that reports in.
         hasFirmware: Boolean(d.firmwareSha),
+        bindCode: d.bindCode,
         firmwareVer: d.firmwareVer,
         lastSeenAt: d.lastSeenAt,
         settingsRev: d.settingsRev,

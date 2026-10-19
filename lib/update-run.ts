@@ -436,6 +436,8 @@ export async function runUpdatePipeline(appDir: string, plan: UpdatePlan): Promi
       const tmpSchema = path.join(appDir, "prisma", ".gen-sqlite.prisma");
       await runStep(process.execPath, [path.join(appDir, "scripts", "gen-schema.mjs"), "sqlite", tmpSchema], appDir, 60 * 1000);
       schemaArgs = ["--schema", tmpSchema];
+    } else if (envProvider === "postgresql") {
+      await runStep(process.execPath, [path.join(appDir, "scripts", "gen-schema.mjs"), "postgresql", path.join(appDir, "prisma", "schema.prisma")], appDir, 60 * 1000);
     }
     await log(`syncing ${envProvider} schema`);
     if (envProvider === "postgresql") {

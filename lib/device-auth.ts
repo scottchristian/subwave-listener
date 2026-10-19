@@ -230,6 +230,39 @@ export async function mintClaimToken(
 }
 
 /**
+ * Exchange a single-use bind code for a claim pair. The route is a thin wrapper
+ * so this can be exercised against a real database in check-device-routes.
+ *
+ * The row keeps only the HASH of the claim token (mintClaimToken wrote it).
+ * Writing the raw value over it would make consumeClaimToken, which compares
+ * hash(raw from device) with the stored value, reject every claim as "unknown":
+ * the screen would bind, never receive a bearer token, and never heartbeat.
+ */
+export async function bindDevice(
+  bindCodeRaw: string,
+): Promise<
+  | { ok: true; deviceId: string; claimToken: string; claimExpiresAt: string }
+  | { ok: false; status: 400 | 404 | 410; error: string }
+> {
+  const bindCode = bindCodeRaw.trim().toUpperCase();
+  if (!bindCode) return { ok: false, status: 400, error: "Enter the bind code shown on the admin panel." };
+
+  const row = await prisma.device.findUnique({ where: { bindCode } });
+  if (!row) return { ok: false, status: 404, error: "That bind code is not recognised." };
+  if (row.bindCodeExpires && row.bindCodeExpires < new Date()) {
+    return { ok: false, status: 410, error: "That bind code has expired. Generate a new one." };
+  }
+
+  const deviceId = row.deviceId ?? row.id;
+  const claim = await mintClaimToken(row);
+  await prisma.device.update({
+    where: { id: row.id },
+    data: { deviceId, bindCode: null, bindCodeExpires: null, status: "building" },
+  });
+  return { ok: true, deviceId, claimToken: claim.raw, claimExpiresAt: claim.expires.toISOString() };
+}
+
+/**
  * Consume a claim token, if it is a live one for this device.
  *
  * Single use: the row's stored hash is cleared in the same update that mints the

@@ -192,77 +192,79 @@ interchangeable and using either for the wrong job wastes a cycle:
    ```
 
    Confirm `INFO Successfully compiled program.` at the end. The artifact is
-   `builds/.esphome/build/subwave-screen/build/firmware.factory.bin` (~2.7 MB).
+   `builds/.esphome/build/subwave-screen/build/firmware.factory.bin` (~2.8 MB).
 
-2. **Get the native port to appear.** The native USB port vanishes on every reset.
-   Pulse the CH340's DTR/RTS to reset the chip, then wait ~5 s for
-   `/dev/cu.usbmodem*` to reappear:
+2. **Connect the native USB port and enter download mode.**
+   The board has **two** physical USB-C ports: `UART` (CH340 USB-to-UART bridge) and `USB` (native ESP32-P4 USB-OTG/JTAG).
+   The cable must be physically plugged into the **native `USB` port** for `/dev/cu.usbmodem*` to appear on macOS. If only the `UART` port is plugged in, software reset pulses cannot make the native port appear.
+
+   Put the chip in download mode:
+   - **Manually:** Hold the `BOOT` button, press and release `RST`, then release `BOOT`.
+   - **Or via CH340 DTR/RTS strap** (if both cables connected):
 
    ```python
    import serial, time, glob
-   port = '/dev/cu.usbserial-214220'
+   port = '/dev/cu.usbserial-110'
    s = serial.Serial(port, 115200, timeout=0.1)
-   s.dtr = False   # IO0 high: run the app (not ROM download mode)
+   s.dtr = False   # IO0 high: run the app
    s.rts = True    # EN low: assert reset
    time.sleep(0.5)
-   s.dtr = True    # IO0 high still
-   s.rts = False   # EN high: release reset
+   s.dtr = True    # IO0 low: strap for download
+   s.rts = False   # EN high: release reset into download mode
    time.sleep(0.5)
-   s.dtr = False   # both released, chip runs
-   s.rts = False
    s.close()
-   print("reset sent, waiting for native port...")
-   for i in range(15):
-       time.sleep(1)
-       if glob.glob('/dev/cu.usbmodem*'):
-           print("NATIVE PORT:", glob.glob('/dev/cu.usbmodem*'))
-           break
    ```
 
-   **Truth table:** DTR low + RTS high = reset asserted; release both = run app.
-   Asserting both puts the chip in ROM download mode (`ESP-ROM` then silence) —
-   reads like a dead device but isn't.
+3. **Use esptool v4.12.0+ (CRITICAL for ESP32-P4 rev 1.3).**
+   Stock Homebrew/macOS `esptool.py v4.8.x` has a flasher stub built for early engineering samples (rev 0.0) that crashes on ESP32-P4 rev 1.3 with:
+   `Uploading stub... A fatal error occurred: Serial data stream stopped: Possible serial noise or corruption.`
 
-3. **Flash.** 460800 baud works reliably; 921600 has also succeeded but is no faster:
+   Use `esptool.py v4.12.0` bundled inside the ESPHome IDF environment:
+   `device/firmware/.esphome/idf/penvs/5.5.4/lib/python3.14/site-packages`
 
-   ```
-   python3 -m esptool --chip esp32p4 -p /dev/cu.usbmodem1101 --baud 460800 \
-     --before default_reset --after hard_reset write_flash -z \
+4. **Flash with `--before no_reset`.**
+   460800 baud works reliably. When the device is already in download mode, use `--before no_reset` so the tool does not pulse the USB lines and disconnect itself while connecting:
+
+   ```bash
+   PYTHONPATH=device/firmware/.esphome/idf/penvs/5.5.4/lib/python3.14/site-packages python3 -m esptool \
+     --chip esp32p4 -p /dev/cu.usbmodem101 --baud 460800 \
+     --before no_reset --after hard_reset write_flash -z \
      --flash_mode dio --flash_freq 40m --flash_size 16MB \
      0x0 builds/.esphome/build/subwave-screen/build/firmware.factory.bin
    ```
 
-   The port number (`usbmodem1101`) changes every reset — check `ls /dev/cu.usbmodem*` right before flashing.
+   The port number (`usbmodem101`) changes every reset — check `ioreg -n "ESP32-P4" -r -l -w 0 | grep IOCalloutDevice` or `ls /dev/cu.usbmodem*` right before flashing.
 
    **`Hash of data verified.` is the only success signal.** After it you may get
    `termios.error: (6, 'Device not configured')` or `OSError: Device not
    configured` from the trailing `hard_reset` — that is the port disappearing
-   under the tool as the chip resets. The write already succeeded. Do not
-   re-flash because of it.
+   under the tool as the chip resets. The write already succeeded.
 
-4. **Reboot happens automatically** via `--after hard_reset`. The chip runs the
+5. **Reboot happens automatically** via `--after hard_reset` (watchdog reset). The chip runs the
    new image immediately.
 
-5. **Read the boot log on the CH340** (stable port, never flash on it):
+6. **Read the boot log on the CH340** (stable port, never flash on it):
 
    ```
    python3 device/firmware/tools/capture_log.py 45
    ```
 
-   This pulses DTR/RTS the same way as step 2, then captures 45 s of boot log.
+   This captures 45 s of boot log from the CH340 UART.
    Look for:
    - `Project causewayfm.subwave-screen version X.Y.Z` — proves the new image landed
-   - `Connectivity: all four steps pass. Not asking for setup.` — network is good
+   - `Bound 68 object(s).` — LVGL widgets initialized
+   - `Connectivity: ...` — Wi-Fi and station check status
    - `Boot window is ...` — which window is on the glass
-   - `Guru Meditation Error` / `panic` — a crash, investigate
 
 ### Failure modes seen in practice
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Failed to connect: Download mode successfully detected, but getting no sync reply` | CH340 wedged on a previous write | Unplug the CH340 cable, replug it, retry |
-| Native port never appears after reset pulse | Chip didn't leave reset | Re-pulse DTR/RTS (step 2), wait up to 15 s |
-| `esptool` can't find `/dev/cu.usbmodem*` | Port renumbered after reset | `ls /dev/cu.usbmodem*` right before flashing, use that exact path |
+| `Uploading stub... Serial data stream stopped: Possible serial noise or corruption.` | Incompatible `esptool` (< v4.12.0) with ESP32-P4 rev 1.3 stub | Use `esptool.py v4.12.0` from `.esphome/idf/penvs/.../site-packages` |
+| Native port `/dev/cu.usbmodem*` completely absent on macOS | Cable is plugged into `UART` (CH340) port instead of `USB` port | Plug USB-C cable into the native `USB` port on the screen board |
+| `Failed to connect: Download mode successfully detected, but getting no sync reply` | CH340 wedged on a previous write | Unplug the CH340 cable, replug it, retry (never flash on CH340) |
+| `Could not open /dev/cu.usbmodem*: port is busy or doesn't exist` | Terminal sandbox or missing permissions | Run command with permissions to access `/dev/cu.*` |
+| Port vanishes during `Connecting...` | `--before default_reset` toggled USB-OTG connection | Put device in flash mode manually or via strap, then use `--before no_reset` |
 | Boot log shows `Guru Meditation Error` | Firmware crash | Capture full log with `capture_log.py`, look at the register dump |
 | Boot log clean but screen shows nothing | Wrong panel revision | Try `panel_vendor.yaml` (old revision, 198 commands, 60 MHz) |
 
