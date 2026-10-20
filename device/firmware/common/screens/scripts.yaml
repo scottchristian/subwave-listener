@@ -668,6 +668,8 @@ script:
             return;
           }
           id(window_queued) = -1;
+
+          int from_index = id(window_index);
           id(window_index) = target;
           if (target == 3) id(setup_page) = 3;
           if (target == 4) id(setup_page) = 4;
@@ -679,21 +681,42 @@ script:
           lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
 
           lv_obj_t *wins[5] = {
-            id(window_0),
-            id(window_1),
-            id(window_2),
-            id(setup_wifi_screen),
-            id(setup_bind_screen),
+            id(window_0), id(window_1), id(window_2),
+            id(setup_wifi_screen), id(setup_bind_screen),
           };
+          lv_obj_t *out = wins[from_index];
+          lv_obj_t *in  = wins[target];
+
+          // Crossfade between windows (~300ms total, 6 steps x 25ms each way).
+          // on_touch fires before on_click on brightness segments, so we do not
+          // touch brightness here — the 1-second keepalive maintains it.
+          for (int step = 0; step <= 6; step++) {
+            int32_t opa = step * 255 / 6;
+            lv_obj_set_style_opa(out, 255 - opa, LV_PART_MAIN);
+            delay(1);
+            delay(25);
+          }
+
+          // Switch windows: hide the old, show the new at opacity 0
           for (int i = 0; i < 5; i++) {
-            lv_obj_set_x(wins[i], 0);
             if (i == target) {
+              lv_obj_set_style_opa(wins[i], 0, LV_PART_MAIN);
               lv_obj_clear_flag(wins[i], LV_OBJ_FLAG_HIDDEN);
             } else {
               lv_obj_add_flag(wins[i], LV_OBJ_FLAG_HIDDEN);
             }
             lv_obj_invalidate(wins[i]);
           }
+
+          // Fade in the new window (~150ms)
+          for (int step = 0; step <= 6; step++) {
+            int32_t opa = step * 255 / 6;
+            lv_obj_set_style_opa(in, opa, LV_PART_MAIN);
+            delay(1);
+            delay(25);
+          }
+          lv_obj_set_style_opa(in, LV_OPA_COVER, LV_PART_MAIN);
+
           window_draw_rail->execute();
 
   - id: window_prev

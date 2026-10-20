@@ -524,9 +524,12 @@ The idle timeout defaults to **30 minutes** (changed from 9999). It is configura
 `StationSettings.idle_min` in `display_client.h` and can be overridden by the server through the state poll
 (`idle.min` field). When the idle deadline passes, `idle_poll()` is a no-op — the screen never dims or blanks.
 
-Window switching: `window_go` slides the two adjacent slots across `window_stack`
-at 24px steps, ~570ms total, with a 2 s gap in the API. Skip is 1:1 with the web
-app including solo-mode behaviour.
+Window switching: `window_go` crossfades between the five window slots
+(~300ms total: 150ms fade out, instant switch, 150ms fade in) using
+`lv_obj_set_style_opa` alpha blending — the same primitive as the artwork
+crossfade. When art is fading, the window switch is deferred via `window_queued`
+so the two motions never overlap. Skip is 1:1 with the web app including
+solo-mode behaviour.
 
 There are five window slots in `window_stack`: window_0 (now-playing),
 window_1 (shows), window_2 (settings), setup_wifi_screen (WiFi setup),
