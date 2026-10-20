@@ -490,40 +490,8 @@ void idle_touch() {
  * the firmware. A poll cannot leave a timer behind.
  */
 void idle_poll() {
-  // Same reason as the painters: the deadline and the asleep flag are bound
-  // objects, so reading them before ui_mark_ready() is a null dereference. The
-  // interval's startup_delay keeps this from mattering in practice; the guard is
-  // here so that moving that delay can never turn into a crash.
-  if (!ui_ready()) return;
-  // Phase two: the blank is due.
-  if (g_blank_pending) {
-    // Unsigned subtraction, deliberately: millis() wraps every 49 days and the
-    // naive `millis() > deadline` form gets a wrap wrong for the whole of the
-    // following period.
-    if ((int32_t) (esphome::millis() - g_blank_at) >= 0) {
-      g_blank_pending = false;
-      if (g_backlight != nullptr)
-        g_backlight->make_call().set_brightness(0.0f).perform();
-      ESP_LOGI(TAG, "Blanked. Touch to wake.");
-    }
-    return;
-  }
-
-  if (BOOL(screen_asleep)) return;
-  const uint32_t deadline = U32(idle_deadline_ms);
-  // ZERO MEANS NOT ARMED. At boot there is no deadline until the first touch, so
-  // the tick has to be able to tell "not armed" from "armed at millis() == 0".
-  if (deadline == 0) {
-    ESP_LOGD(TAG, "idle_poll: deadline==0, not armed");
-    return;
-  }
-  if ((int32_t) (esphome::millis() - deadline) < 0) {
-    ESP_LOGD(TAG, "idle_poll: deadline not yet reached, deadline=%u now=%u", deadline, esphome::millis());
-    return;
-  }
-
-  ESP_LOGI(TAG, "Idle deadline passed; applying mode.");
-  idle_apply(true);
+  // Wall display: screen never dims or blanks. Always on.
+  return;
 }
 
 }  // namespace subwave_display
