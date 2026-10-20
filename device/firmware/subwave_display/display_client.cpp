@@ -480,6 +480,7 @@ void SubwaveDisplay::send_heartbeat() {
 }
 
 void SubwaveDisplay::push_settings(const StationSettings &s) {
+  ESP_LOGI(TAG, "push_settings: idle_mode=%s idle_min=%d idle_pct=%d", s.idle_mode.c_str(), s.idle_min, s.idle_pct);
   this->settings_ = s;
   if (!this->claimed_) return;
   std::string body = "{\"settings\":{";

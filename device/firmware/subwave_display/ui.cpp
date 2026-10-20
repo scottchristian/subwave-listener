@@ -472,6 +472,7 @@ void idle_apply(bool asleep) {
   // "Waking is touch-only" follows from that: a track change or a heartbeat must
   // not light up a screen in an empty room.
   const std::string mode = c->settings().idle_mode;
+  ESP_LOGI(TAG, "idle_apply(asleep=%d) mode=%s idle_min=%u idle_pct=%d", asleep ? 1 : 0, mode.c_str(), c->settings().idle_min, c->settings().idle_pct);
   if (mode == "stay") {
     dim_to(100, 0);
     return;
@@ -508,7 +509,8 @@ void idle_touch() {
   idle_apply(false);
   auto *c = client();
   const uint32_t minutes = c == nullptr || c->settings().idle_min == 0 ? 9999u : (uint32_t) c->settings().idle_min;
-  ESP_LOGI(TAG, "Idle deadline: %u minutes from now", minutes);
+  const std::string mode = c == nullptr ? std::string("stay") : c->settings().idle_mode;
+  ESP_LOGI(TAG, "Idle deadline: %u minutes, mode=%s", minutes, mode.c_str());
   U32(idle_deadline_ms) = (uint32_t) esphome::millis() + minutes * 60000u;
 }
 
@@ -553,8 +555,14 @@ void idle_poll() {
   const uint32_t deadline = U32(idle_deadline_ms);
   // ZERO MEANS NOT ARMED. At boot there is no deadline until the first touch, so
   // the tick has to be able to tell "not armed" from "armed at millis() == 0".
-  if (deadline == 0) return;
-  if ((int32_t) (esphome::millis() - deadline) < 0) return;
+  if (deadline == 0) {
+    ESP_LOGD(TAG, "idle_poll: deadline==0, not armed");
+    return;
+  }
+  if ((int32_t) (esphome::millis() - deadline) < 0) {
+    ESP_LOGD(TAG, "idle_poll: deadline not yet reached, deadline=%u now=%u", deadline, esphome::millis());
+    return;
+  }
 
   ESP_LOGI(TAG, "Idle deadline passed; applying mode.");
   idle_apply(true);
