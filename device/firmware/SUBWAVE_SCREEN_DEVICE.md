@@ -173,6 +173,20 @@ rendered now.
 
 Verified on hardware: `Connectivity: all four steps pass. Not asking for setup.`
 
+## Claim retry (1.14.0)
+
+The claim endpoint (`POST /api/devices/claim`) returns `409 Conflict` when the
+bind code is invalid or already used (single-use, 7-day TTL). Previously the
+screen retried the claim on every 10-second poll forever, filling the log with
+`Claim refused (409)` and never showing state or schedule data.
+
+**Fix:** `claim_device_()` now checks a `claim_refused_` flag before sending.
+`handle_()` sets `claim_refused_ = true` when it receives a 409, and sets
+`last_error_` to `"This screen's claim code is invalid or already used."`.
+`poll_state_()` stops calling `claim_device_()` once refused, and
+`needs_setup()` returns `true` so the setup screen is shown. The user must
+re-provision with a fresh bind code from the admin panel.
+
 ## Flashing
 
 **FLASH ON THE NATIVE USB PORT, READ LOGS ON THE CH340.** The two ports are not

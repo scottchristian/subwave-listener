@@ -207,7 +207,7 @@ class SubwaveDisplay
 
   /** True when setup should be demanded rather than merely offered. */
   bool needs_setup() const {
-    return this->connectivity_ != Connectivity::OK || this->device_id_.empty() || this->claim_token_.empty() || this->server_url_.empty();
+    return this->connectivity_ != Connectivity::OK || this->device_id_.empty() || this->claim_token_.empty() || this->server_url_.empty() || this->claim_refused_;
   }
 
   /** The Skip button. Refused by the server under the same policy as a listener's. */
@@ -327,6 +327,7 @@ class SubwaveDisplay
 
   bool claimed_{false};
   bool server_reachable_{false};
+  bool claim_refused_{false};
   Connectivity connectivity_{Connectivity::UNKNOWN};
   bool stream_idle_{false};
   bool is_night_{true};

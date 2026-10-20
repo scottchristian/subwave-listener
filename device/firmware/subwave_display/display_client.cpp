@@ -124,6 +124,12 @@ void SubwaveDisplay::loop() {
 // ---------------------------------------------------------------------------
 bool SubwaveDisplay::claim_device_() {
   if (this->claimed_) return true;
+  if (this->claim_refused_) {
+    // Claim was already refused (409 Conflict) — the claim code is invalid
+    // or already used. Don't keep retrying; the user needs to re-provision
+    // with a fresh bind code.
+    return false;
+  }
   if (this->device_id_.empty() || this->claim_token_.empty() || this->server_url_.empty()) {
     ESP_LOGW(TAG, "Cannot claim: no identity. Setup required.");
     return false;
@@ -145,6 +151,11 @@ bool SubwaveDisplay::claim_device_() {
 
 void SubwaveDisplay::poll_state_() {
   if (!this->claimed_) {
+    if (this->claim_refused_) {
+      // Claim was refused; don't keep retrying. The user needs to re-provision
+      // with a fresh bind code. The error is shown on the setup screen.
+      return;
+    }
     this->claim_device_();
     return;
   }
@@ -385,6 +396,13 @@ void SubwaveDisplay::handle_(Req kind, int status, const std::string &body) {
         // that is lost at the next power cut, and this screen is on a wall.
         this->save_token_();
         ESP_LOGI(TAG, "Claimed. This screen is now a %s.", this->device_id_.c_str());
+      } else if (status == 409) {
+        // 409 Conflict means the claim code is invalid or already used
+        // (single-use, 7-day TTL). Stop retrying — the user needs to
+        // re-provision with a fresh bind code.
+        this->claim_refused_ = true;
+        this->last_error_ = "This screen's claim code is invalid or already used.";
+        ESP_LOGW(TAG, "Claim refused (409): claim code invalid or already used.");
       } else {
         this->last_error_ = "This screen's setup code was refused.";
         ESP_LOGW(TAG, "Claim refused (%d).", status);
