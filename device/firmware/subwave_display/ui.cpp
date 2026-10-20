@@ -436,14 +436,11 @@ void idle_apply(bool asleep) {
   auto *c = client();
   if (c == nullptr || !ui_ready()) return;
 
-  // ONE OWNER FOR THE ASLEEP STATE. The global existed, was declared in
-  // setup.yaml and was bound across — and nothing read or wrote it, so the
-  // screen had two possible answers to "is it asleep" and no way to tell which
-  // was true. This function is the only thing that changes it.
+  // WALL DISPLAY: screen is ALWAYS on. idle_apply() is called from idle_touch()
+  // (wake) and idle_poll() (deadline passed). We never actually turn off the
+  // backlight - a wall screen should always be visible.
   BOOL(screen_asleep) = asleep;
 
-  // THE BACKLIGHT IS WHAT ACTUALLY DIMS. Showing a label over a still-lit screen
-  // is not a screen going off, and the first version did exactly that.
   if (g_backlight == nullptr) return;
 
   auto dim_to = [&](float pct, uint32_t transition_ms) {
@@ -453,48 +450,9 @@ void idle_apply(bool asleep) {
     call.perform();
   };
 
-  if (!asleep) {
-    // CANCEL THE PENDING BLANK. Without this a tap during the 2.5s "screen off"
-    // message wakes the screen and then, a moment later, the blank lands anyway
-    // and the wake silently fails. It is the kind of bug that reads as "touch
-    // does not work" and nothing in the log says why.
-    g_blank_pending = false;
-    lv_obj_add_flag(OBJ(sleep_hint), LV_OBJ_FLAG_HIDDEN);
-    // Ramped, not a hard cut. A jump from black to full brightness is unpleasant
-    // in a dark room, and the ramp is what makes it read as waking rather than as
-    // a different screen appearing.
-    dim_to(100, 800);
-    return;
-  }
-
-  // THREE MODES, ONE CHOICE. See device/design.md's idle section — and note that
-  // there is no audio on this device, so there is no user activity to measure.
-  // "Waking is touch-only" follows from that: a track change or a heartbeat must
-  // not light up a screen in an empty room.
-  const std::string mode = c->settings().idle_mode;
-  ESP_LOGI(TAG, "idle_apply(asleep=%d) mode=%s idle_min=%u idle_pct=%d", asleep ? 1 : 0, mode.c_str(), c->settings().idle_min, c->settings().idle_pct);
-  if (mode == "stay") {
-    dim_to(100, 0);
-    return;
-  }
-  if (mode == "dim") {
-    lv_obj_add_flag(OBJ(sleep_hint), LV_OBJ_FLAG_HIDDEN);
-    // 8 SECONDS IS THE RAMP, AND THE RAMP IS THE CONFIRMATION — you watch it
-    // happen. design.md is explicit that this is not a transition to hide.
-    dim_to((float) c->settings().idle_pct, 8000);
-    return;
-  }
-
-  // "off": drop partway, say so, then blank. The message is what tells somebody
-  // standing there that the screen has not failed — a black rectangle on a wall
-  // is indistinguishable from a broken one.
-  dim_to(20, 1000);
-  lv_obj_clear_flag(OBJ(sleep_hint), LV_OBJ_FLAG_HIDDEN);
-  lv_label_set_text(OBJ(sleep_hint), "Screen off \u00b7 tap anywhere to wake");
-  // Arm the second phase rather than schedule it. Same reason as the tick: the
-  // deadline is data, not a timer that has to be torn down on wake.
-  g_blank_at = (uint32_t) esphome::millis() + 2500u;
-  g_blank_pending = true;
+  // Always keep the backlight at full brightness. Never blank the screen -
+  // a wall display should always be visible.
+  dim_to(100, 800);
 }
 
 void idle_touch() {
