@@ -68,7 +68,7 @@ light:
     id: backlight
     name: Backlight
     output: backlight_output
-    restore_mode: ALWAYS_OFF
+    restore_mode: ALWAYS_ON
     default_transition_length: 800ms
     internal: true
 
