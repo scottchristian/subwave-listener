@@ -491,7 +491,38 @@ the panel is black with clean logs.
 Touch: GSL3680 on I2C (GPIO7 SDA, GPIO8 SCL), mirror_x true, mirror_y false,
 reset GPIO22, interrupt GPIO21.
 
-Backlight: `restore_mode: ALWAYS_OFF`, default transition 800ms. `CONFIG_LV_DISP_DEF_REFR_PERIOD=10` for smooth 650ms crossfades.
+**Backlight:** `restore_mode: ALWAYS_ON`, default transition 800ms. `CONFIG_LV_DISP_DEF_REFR_PERIOD=10` for smooth
+650ms crossfades.
+
+**IMPORTANT: Do NOT set `inverted: true` on the `backlight_output` LEDC output.** The panel's backlight driver
+inverts the signal itself (GPIO HIGH → driver LOW → LED ON), so ESPHome's `inverted: true` causes double-inversion:
+100% brightness maps to duty 0% → GPIO LOW → driver HIGH → LED OFF. The screen appears on at low brightness (inverted
+duty high enough to trigger the driver) but goes fully off at 100%. The vendor reference firmware uses no inversion.
+Leave `inverted` unset.
+
+**Idle / backlight keepalive:** The screen stays on permanently. `idle_apply()` re-asserts the backlight at the
+configured brightness (`c->settings().brightness`, default 70) every time it is called — from the 1-second YAML
+interval keepalive and from `idle_poll()` every 5 seconds. `idle_apply()` calls `call.set_state(true)` before
+`set_brightness()`, so if anything turns the light off, the next poll brings it back. Manual brightness changes
+from the settings screen (`set_brightness_to`) are respected — `idle_apply()` reads the current
+`settings().brightness` rather than forcing 100%. `idle_apply()` uses a static `last_applied` guard so it only
+drives the LEDC output when brightness actually changes, preventing visible flicker from repeated 800ms
+transitions on every poll.
+
+`idle_touch()` (fired by `on_touch` on every touch) does NOT call `idle_apply()` — because `on_touch` fires
+before `on_click` on brightness segments, calling `idle_apply()` would briefly flash the previous brightness
+before `set_brightness_to()` updates it. `idle_touch()` only arms the idle deadline and logs. The screen
+brightness at the moment of touch is preserved by the 1-second keepalive within a second.
+
+Brightness changes are logged at `DEBUG` level:
+- `idle_apply(asleep=X): setting backlight to YY%` — from the keepalive/poll path
+- `Manual brightness set to YY%` — from the settings screen (`set_brightness_to`)
+- `Server set brightness: AA%% -> BB%%.` — from the server's state poll (`parse_state_()`)
+- `Idle touch: wake (backlight YY%), deadline ZZ minutes, mode=stay` — from touch events
+
+The idle timeout defaults to **30 minutes** (changed from 9999). It is configurable per-device via
+`StationSettings.idle_min` in `display_client.h` and can be overridden by the server through the state poll
+(`idle.min` field). When the idle deadline passes, `idle_poll()` is a no-op — the screen never dims or blanks.
 
 Window switching: `window_go` slides the two adjacent slots across `window_stack`
 at 24px steps, ~570ms total, with a 2 s gap in the API. Skip is 1:1 with the web
@@ -814,10 +845,15 @@ None of them logged an error, because nothing was broken; nothing ran.
   setting and a wrong guess on a clock is worse than a plainly-labelled one.
 - **`idle_apply()` / `idle_touch()` / `idle_poll()` were dead.** The screen
   never dimmed, never blanked, and could not be woken. Globals declared and
-  bound; nothing read them. Wired now: `on_touch` → `idle_arm`, 5 s tick →
-  `idle_poll`, backlight actually dims (earlier version showed a label over a
-  still-lit screen). See `device/design.md`'s idle section: stay/dim/off, 8 s
-  ramp, wake touch-only, 2 s message then blank.
+  bound; nothing read them. Wired now: `on_touch` → `idle_arm` (arms deadline
+  only, does not touch backlight), 5 s tick → `idle_poll` (no-op, screen never
+  dims or blanks), 1 s YAML interval → `idle_apply()` (re-asserts backlight at
+  `settings().brightness` with a `last_applied` guard to avoid flicker).
+  `idle_apply()` calls `call.set_state(true)` before `set_brightness()` so the
+  backlight can never stay off for more than one poll interval. Manual brightness
+  changes from the settings screen are respected — `idle_apply()` reads
+  `settings().brightness` rather than forcing 100%. See `device/design.md`'s
+  idle section: stay/dim/off, 8 s ramp, wake touch-only, 2 s message then blank.
 - **The setup screen drew over the now-playing screen on every boot.** Every
   slot in `window_stack` is created visible and stacks at 0,0, so `setup_screen`
   (last in the list) was on top. The connectivity ladder logged "all four steps

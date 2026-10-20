@@ -430,7 +430,10 @@ void settings_refresh() {
  * wrong one. It answers an action — the screen dimming itself — and nothing on
  * this device animates for its own sake.
  */
-void bind_backlight(esphome::light::LightState *light) { g_backlight = light; }
+void bind_backlight(esphome::light::LightState *light) {
+  g_backlight = light;
+  ESP_LOGI(TAG, "Backlight bound (%p).", (void *) light);
+}
 
 void idle_apply(bool asleep) {
   auto *c = client();
@@ -443,16 +446,20 @@ void idle_apply(bool asleep) {
 
   if (g_backlight == nullptr) return;
 
-  auto dim_to = [&](float pct, uint32_t transition_ms) {
-    auto call = g_backlight->make_call();
-    call.set_brightness(pct / 100.0f);
-    call.set_transition_length(transition_ms);
-    call.perform();
-  };
+  // Only re-apply if brightness actually changed — avoids restarting the 800ms
+  // transition on every poll/tick, which causes visible flicker.
+  float brightness = c == nullptr ? 1.0f : (float) c->settings().brightness / 100.0f;
+  static float last_applied = -1.0f;
+  if (brightness == last_applied) return;
+  last_applied = brightness;
 
-  // Always keep the backlight at full brightness. Never blank the screen -
-  // a wall display should always be visible.
-  dim_to(100, 800);
+  ESP_LOGI(TAG, "idle_apply(asleep=%d): setting backlight to %d%% (800ms transition).", (int) asleep, (int) (brightness * 100.0f));
+
+  auto call = g_backlight->make_call();
+  call.set_state(true);
+  call.set_brightness(brightness);
+  call.set_transition_length(800);
+  call.perform();
 }
 
 void idle_touch() {
@@ -464,11 +471,16 @@ void idle_touch() {
   // which made the idle deadline depend on the server answering — a screen that
   // could not reach the station would never time out — and it jumps when the
   // server's does, which would blank the screen early or never.
-  idle_apply(false);
+  //
+  // We do NOT call idle_apply() here because on_touch fires before on_click on
+  // brightness segments. Calling idle_apply() would briefly flash the previous
+  // brightness before set_brightness_to() updates it. The 1-second keepalive
+  // interval maintains the backlight at the correct brightness within a second.
   auto *c = client();
-  const uint32_t minutes = c == nullptr || c->settings().idle_min == 0 ? 9999u : (uint32_t) c->settings().idle_min;
+  const uint32_t minutes = c == nullptr || c->settings().idle_min == 0 ? 30u : (uint32_t) c->settings().idle_min;
   const std::string mode = c == nullptr ? std::string("stay") : c->settings().idle_mode;
-  ESP_LOGI(TAG, "Idle deadline: %u minutes, mode=%s", minutes, mode.c_str());
+  float brightness = c == nullptr ? 1.0f : (float) c->settings().brightness / 100.0f;
+  ESP_LOGI(TAG, "Idle touch: wake (backlight %d%%), deadline %u minutes, mode=%s", (int) (brightness * 100.0f), minutes, mode.c_str());
   U32(idle_deadline_ms) = (uint32_t) esphome::millis() + minutes * 60000u;
 }
 
@@ -476,22 +488,23 @@ void idle_touch() {
  * The idle tick. Asks one question and does whichever phase of the idle sequence
  * has come due. Called from the YAML interval every five seconds.
  *
- * ONE POLL, TWO PHASES, IN THIS ORDER, AND THE ORDER IS LOAD-BEARING.
+ * WALL DISPLAY: the screen never dims or blanks. Every poll re-asserts the
+ * backlight at 100% as a safety net — if anything outside this file drives the
+ * backlight off, the next poll brings it back within five seconds.
  *
- * The blank is checked first because the "off" sequence is two steps separated
- * by 2.5 seconds — drop to 20%, say so, then blank — and if the expire check ran
- * first it would see the deadline already passed and start the sequence all over
- * again on every tick, holding the screen at 20% forever and never blanking.
- *
- * THERE IS NO TIMER HERE, and that is deliberate twice over. ESPHome 2026.7's
- * Application has no timeout scheduling at all, so a deferred call has to be a
- * deadline checked by the next tick. And a self-rescheduling timer would have to
- * be cancelled and rebuilt on every wake, which is the shape of bug that outlives
+ * THERE IS NO TIMER HERE, and that is deliberate. ESPHome 2026.7's Application
+ * has no timeout scheduling at all, so a deferred call has to be a deadline
+ * checked by the next tick. And a self-rescheduling timer would have to be
+ * cancelled and rebuilt on every wake, which is the shape of bug that outlives
  * the firmware. A poll cannot leave a timer behind.
  */
 void idle_poll() {
-  // Wall display: screen never dims or blanks. Always on.
-  return;
+  // Safety net: re-assert full brightness on every poll so the backlight can
+  // never stay off for more than one poll interval.
+  auto *c = client();
+  if (c == nullptr || !ui_ready()) return;
+  if (g_backlight == nullptr) return;
+  idle_apply(false);
 }
 
 }  // namespace subwave_display

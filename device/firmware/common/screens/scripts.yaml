@@ -50,9 +50,11 @@ script:
           float v = (float) value / 100.0f;
           auto *light = id(backlight);
           auto call = light->make_call();
+          call.set_state(true);
           call.set_brightness(v);
           call.set_transition_length(800);
           call.perform();
+          ESP_LOGI("subwave.settings", "Manual brightness set to %d%% (%.2f).", value, v);
 
   - id: theme_cycle
     mode: single

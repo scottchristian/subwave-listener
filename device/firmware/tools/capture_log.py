@@ -37,15 +37,22 @@ import time
 import serial
 
 
-def find_port():
-    """Prefer the CH340. The native USB port renumbers itself on every reset."""
-    ttl = sorted(glob.glob("/dev/cu.usbserial-*"))
-    if ttl:
-        return ttl[0]
-    native = sorted(glob.glob("/dev/cu.usbmodem*"))
-    if native:
-        return native[0]
-    sys.exit("No serial port found. Check the cable.")
+def find_port(timeout_seconds=None):
+    """Prefer the CH340. The native USB port renumbers itself on every reset.
+
+    Polls until a port appears (or timeout_seconds elapses, if given).
+    """
+    deadline = None if timeout_seconds is None else time.time() + timeout_seconds
+    while True:
+        ttl = sorted(glob.glob("/dev/cu.usbserial-*"))
+        if ttl:
+            return ttl[0]
+        native = sorted(glob.glob("/dev/cu.usbmodem*"))
+        if native:
+            return native[0]
+        if deadline is not None and time.time() > deadline:
+            sys.exit("No serial port found within timeout. Check the cable.")
+        time.sleep(0.5)
 
 
 def main():

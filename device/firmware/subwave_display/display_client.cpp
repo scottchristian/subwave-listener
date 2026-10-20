@@ -201,7 +201,11 @@ void SubwaveDisplay::parse_state_(const std::string &json) {
     // because the safe direction matters: a screen that dims too far is obvious
     // and fixable from the app, and one that blazes at 3am is neither.
     this->is_night_ = bool_at(theme, "isNight", true);
-    this->settings_.brightness = int_at(theme, "brightness", this->settings_.brightness);
+    int server_brightness = int_at(theme, "brightness", this->settings_.brightness);
+    if (server_brightness != this->settings_.brightness) {
+      ESP_LOGI(TAG, "Server set brightness: %d%% -> %d%%.", this->settings_.brightness, server_brightness);
+    }
+    this->settings_.brightness = server_brightness;
   }
   if (cJSON *idle = cJSON_GetObjectItem(root, "idle")) {
     this->settings_.idle_mode = str_or(idle, "mode", this->settings_.idle_mode);

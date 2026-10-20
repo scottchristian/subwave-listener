@@ -257,6 +257,11 @@ interval:
       # Flush a cover that arrived while a crossfade was running. art_tick was
       # defined and never called, so a queued swap stayed queued forever.
       - script.execute: art_tick
+      # Backlight keepalive: re-assert the backlight every second so it can
+      # never stay off for more than one second. Uses idle_apply() which reads
+      # the current brightness setting rather than forcing 100%, so manual
+      # brightness changes are preserved.
+      - lambda: subwave_display::idle_apply(false);
     startup_delay: 2s
 
   - interval: 45s

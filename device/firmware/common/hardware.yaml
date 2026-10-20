@@ -60,7 +60,6 @@ output:
   - platform: ledc
     id: backlight_output
     pin: GPIO23
-    inverted: true          # backlight LED wired active-low (anode to VCC, cathode to GPIO23)
     frequency: 5000         # match reference demo: 5 kHz PWM
 
 light:

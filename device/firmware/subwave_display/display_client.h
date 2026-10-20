@@ -50,7 +50,7 @@ struct StationSettings {
   std::string orientation = "landscape";
   std::string theme_mode = "auto";
   std::string idle_mode = "stay";
-  int idle_min = 9999;
+  int idle_min = 30;
   int idle_pct = 20;
   bool skip_enabled = true;
 };
