@@ -167,7 +167,12 @@ void SubwaveDisplay::poll_state_() {
       return;
     }
     this->claim_device_();
-    return;
+    if (!this->claimed_) {
+      // claim_device_() couldn't arm us (no stored identity) — give up for now
+      return;
+    }
+    // claim_device_() set claimed_ = true (we have stored identity), fall through
+    // to fetch state.
   }
 
   this->request_(Req::STATE, "GET", "/api/devices/state", "", 12000);
@@ -736,6 +741,7 @@ bool SubwaveDisplay::bind(const std::string &server_url, const std::string &bind
 
   const char *device_id = cJSON_GetStringValue(cJSON_GetObjectItem(root, "deviceId"));
   const char *claim_token = cJSON_GetStringValue(cJSON_GetObjectItem(root, "claimToken"));
+  const char *bearer_token = cJSON_GetStringValue(cJSON_GetObjectItem(root, "token"));
 
   if (device_id == nullptr || claim_token == nullptr) {
     cJSON_Delete(root);
@@ -746,6 +752,10 @@ bool SubwaveDisplay::bind(const std::string &server_url, const std::string &bind
   this->device_id_ = device_id;
   this->claim_token_ = claim_token;
   this->claimed_ = true;  // claimed — no need to claim again after reboot
+  if (bearer_token != nullptr) {
+    this->bearer_ = bearer_token;
+    this->save_token_();  // persist bearer token so state polls work after reboot
+  }
   cJSON_Delete(root);
 
   // Store in flash
