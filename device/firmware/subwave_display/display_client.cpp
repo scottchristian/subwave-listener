@@ -123,38 +123,27 @@ void SubwaveDisplay::loop() {
 // produces a screen that silently never shows a song.
 // ---------------------------------------------------------------------------
 bool SubwaveDisplay::claim_device_() {
-  ESP_LOGD(TAG, "claim_device_(): claimed_=%d, claim_refused_=%d", (int)this->claimed_, (int)this->claim_refused_);
   if (this->claimed_) return true;
   if (this->claim_refused_) {
-    // Claim was already refused (409 Conflict) — the claim code is invalid
-    // or already used. Don't keep retrying; the user needs to re-provision
-    // with a fresh bind code.
     return false;
   }
-  // If we already have a stored identity (device_id + claim_token), we've
-  // already claimed. Don't try again with a single-use code that's already
-  // been consumed.
+  // Need device_id + claim_token + server_url to claim
   if (!this->device_id_.empty() && !this->claim_token_.empty() && !this->server_url_.empty()) {
-    ESP_LOGI(TAG, "Already claimed: %s @ %s", this->device_id_.c_str(), this->server_url_.c_str());
-    this->claimed_ = true;
-    return true;
+    this->api_base_ = this->server_url_;
+    std::string body = "{";
+    body += "\"deviceId\":\"" + this->device_id_ + "\",";
+    body += "\"claimToken\":\"" + this->claim_token_ + "\",";
+    body += "\"timezone\":\"\"";
+    body += "}";
+
+    this->request_(Req::CLAIM, "POST", "/api/devices/claim", body, 15000);
+    return false;
   }
   if (this->device_id_.empty() || this->claim_token_.empty() || this->server_url_.empty()) {
     ESP_LOGW(TAG, "Cannot claim: no identity. Setup required.");
     return false;
   }
 
-  this->api_base_ = this->server_url_;
-  std::string body = "{";
-  body += "\"deviceId\":\"" + this->device_id_ + "\",";
-  body += "\"claimToken\":\"" + this->claim_token_ + "\",";
-  body += "\"timezone\":\"\"";
-  body += "}";
-
-  this->request_(Req::CLAIM, "POST", "/api/devices/claim", body, 15000);
-
-  // The response is handled by the caller's next poll: this is fire and forget,
-  // because a claim that has not landed yet is not an error worth blocking on.
   return false;
 }
 
@@ -751,21 +740,21 @@ bool SubwaveDisplay::bind(const std::string &server_url, const std::string &bind
 
   this->device_id_ = device_id;
   this->claim_token_ = claim_token;
-  this->claimed_ = true;  // claimed — no need to claim again after reboot
-  if (bearer_token != nullptr) {
-    this->bearer_ = bearer_token;
-    this->save_token_();  // persist bearer token so state polls work after reboot
-  }
   cJSON_Delete(root);
 
-  // Store in flash
+  // Store identity in flash
   this->save_identity_();
 
-  // Clear the bind code so we don't try to claim again with an already-used
+  // Clear bind code so we don't try to claim again with an already-used
   // code after reboot. App.safe_reboot() is called from the YAML script
   // immediately after bind() returns, before update() can clear it.
   this->bind_code_.clear();
   this->save_bind_code_();
+
+  // Claim to get bearer token — claim_device_() will set claimed_ = true
+  // once the server responds with the bearer token.
+  this->claimed_ = false;
+  this->claim_device_();
 
   ESP_LOGI(TAG, "Bound successfully: %s", this->device_id_.c_str());
   return true;
