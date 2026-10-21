@@ -123,12 +123,21 @@ void SubwaveDisplay::loop() {
 // produces a screen that silently never shows a song.
 // ---------------------------------------------------------------------------
 bool SubwaveDisplay::claim_device_() {
+  ESP_LOGD(TAG, "claim_device_(): claimed_=%d, claim_refused_=%d", (int)this->claimed_, (int)this->claim_refused_);
   if (this->claimed_) return true;
   if (this->claim_refused_) {
     // Claim was already refused (409 Conflict) — the claim code is invalid
     // or already used. Don't keep retrying; the user needs to re-provision
     // with a fresh bind code.
     return false;
+  }
+  // If we already have a stored identity (device_id + claim_token), we've
+  // already claimed. Don't try again with a single-use code that's already
+  // been consumed.
+  if (!this->device_id_.empty() && !this->claim_token_.empty() && !this->server_url_.empty()) {
+    ESP_LOGI(TAG, "Already claimed: %s @ %s", this->device_id_.c_str(), this->server_url_.c_str());
+    this->claimed_ = true;
+    return true;
   }
   if (this->device_id_.empty() || this->claim_token_.empty() || this->server_url_.empty()) {
     ESP_LOGW(TAG, "Cannot claim: no identity. Setup required.");
@@ -150,6 +159,7 @@ bool SubwaveDisplay::claim_device_() {
 }
 
 void SubwaveDisplay::poll_state_() {
+  ESP_LOGD(TAG, "poll_state_(): claimed_=%d, claim_refused_=%d", (int)this->claimed_, (int)this->claim_refused_);
   if (!this->claimed_) {
     if (this->claim_refused_) {
       // Claim was refused; don't keep retrying. The user needs to re-provision
@@ -650,7 +660,8 @@ void SubwaveDisplay::load_identity_from_flash_() {
   }
 
   if (!this->server_url_.empty() && !this->device_id_.empty() && !this->claim_token_.empty()) {
-    ESP_LOGI(TAG, "Found stored identity: %s @ %s", this->device_id_.c_str(), this->server_url_.c_str());
+    ESP_LOGI(TAG, "Found stored identity: %s @ %s. claimed_=%d", this->device_id_.c_str(), this->server_url_.c_str(), (int)this->claimed_);
+    this->claimed_ = true;  // already claimed — no need to claim again after reboot
   } else {
     ESP_LOGI(TAG, "No stored identity. Setup required.");
   }
