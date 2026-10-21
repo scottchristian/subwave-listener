@@ -734,11 +734,17 @@ bool SubwaveDisplay::bind(const std::string &server_url, const std::string &bind
 
   this->device_id_ = device_id;
   this->claim_token_ = claim_token;
-  this->claimed_ = false;  // reset so claim_device_() runs with new credentials
+  this->claimed_ = true;  // claimed — no need to claim again after reboot
   cJSON_Delete(root);
 
   // Store in flash
   this->save_identity_();
+
+  // Clear the bind code so we don't try to claim again with an already-used
+  // code after reboot. App.safe_reboot() is called from the YAML script
+  // immediately after bind() returns, before update() can clear it.
+  this->bind_code_.clear();
+  this->save_bind_code_();
 
   ESP_LOGI(TAG, "Bound successfully: %s", this->device_id_.c_str());
   return true;
