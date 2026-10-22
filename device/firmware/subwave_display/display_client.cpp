@@ -123,10 +123,8 @@ void SubwaveDisplay::loop() {
 // produces a screen that silently never shows a song.
 // ---------------------------------------------------------------------------
 bool SubwaveDisplay::claim_device_() {
-  if (this->claimed_) return true;
-  if (this->claim_refused_) {
-    return false;
-  }
+  // Always try to claim if we don't have a bearer token yet
+  if (!this->bearer_.empty()) return true;
   // Need device_id + claim_token + server_url to claim
   if (!this->device_id_.empty() && !this->claim_token_.empty() && !this->server_url_.empty()) {
     this->api_base_ = this->server_url_;
@@ -137,7 +135,7 @@ bool SubwaveDisplay::claim_device_() {
     body += "}";
 
     this->request_(Req::CLAIM, "POST", "/api/devices/claim", body, 15000);
-    return false;
+    return this->claimed_;  // true if bearer token received
   }
   if (this->device_id_.empty() || this->claim_token_.empty() || this->server_url_.empty()) {
     ESP_LOGW(TAG, "Cannot claim: no identity. Setup required.");
@@ -150,11 +148,6 @@ bool SubwaveDisplay::claim_device_() {
 void SubwaveDisplay::poll_state_() {
   ESP_LOGD(TAG, "poll_state_(): claimed_=%d, claim_refused_=%d", (int)this->claimed_, (int)this->claim_refused_);
   if (!this->claimed_) {
-    if (this->claim_refused_) {
-      // Claim was refused; don't keep retrying. The user needs to re-provision
-      // with a fresh bind code. The error is shown on the setup screen.
-      return;
-    }
     this->claim_device_();
     if (!this->claimed_) {
       // claim_device_() couldn't arm us (no stored identity) — give up for now
@@ -652,6 +645,16 @@ void SubwaveDisplay::load_identity_from_flash_() {
       if (!stored.empty()) this->claim_token_ = stored;
     }
   }
+  // Bearer token
+  {
+    char buf[TOKEN_BYTES] = {0};
+    auto pref = esphome::global_preferences->make_preference<char[TOKEN_BYTES]>(TOKEN_KEY, true);
+    if (pref.load(&buf)) {
+      buf[TOKEN_BYTES - 1] = '\0';
+      std::string stored(buf);
+      if (!stored.empty()) this->bearer_ = stored;
+    }
+  }
 
   if (!this->server_url_.empty() && !this->device_id_.empty() && !this->claim_token_.empty()) {
     ESP_LOGI(TAG, "Found stored identity: %s @ %s. claimed_=%d", this->device_id_.c_str(), this->server_url_.c_str(), (int)this->claimed_);
@@ -742,19 +745,10 @@ bool SubwaveDisplay::bind(const std::string &server_url, const std::string &bind
   this->claim_token_ = claim_token;
   cJSON_Delete(root);
 
-  // Store identity in flash
-  this->save_identity_();
-
-  // Clear bind code so we don't try to claim again with an already-used
-  // code after reboot. App.safe_reboot() is called from the YAML script
-  // immediately after bind() returns, before update() can clear it.
-  this->bind_code_.clear();
-  this->save_bind_code_();
-
-  // Claim to get bearer token — claim_device_() will set claimed_ = true
-  // once the server responds with the bearer token.
-  this->claimed_ = false;
-  this->claim_device_();
+  // Claim to get bearer token — synchronous so we don't reboot before it lands
+this->claim_refused_ = false;
+this->claimed_ = false;
+this->claim_device_();
 
   ESP_LOGI(TAG, "Bound successfully: %s", this->device_id_.c_str());
   return true;
