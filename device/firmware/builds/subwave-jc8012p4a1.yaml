@@ -21,7 +21,7 @@ substitutions:
   device_id: ""
   claim_token: ""
   server_url: ""
-  firmware_version: "1.14.1"
+  firmware_version: "1.14.3"
 
   # The panel is natively 800x1280 portrait and driven as 1280x800 landscape.
   # Getting this backwards is the single most common mistake with this board.
@@ -241,18 +241,62 @@ interval:
       # steps visibly, and one fed from the five-second idle tick is worse; one
       # label write a second is not a cost worth optimising away.
       - lambda: subwave_display::clock_refresh();
-      # Apply a cover the server just named, if one is pending. The URL is a path
-      # under the app's own host, so it is joined here in YAML where the base URL
-      # is reachable, rather than in C++ where the online_image object is not.
+      # Apply pending images (station logo, presenter avatar, cover art, and
+      # schedule row avatars) one at a time when shared_http is idle.
       - lambda: |-
           auto *c = id(display_client);
-          const std::string path = c->pending_art_url();
-          if (path.empty()) return;
-          const std::string url = c->api_base() + path;
-          id(art_in_image)->set_url(url);
-          id(art_in_image)->update();
-          c->clear_pending_art_url();
-          ESP_LOGI("subwave.art", "Fetching cover: %s", url.c_str());
+          if (id(art_in_image)->is_decoding() || id(art_out_image)->is_decoding()) return;
+
+          if (!c->pending_logo_url().empty()) {
+            const std::string path = c->pending_logo_url();
+            c->clear_pending_logo_url();
+            if (c->fetch_png(path, id(station_logo_image))) {
+              lv_image_set_src(id(station_logo), id(station_logo_image));
+              lv_obj_clear_flag(id(station_logo), LV_OBJ_FLAG_HIDDEN);
+            }
+            return;
+          }
+
+          if (!c->pending_now_avatar_url().empty()) {
+            const std::string path = c->pending_now_avatar_url();
+            c->clear_pending_now_avatar_url();
+            if (c->fetch_png(path, id(now_avatar_image))) {
+              lv_image_set_src(id(now_avatar), id(now_avatar_image));
+              lv_obj_clear_flag(id(now_avatar), LV_OBJ_FLAG_HIDDEN);
+            }
+            return;
+          }
+
+          if (!c->pending_art_url().empty()) {
+            const std::string path = c->pending_art_url();
+            const std::string url = c->api_base() + path;
+            auto *img = id(art_slot) ? id(art_out_image) : id(art_in_image);
+            img->set_url(url);
+            img->update();
+            c->clear_pending_art_url();
+            ESP_LOGI("subwave.art", "Fetching cover (slot %d): %s", (int) id(art_slot), url.c_str());
+            return;
+          }
+
+          esphome::runtime_image::RuntimeImage *row_imgs[5] = {
+              id(row_0_avatar_image), id(row_1_avatar_image), id(row_2_avatar_image),
+              id(row_3_avatar_image), id(row_4_avatar_image),
+          };
+          lv_obj_t *row_widgets[5] = {
+              id(row_0_avatar), id(row_1_avatar), id(row_2_avatar),
+              id(row_3_avatar), id(row_4_avatar),
+          };
+          for (int i = 0; i < 5; i++) {
+            const std::string path = c->pending_row_avatar_url(i);
+            if (!path.empty()) {
+              c->clear_pending_row_avatar_url(i);
+              if (c->fetch_png(path, row_imgs[i])) {
+                lv_image_set_src(row_widgets[i], row_imgs[i]);
+                lv_obj_clear_flag(row_widgets[i], LV_OBJ_FLAG_HIDDEN);
+              }
+              return;
+            }
+          }
       # Flush a cover that arrived while a crossfade was running. art_tick was
       # defined and never called, so a queued swap stayed queued forever.
       - script.execute: art_tick

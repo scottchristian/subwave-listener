@@ -74,6 +74,8 @@ export interface DeviceState {
     /** activeShow.persona.name || dj.name */
     presenter: string | null;
     show: string | null;
+    /** /api/devices/avatar?id=<personaId> when an on-air persona is resolved. */
+    avatar?: string | null;
     /** From the state feed's session.startedAt. */
     onAirForSec: number | null;
     /** From computeShowRunway() over the schedule feed. NOT from now-playing. */

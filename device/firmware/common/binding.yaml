@@ -47,6 +47,9 @@ script:
           using subwave_display::bind_backlight;
 
           // ---- -------------------------------------------- the now-playing window
+          bind_object("now_avatar_well", id(now_avatar_well));
+          bind_object("now_avatar", id(now_avatar));
+          bind_object("station_logo", id(station_logo));
           bind_object("live_lamp", id(live_lamp));
           bind_object("byline_presenter", id(byline_presenter));
           bind_object("byline_show", id(byline_show));
@@ -79,22 +82,27 @@ script:
           bind_object("row_0_time", id(row_0_time));
           bind_object("row_0_name", id(row_0_name));
           bind_object("row_0_host", id(row_0_host));
+          bind_object("row_0_avatar", id(row_0_avatar));
           bind_object("row_0_rule", id(row_0_rule));
           bind_object("row_1_time", id(row_1_time));
           bind_object("row_1_name", id(row_1_name));
           bind_object("row_1_host", id(row_1_host));
+          bind_object("row_1_avatar", id(row_1_avatar));
           bind_object("row_1_rule", id(row_1_rule));
           bind_object("row_2_time", id(row_2_time));
           bind_object("row_2_name", id(row_2_name));
           bind_object("row_2_host", id(row_2_host));
+          bind_object("row_2_avatar", id(row_2_avatar));
           bind_object("row_2_rule", id(row_2_rule));
           bind_object("row_3_time", id(row_3_time));
           bind_object("row_3_name", id(row_3_name));
           bind_object("row_3_host", id(row_3_host));
+          bind_object("row_3_avatar", id(row_3_avatar));
           bind_object("row_3_rule", id(row_3_rule));
           bind_object("row_4_time", id(row_4_time));
           bind_object("row_4_name", id(row_4_name));
           bind_object("row_4_host", id(row_4_host));
+          bind_object("row_4_avatar", id(row_4_avatar));
           bind_object("row_4_rule", id(row_4_rule));
 
           // ---- ----------------------------------------------- the settings window

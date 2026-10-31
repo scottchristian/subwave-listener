@@ -7,12 +7,44 @@
 
 # ---- Tier 1: On-Air Voice & Show -----------------------------
 - obj:
+    id: now_avatar_well
+    width: 88px
+    height: 88px
+    radius: 10px
+    align: TOP_LEFT
+    x: 64px
+    y: 68px
+    bg_color: 0x0A182B
+    bg_opa: COVER
+    border_width: 2
+    border_color: 0x1A3050
+    border_opa: COVER
+    pad_all: 0
+    scrollable: false
+    clickable: false
+    widgets:
+      - label:
+          id: now_avatar_label
+          text: "ON AIR"
+          text_font: font_small
+          text_color: 0x294A6E
+          align: CENTER
+      - image:
+          id: now_avatar
+          src: now_avatar_image
+          width: 88px
+          height: 88px
+          align: CENTER
+          clickable: false
+          hidden: true
+
+- obj:
     id: live_lamp
     width: 14px
     height: 14px
     radius: 7px
     align: TOP_LEFT
-    x: 64px
+    x: 172px
     y: 72px
     bg_color: 0x4E9FD4
     bg_opa: COVER
@@ -24,9 +56,9 @@
     text_font: font_body
     text_color: 0xDCE8F5
     align: TOP_LEFT
-    x: 90px
+    x: 198px
     y: 64px
-    width: 566px
+    width: 458px
 
 - label:
     id: byline_show
@@ -34,9 +66,9 @@
     text_font: font_body
     text_color: 0x4E9FD4
     align: TOP_LEFT
-    x: 90px
+    x: 198px
     y: 100px
-    width: 566px
+    width: 458px
 
 - label:
     id: byline_runway
@@ -44,14 +76,26 @@
     text_font: font_small
     text_color: 0x6A8BA8
     align: TOP_LEFT
-    x: 90px
+    x: 198px
     y: 138px
-    width: 566px
+    width: 458px
 
-# ---- Framed Artwork Well & Double-Buffered Cover Images ------
-# `art_well` sits behind `art_out` and `art_in` at (696, 64, 520x520) via
+# ---- Station Logo & Framed Artwork Well ----------------------
+# `station_logo` sits in the top-right header above `art_well` at (1024, 18, 192x48).
+# `art_well` sits behind `art_out` and `art_in` at (696, 80, 520x520) via
 # TOP_RIGHT (-64px) so the right half of the screen has a crisp vinyl sleeve
 # frame before cover art finishes loading or while the stream is idle.
+- image:
+    id: station_logo
+    src: station_logo_image
+    width: 192px
+    height: 48px
+    align: TOP_LEFT
+    x: 1024px
+    y: 18px
+    clickable: false
+    hidden: true
+
 - obj:
     id: art_well
     width: 520px
@@ -59,7 +103,7 @@
     radius: 12px
     align: TOP_RIGHT
     x: -64px
-    y: 64px
+    y: 80px
     bg_color: 0x0A182B
     bg_opa: COVER
     border_width: 2
@@ -91,7 +135,7 @@
     height: 520px
     align: TOP_LEFT
     x: 696px
-    y: 64px
+    y: 80px
     bg_color: 0x0D1F35
     bg_opa: COVER
     clickable: false
@@ -104,7 +148,7 @@
     height: 520px
     align: TOP_LEFT
     x: 696px
-    y: 64px
+    y: 80px
     bg_color: 0x0D1F35
     bg_opa: COVER
     clickable: false

@@ -3,6 +3,7 @@
 #include "esphome/core/component.h"
 #include "esphome/core/hal.h"
 #include "esphome/components/http_request/http_request.h"
+#include "esphome/components/runtime_image/runtime_image.h"
 #include <string>
 #include <map>
 #include <vector>
@@ -31,6 +32,7 @@ struct NowPlaying {
 struct Byline {
   std::string presenter;
   std::string show;
+  std::string avatar_url;
   int64_t on_air_for_sec = -1;
   int64_t ends_in_sec = -1;
   bool live = false;
@@ -60,6 +62,8 @@ struct ScheduleSlot {
   bool live = false;
   std::string name;
   std::string host;
+  std::string host_id;
+  std::string avatar_url;
 };
 
 /**
@@ -131,6 +135,25 @@ class SubwaveDisplay
 
   const std::string &pending_art_url() const { return pending_art_url_; }
   void clear_pending_art_url() { pending_art_url_.clear(); }
+
+  const std::string &pending_logo_url() const { return pending_logo_url_; }
+  void clear_pending_logo_url() { pending_logo_url_.clear(); }
+  const std::string &shown_logo_url() const { return shown_logo_url_; }
+
+  const std::string &pending_now_avatar_url() const { return pending_now_avatar_url_; }
+  void clear_pending_now_avatar_url() { pending_now_avatar_url_.clear(); }
+  const std::string &shown_now_avatar_url() const { return shown_now_avatar_url_; }
+
+  const std::string &pending_row_avatar_url(int i) const {
+    static const std::string empty;
+    return (i >= 0 && i < MAX_SCHEDULE_SLOTS) ? pending_row_avatar_url_[i] : empty;
+  }
+  void clear_pending_row_avatar_url(int i) {
+    if (i >= 0 && i < MAX_SCHEDULE_SLOTS) pending_row_avatar_url_[i].clear();
+  }
+
+  /** Fetch a PNG from the station (chunked or Content-Length) and decode into `img`. */
+  bool fetch_png(const std::string &path, esphome::runtime_image::RuntimeImage *img);
 
   const std::string &bind_code() const { return bind_code_; }
   void set_bind_code(const std::string &c) { bind_code_ = c; }
@@ -283,6 +306,7 @@ class SubwaveDisplay
   bool claim_device_();
   void parse_state_(const std::string &json);
   void parse_schedule_(const std::string &json);
+  void resolve_now_avatar_();
 
   // The credential, in flash. A fixed-size buffer because preferences are stored
   // by memcpy of a trivially-copyable type — see the note on save_token_().
@@ -340,6 +364,13 @@ class SubwaveDisplay
   // on the incoming online_image, because C++ cannot reach that object directly.
   std::string pending_art_url_;
   std::string shown_art_url_;
+  std::string pending_logo_url_;
+  std::string shown_logo_url_;
+  std::string pending_now_avatar_url_;
+  std::string shown_now_avatar_url_;
+  std::string pending_row_avatar_url_[MAX_SCHEDULE_SLOTS];
+  std::string shown_row_avatar_url_[MAX_SCHEDULE_SLOTS];
+  std::map<std::string, std::string> persona_ids_;
   std::string bind_code_;
 
   bool claimed_{false};

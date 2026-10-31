@@ -472,7 +472,7 @@ online_image:
     http_request_id: shared_http
     url: "http://192.168.4.1/api/devices/art/none.jpg"
     format: JPEG
-    type: BINARY
+    type: RGB565
     resize: 520x520
     buffer_size: ${art_buffer_bytes}
     update_interval: never
@@ -481,14 +481,25 @@ online_image:
     # after the claim has stored the token.
     request_headers:
       Authorization: !lambda "return std::string(\"Bearer \") + id(display_client)->bearer();"
+    on_download_finished:
+      - lambda: |-
+          ESP_LOGI("subwave.art", "Cover decoded into art_out_image (%dx%d)",
+                   id(art_out_image)->get_width(), id(art_out_image)->get_height());
+          lv_image_set_src(id(art_in), id(art_out_image));
+          id(art_primed) = true;
+          if (!id(art_fading)) {
+            id(art_swap).execute();
+          } else {
+            id(art_queued) = true;
+          }
     on_error:
-      - logger.log: "art_out: nothing to show yet"
+      - lambda: 'ESP_LOGW("subwave.art", "art_out_image: download or decode failed");'
 
   - id: art_in_image
     http_request_id: shared_http
     url: "http://192.168.4.1/api/devices/art/none.jpg"
     format: JPEG
-    type: BINARY
+    type: RGB565
     resize: 520x520
     buffer_size: ${art_buffer_bytes}
     update_interval: never
@@ -501,10 +512,14 @@ online_image:
       # called either, so even a queued swap stayed queued forever. The incoming
       # cover, once decoded, sat there undisplayed.
       #
-      # So: set the flag, then run the swap now if nothing is fading, and queue
-      # it otherwise. Running it directly is what makes the FIRST cover appear —
-      # there is no "previous swap" to have queued it.
+      # Also: ESPHome's Image::get_lv_image_dsc() lazily populates its LVGL
+      # descriptor ONLY when called, and at boot `data_start_` is nullptr — so
+      # lv_image_set_src() at boot leaves `img->src == NULL`. Re-binding here
+      # after end_decode() hands LVGL the newly allocated RGB565 pixel buffer.
       - lambda: |-
+          ESP_LOGI("subwave.art", "Cover decoded into art_in_image (%dx%d)",
+                   id(art_in_image)->get_width(), id(art_in_image)->get_height());
+          lv_image_set_src(id(art_in), id(art_in_image));
           id(art_primed) = true;
           if (!id(art_fading)) {
             id(art_swap).execute();
@@ -512,16 +527,42 @@ online_image:
             id(art_queued) = true;
           }
     on_error:
-      - logger.log: "art_in: nothing to show yet"
+      - lambda: 'ESP_LOGW("subwave.art", "art_in_image: download or decode failed");'
 
-  # There was a station_logo_image here, feeding a station_logo image widget that
-  # was one of the fourteen removed above. Nothing else referenced it, so it went
-  # with them — an unused online_image is not free. It still allocates its buffer,
-  # and it has `update_interval: 1h`, so it was waking the radio once an hour to
-  # fetch a picture that had nothing to display it in.
+  # ---- station logo & presenter avatars ----------------------------------
+  - id: station_logo_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/brand/logo.png"
+    format: PNG
+    type: RGB
+    transparency: alpha_channel
+    resize: 192x48
+    buffer_size: 16384
+    update_interval: never
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(station_logo), id(station_logo_image));
+          lv_obj_clear_flag(id(station_logo), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "station_logo: download failed"
 
-  # ---- presenter avatars, one per schedule row ----------------------------
-  #
+  - id: now_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 88x88
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(now_avatar), id(now_avatar_image));
+          lv_obj_clear_flag(id(now_avatar), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "now_avatar: no avatar"
+
   # FIVE SEPARATE BUFFERS, and that is the point rather than an oversight. An
   # avatar belongs to one row and only ever appears on that row's expanded tray,
   # so five 56x56 buffers cost about 30KB together — which buys the thing that
@@ -532,10 +573,16 @@ online_image:
     http_request_id: shared_http
     url: "http://192.168.4.1/api/devices/avatar/none.png"
     format: PNG
-    type: BINARY
+    type: RGB565
     resize: 56x56
     buffer_size: 8192
     update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_0_avatar), id(row_0_avatar_image));
+          lv_obj_clear_flag(id(row_0_avatar), LV_OBJ_FLAG_HIDDEN);
     on_error:
       - logger.log: "row_0: no avatar"
 
@@ -543,10 +590,16 @@ online_image:
     http_request_id: shared_http
     url: "http://192.168.4.1/api/devices/avatar/none.png"
     format: PNG
-    type: BINARY
+    type: RGB565
     resize: 56x56
     buffer_size: 8192
     update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_1_avatar), id(row_1_avatar_image));
+          lv_obj_clear_flag(id(row_1_avatar), LV_OBJ_FLAG_HIDDEN);
     on_error:
       - logger.log: "row_1: no avatar"
 
@@ -554,10 +607,16 @@ online_image:
     http_request_id: shared_http
     url: "http://192.168.4.1/api/devices/avatar/none.png"
     format: PNG
-    type: BINARY
+    type: RGB565
     resize: 56x56
     buffer_size: 8192
     update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_2_avatar), id(row_2_avatar_image));
+          lv_obj_clear_flag(id(row_2_avatar), LV_OBJ_FLAG_HIDDEN);
     on_error:
       - logger.log: "row_2: no avatar"
 
@@ -565,10 +624,16 @@ online_image:
     http_request_id: shared_http
     url: "http://192.168.4.1/api/devices/avatar/none.png"
     format: PNG
-    type: BINARY
+    type: RGB565
     resize: 56x56
     buffer_size: 8192
     update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_3_avatar), id(row_3_avatar_image));
+          lv_obj_clear_flag(id(row_3_avatar), LV_OBJ_FLAG_HIDDEN);
     on_error:
       - logger.log: "row_3: no avatar"
 
@@ -576,10 +641,16 @@ online_image:
     http_request_id: shared_http
     url: "http://192.168.4.1/api/devices/avatar/none.png"
     format: PNG
-    type: BINARY
+    type: RGB565
     resize: 56x56
     buffer_size: 8192
     update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_4_avatar), id(row_4_avatar_image));
+          lv_obj_clear_flag(id(row_4_avatar), LV_OBJ_FLAG_HIDDEN);
     on_error:
       - logger.log: "row_4: no avatar"
 

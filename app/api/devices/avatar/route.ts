@@ -34,7 +34,7 @@ export async function GET(req: NextRequest) {
   if (!cfg.apiUrl) return NextResponse.json({ error: "The station backend is not reachable." }, { status: 503 });
 
   try {
-    const res = await fetch(`${cfg.apiUrl}/api/persona-avatar/${encodeURIComponent(id)}`, {
+    const res = await fetch(`${cfg.apiUrl}/persona-avatar/${encodeURIComponent(id)}`, {
       signal: AbortSignal.timeout(15_000),
     });
     // A persona with no uploaded image is ordinary, not an error. The screen

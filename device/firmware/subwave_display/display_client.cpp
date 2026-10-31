@@ -217,6 +217,9 @@ void SubwaveDisplay::parse_state_(const std::string &json) {
   if (cJSON *station = cJSON_GetObjectItem(root, "station")) {
     this->station_name_ = str_at(station, "name");
     this->logo_url_ = str_at(station, "logo");
+    if (this->logo_url_.empty()) {
+      this->logo_url_ = "/brand/logo.png";
+    }
   }
   if (cJSON *now = cJSON_GetObjectItem(root, "now")) {
     this->now_.subsonic_id = str_at(now, "subsonicId");
@@ -231,6 +234,7 @@ void SubwaveDisplay::parse_state_(const std::string &json) {
   if (cJSON *byline = cJSON_GetObjectItem(root, "byline")) {
     this->byline_.presenter = str_at(byline, "presenter");
     this->byline_.show = str_at(byline, "show");
+    this->byline_.avatar_url = str_at(byline, "avatar");
     this->byline_.on_air_for_sec = int64_at(byline, "onAirForSec", -1);
     this->byline_.ends_in_sec = int64_at(byline, "endsInSec", -1);
     this->byline_.live = bool_at(byline, "live");
@@ -296,6 +300,13 @@ void SubwaveDisplay::parse_state_(const std::string &json) {
   // anything changed, it would repaint windows nobody is looking at, and the
   // moment a field were added to the struct and not to the painter, the timer
   // would still be running and the bug would still be there.
+  this->resolve_now_avatar_();
+
+  if (!this->logo_url_.empty() && this->logo_url_ != this->shown_logo_url_) {
+    this->shown_logo_url_ = this->logo_url_;
+    this->pending_logo_url_ = this->logo_url_;
+  }
+
   now_refresh();
   shows_refresh();
   settings_refresh();
@@ -312,6 +323,42 @@ void SubwaveDisplay::parse_state_(const std::string &json) {
   }
 }
 
+void SubwaveDisplay::resolve_now_avatar_() {
+  std::string resolved = this->byline_.avatar_url;
+  if (resolved.empty() && !this->byline_.presenter.empty()) {
+    auto it = this->persona_ids_.find(this->byline_.presenter);
+    if (it != this->persona_ids_.end() && !it->second.empty()) {
+      resolved = "/api/devices/avatar?id=" + it->second;
+    }
+  }
+  if (resolved.empty()) {
+    for (const auto &slot : this->schedule_slots_) {
+      if (slot.live && !slot.avatar_url.empty()) {
+        resolved = slot.avatar_url;
+        break;
+      }
+    }
+  }
+  if (resolved.empty() && !this->byline_.show.empty()) {
+    for (const auto &slot : this->schedule_slots_) {
+      if (slot.name == this->byline_.show && !slot.avatar_url.empty()) {
+        resolved = slot.avatar_url;
+        break;
+      }
+    }
+  }
+  this->byline_.avatar_url = resolved;
+  if (resolved.empty()) {
+    this->shown_now_avatar_url_.clear();
+    this->pending_now_avatar_url_.clear();
+  } else if (resolved != this->shown_now_avatar_url_) {
+    this->shown_now_avatar_url_ = resolved;
+    this->pending_now_avatar_url_ = resolved;
+    ESP_LOGI(TAG, "Resolved presenter avatar for '%s' (%s): %s",
+             this->byline_.presenter.c_str(), this->byline_.show.c_str(), resolved.c_str());
+  }
+}
+
 void SubwaveDisplay::parse_schedule_(const std::string &json) {
   cJSON *root = cJSON_Parse(json.c_str());
   if (root == nullptr) return;
@@ -321,9 +368,9 @@ void SubwaveDisplay::parse_schedule_(const std::string &json) {
 
   if (cJSON *slots = cJSON_GetObjectItem(root, "slots")) {
     if (cJSON_IsArray(slots)) {
-      this->schedule_slots_.clear();
+      std::vector<ScheduleSlot> all_slots;
       int count = cJSON_GetArraySize(slots);
-      for (int i = 0; i < count && i < 5; i++) {
+      for (int i = 0; i < count; i++) {
         cJSON *item = cJSON_GetArrayItem(slots, i);
         if (item == nullptr) continue;
         ScheduleSlot slot;
@@ -333,13 +380,145 @@ void SubwaveDisplay::parse_schedule_(const std::string &json) {
         if (cJSON *show = cJSON_GetObjectItem(item, "show")) {
           slot.name = str_at(show, "name");
           slot.host = str_at(show, "host");
+          slot.host_id = str_at(show, "hostId");
+          slot.avatar_url = str_at(show, "avatar");
+          if (slot.avatar_url.empty() && !slot.host_id.empty()) {
+            slot.avatar_url = "/api/devices/avatar?id=" + slot.host_id;
+          }
+          if (!slot.host.empty() && !slot.host_id.empty()) {
+            this->persona_ids_[slot.host] = slot.host_id;
+          }
+          if (cJSON *guests = cJSON_GetObjectItem(show, "guests")) {
+            if (cJSON_IsArray(guests)) {
+              int gcount = cJSON_GetArraySize(guests);
+              for (int g = 0; g < gcount; g++) {
+                cJSON *gitem = cJSON_GetArrayItem(guests, g);
+                if (gitem != nullptr) {
+                  std::string gname = str_at(gitem, "name");
+                  std::string gid = str_at(gitem, "id");
+                  if (!gname.empty() && !gid.empty()) {
+                    this->persona_ids_[gname] = gid;
+                  }
+                }
+              }
+            }
+          }
         }
-        this->schedule_slots_.push_back(slot);
+        all_slots.push_back(slot);
+      }
+
+      int live_idx = 0;
+      for (size_t i = 0; i < all_slots.size(); i++) {
+        if (all_slots[i].live) {
+          live_idx = static_cast<int>(i);
+          break;
+        }
+      }
+
+      this->schedule_slots_.clear();
+      for (size_t k = 0; k < all_slots.size() && (int) this->schedule_slots_.size() < MAX_SCHEDULE_SLOTS; k++) {
+        this->schedule_slots_.push_back(all_slots[(live_idx + k) % all_slots.size()]);
+      }
+
+      for (int i = 0; i < MAX_SCHEDULE_SLOTS; i++) {
+        std::string row_avatar = (i < (int) this->schedule_slots_.size()) ? this->schedule_slots_[i].avatar_url : "";
+        if (row_avatar.empty()) {
+          this->shown_row_avatar_url_[i].clear();
+          this->pending_row_avatar_url_[i].clear();
+        } else if (row_avatar != this->shown_row_avatar_url_[i]) {
+          this->shown_row_avatar_url_[i] = row_avatar;
+          this->pending_row_avatar_url_[i] = row_avatar;
+        }
       }
     }
   }
   cJSON_Delete(root);
+  this->resolve_now_avatar_();
+  now_refresh();
   shows_refresh();
+}
+
+bool SubwaveDisplay::fetch_png(const std::string &path, esphome::runtime_image::RuntimeImage *img) {
+  if (path.empty() || img == nullptr) return false;
+  auto *client = this->http();
+  if (client == nullptr) return false;
+
+  std::vector<esphome::http_request::Header> headers;
+  if (!this->bearer_.empty()) {
+    headers.push_back({"Authorization", "Bearer " + this->bearer_});
+  }
+  headers.push_back({"Accept", "image/png,*/*;q=0.8"});
+
+  const std::string url =
+      (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0) ? path : join(this->api_base_, path);
+  auto container = client->start(url, "GET", "", headers);
+  if (container == nullptr) {
+    ESP_LOGW(TAG, "GET %s could not be started.", path.c_str());
+    return false;
+  }
+  int status = container->status_code;
+  if (status != 200) {
+    ESP_LOGW(TAG, "PNG %s returned status %d.", path.c_str(), status);
+    container->end();
+    return false;
+  }
+
+  img->release();
+  if (!img->begin_decode(0)) {
+    ESP_LOGW(TAG, "PNG %s begin_decode failed.", path.c_str());
+    container->end();
+    return false;
+  }
+
+  constexpr size_t MAX_PNG_BODY = 192 * 1024;
+  size_t total_bytes = 0;
+  uint8_t chunk[512];
+  uint32_t last_data_time = esphome::millis();
+  while (true) {
+    int n = container->read(chunk, sizeof(chunk));
+    esphome::App.feed_wdt();
+    esphome::yield();
+    auto loop_res = esphome::http_request::http_read_loop_result(
+        n, last_data_time, 12000, container->is_read_complete());
+    if (loop_res == esphome::http_request::HttpReadLoopResult::DATA) {
+      total_bytes += static_cast<size_t>(n);
+      if (total_bytes > MAX_PNG_BODY) {
+        ESP_LOGW(TAG, "PNG %s exceeded cap; discarding.", path.c_str());
+        img->end_decode();
+        container->end();
+        return false;
+      }
+      int consumed = img->feed_data(chunk, static_cast<size_t>(n));
+      if (consumed < 0) {
+        ESP_LOGW(TAG, "PNG %s stream decode error (%d).", path.c_str(), consumed);
+        img->end_decode();
+        container->end();
+        return false;
+      }
+      continue;
+    }
+    if (loop_res == esphome::http_request::HttpReadLoopResult::RETRY) {
+      continue;
+    }
+    if (loop_res == esphome::http_request::HttpReadLoopResult::TIMEOUT) {
+      ESP_LOGW(TAG, "PNG %s timed out.", path.c_str());
+      img->end_decode();
+      container->end();
+      return false;
+    }
+    break;
+  }
+  container->end();
+  img->end_decode();
+
+  if (total_bytes == 0 || img->get_width() <= 0 || img->get_height() <= 0) {
+    ESP_LOGW(TAG, "PNG %s decode failed (%u bytes, %dx%d).", path.c_str(), (unsigned) total_bytes, img->get_width(),
+             img->get_height());
+    return false;
+  }
+  ESP_LOGI(TAG, "Decoded PNG %s (%u bytes -> %dx%d).", path.c_str(), (unsigned) total_bytes, img->get_width(),
+           img->get_height());
+  return true;
 }
 
 // ---------------------------------------------------------------------------

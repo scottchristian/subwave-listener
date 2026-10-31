@@ -277,6 +277,14 @@ export function buildByline(
 ): DeviceState["byline"] {
   const show = nowPlaying?.activeShow?.name ?? null;
   const presenter = nowPlaying?.activeShow?.persona?.name || nowPlaying?.dj?.name || null;
+  const presenterPersona =
+    nowPlaying?.activeShow?.persona ||
+    nowPlaying?.dj ||
+    (presenter && Array.isArray(schedule?.personas)
+      ? schedule.personas.find((p: any) => p?.name === presenter)
+      : null);
+  const presenterId = typeof presenterPersona?.id === "string" ? presenterPersona.id : null;
+  const avatar = presenterId ? `/api/devices/avatar?id=${encodeURIComponent(presenterId)}` : null;
   const live = Boolean(nowPlaying) && !state?.streamIdle;
 
   let onAirForSec: number | null = null;
@@ -305,7 +313,7 @@ export function buildByline(
     }
   }
 
-  return { presenter, show, onAirForSec, endsInSec, live };
+  return { presenter, show, avatar, onAirForSec, endsInSec, live };
 }
 
 // ---------------------------------------------------------------------------
@@ -405,6 +413,7 @@ export async function buildDeviceSchedule(atMs: number = Date.now()): Promise<De
         name: show.name,
         host: host?.name,
         hostId: host?.id,
+        avatar: host?.id ? `/api/devices/avatar?id=${encodeURIComponent(host.id)}` : undefined,
         guests,
       },
     };

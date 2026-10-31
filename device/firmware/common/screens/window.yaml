@@ -25,3 +25,7 @@ globals:
     type: bool
     restore_value: no
     initial_value: 'false'
+  - id: art_slot
+    type: bool
+    restore_value: no
+    initial_value: 'false'

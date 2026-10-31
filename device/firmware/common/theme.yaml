@@ -243,33 +243,35 @@ script:
           // the decoder callback and never before — the ramp does not start on
           // "a request went out", it starts on "there are pixels to show".
           if (!id(art_primed)) { id(art_queued) = true; return; }
+          id(art_primed) = false;
           id(art_queued) = false;
           id(art_fading) = true;
 
-          // The outgoing cover sits underneath at full opacity. Fading it first
-          // is precisely the bug this exists to avoid.
-          lv_obj_add_flag(id(art_out), LV_OBJ_FLAG_HIDDEN);
-          lv_obj_clear_flag(id(art_in), LV_OBJ_FLAG_HIDDEN);
-          lv_obj_move_foreground(id(art_in));
-
-          // ...and it becomes the outgoing one for the NEXT swap, so no pixel is
-          // ever uncovered between tracks.
-          lv_obj_t* tmp = id(art_out);
-          id(art_out) = id(art_in);
-          id(art_in) = tmp;
-
+          // Capture the outgoing and incoming widgets BEFORE swapping their roles
+          // for the next track, so we fade `in` up on top of `out` and then hide
+          // `out` rather than hiding the newly-decoded cover.
           lv_obj_t* out = id(art_out);
           lv_obj_t* in  = id(art_in);
+          id(art_out) = in;
+          id(art_in)  = out;
+          id(art_slot) = !id(art_slot);
+
+          // The outgoing cover sits underneath at full opacity. Fading it first
+          // is precisely the bug this exists to avoid.
+          lv_obj_set_style_opa(in, LV_OPA_TRANSP, LV_PART_MAIN);
+          lv_obj_clear_flag(in, LV_OBJ_FLAG_HIDDEN);
+          lv_obj_move_foreground(in);
 
           for (int step = 0; step <= 26; step++) {
-            int32_t k = (step << 8) / 26;   // 26 steps x 25ms = 650ms
-            lv_obj_set_style_opa(out, 255 - ((255 - k) >> 8) * 255 / 255, LV_PART_MAIN);
-            lv_obj_set_style_opa(in,  k, LV_PART_MAIN);
+            int32_t k = (step * 255) / 26;   // 26 steps x 25ms = 650ms
+            lv_obj_set_style_opa(in, k, LV_PART_MAIN);
+            lv_timer_handler();
             delay(1);
             delay(25);
           }
           lv_obj_set_style_opa(in, LV_OPA_COVER, LV_PART_MAIN);
-          lv_obj_add_flag(id(art_out), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_add_flag(out, LV_OBJ_FLAG_HIDDEN);
+          lv_timer_handler();
           id(art_fading) = false;
 
   # A swap deferred behind a slide or another fade. Motion never overlaps:

@@ -228,6 +228,7 @@ void theme_paint_all() {
   lv_obj_set_style_bg_color(OBJ(settings_rule), rule, LV_PART_MAIN);
 
   // Tier 1, the voice.
+  lv_obj_set_style_bg_color(OBJ(now_avatar_well), surface, LV_PART_MAIN);
   lv_obj_set_style_bg_color(OBJ(live_lamp), accent, LV_PART_MAIN);
   lv_obj_set_style_bg_color(OBJ(live_lamp_shows), accent, LV_PART_MAIN);
   lv_obj_set_style_text_color(OBJ(byline_presenter), text, LV_PART_MAIN);
@@ -292,6 +293,13 @@ void now_refresh() {
   lv_label_set_text(OBJ(byline_presenter), presenter_text);
   lv_label_set_text(OBJ(byline_show), show_text);
 
+  if (c->shown_logo_url().empty()) {
+    lv_obj_add_flag(OBJ(station_logo), LV_OBJ_FLAG_HIDDEN);
+  }
+  if (c->shown_now_avatar_url().empty()) {
+    lv_obj_add_flag(OBJ(now_avatar), LV_OBJ_FLAG_HIDDEN);
+  }
+
   const char *err = c->last_error().c_str();
   lv_label_set_text(OBJ(status_line), err);
 
@@ -343,6 +351,7 @@ void shows_refresh() {
   lv_obj_t *row_times[5] = {OBJ(row_0_time), OBJ(row_1_time), OBJ(row_2_time), OBJ(row_3_time), OBJ(row_4_time)};
   lv_obj_t *row_names[5] = {OBJ(row_0_name), OBJ(row_1_name), OBJ(row_2_name), OBJ(row_3_name), OBJ(row_4_name)};
   lv_obj_t *row_hosts[5] = {OBJ(row_0_host), OBJ(row_1_host), OBJ(row_2_host), OBJ(row_3_host), OBJ(row_4_host)};
+  lv_obj_t *row_avatars[5] = {OBJ(row_0_avatar), OBJ(row_1_avatar), OBJ(row_2_avatar), OBJ(row_3_avatar), OBJ(row_4_avatar)};
 
   const auto &slots = c->schedule_slots();
   if (!slots.empty()) {
@@ -355,10 +364,16 @@ void shows_refresh() {
         lv_label_set_text(row_times[i], time_lbl.c_str());
         lv_label_set_text(row_names[i], slot.name.empty() ? "Auto DJ" : slot.name.c_str());
         lv_label_set_text(row_hosts[i], slot.host.empty() ? "Station Rotation" : slot.host.c_str());
+        if (slot.avatar_url.empty() && row_avatars[i] != nullptr) {
+          lv_obj_add_flag(row_avatars[i], LV_OBJ_FLAG_HIDDEN);
+        }
       } else {
         lv_label_set_text(row_times[i], "—");
         lv_label_set_text(row_names[i], "");
         lv_label_set_text(row_hosts[i], "");
+        if (row_avatars[i] != nullptr) {
+          lv_obj_add_flag(row_avatars[i], LV_OBJ_FLAG_HIDDEN);
+        }
       }
     }
     return;
