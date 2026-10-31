@@ -123,6 +123,8 @@ export interface DeviceSlot {
   from: string;
   to: string;
   live: boolean;
+  day?: string;
+  dayOffset?: number;
   show: {
     id: string | null;
     name: string;

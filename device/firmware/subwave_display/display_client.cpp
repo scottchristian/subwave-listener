@@ -377,6 +377,8 @@ void SubwaveDisplay::parse_schedule_(const std::string &json) {
         slot.from = str_at(item, "from");
         slot.to = str_at(item, "to");
         slot.live = bool_at(item, "live");
+        slot.day = str_at(item, "day");
+        slot.day_offset = int_at(item, "dayOffset", 0);
         if (cJSON *show = cJSON_GetObjectItem(item, "show")) {
           slot.name = str_at(show, "name");
           slot.host = str_at(show, "host");
@@ -416,8 +418,18 @@ void SubwaveDisplay::parse_schedule_(const std::string &json) {
       }
 
       this->schedule_slots_.clear();
+      bool wrapped_to_next_day = false;
       for (size_t k = 0; k < all_slots.size() && (int) this->schedule_slots_.size() < MAX_SCHEDULE_SLOTS; k++) {
-        this->schedule_slots_.push_back(all_slots[(live_idx + k) % all_slots.size()]);
+        size_t idx = live_idx + k;
+        if (idx >= all_slots.size()) {
+          idx = idx % all_slots.size();
+          wrapped_to_next_day = true;
+        }
+        auto slot = all_slots[idx];
+        if (wrapped_to_next_day && slot.day_offset == 0) {
+          slot.day_offset = 1;
+        }
+        this->schedule_slots_.push_back(slot);
       }
 
       for (int i = 0; i < MAX_SCHEDULE_SLOTS; i++) {

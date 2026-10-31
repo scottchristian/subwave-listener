@@ -60,6 +60,8 @@ struct ScheduleSlot {
   std::string from;
   std::string to;
   bool live = false;
+  std::string day;
+  int day_offset = 0;
   std::string name;
   std::string host;
   std::string host_id;

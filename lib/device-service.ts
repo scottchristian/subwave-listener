@@ -370,54 +370,71 @@ export async function buildDeviceSchedule(atMs: number = Date.now()): Promise<De
     return { ...empty, timezone: tz };
   }
 
-  // Collapse identical consecutive days into one run, exactly as the player does,
-  // so a station running one lineup shows one day rather than seven copies.
-  let sig = (d: number) => {
-    const row = grid[String(((d % 7) + 7) % 7)];
-    return Array.isArray(row) ? row.map((id) => id || "-").join(",") : "";
-  };
-  const { start } = runForDay(sig, nowDay);
-  const row: (string | null)[] = Array.isArray(grid[String(((start % 7) + 7) % 7)]) ? grid[String(((start % 7) + 7) % 7)] : [];
-
-  // Consecutive hours running the same show are one slot, not N.
-  const rawSlots: { showId: string | null; from: number; to: number }[] = [];
-  for (let h = 0; h < 24; h++) {
-    const id = h < row.length ? row[h] || null : null;
-    const last = rawSlots[rawSlots.length - 1];
-    if (last && last.showId === id) last.to = h + 1;
-    else rawSlots.push({ showId: id, from: h, to: h + 1 });
-  }
-
+  const dayNames = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
   const fmtHour = (h: number) => `${String(((h % 24) + 24) % 24).padStart(2, "0")}:00`;
 
-  const slots: DeviceSlot[] = rawSlots.map((slot) => {
-    const show = slot.showId ? showById.get(slot.showId) : null;
-    const live = nowHour >= slot.from && nowHour < slot.to;
-    if (!show) {
-      // An empty slot is the station running itself. The web player calls this
-      // Auto DJ and gives it the station logo as its avatar; the screen does the
-      // same, by simply sending no avatar so it renders the logo itself.
-      return { from: fmtHour(slot.from), to: fmtHour(slot.to), live, show: { id: null, name: "Auto DJ" } };
+  const allSlots: DeviceSlot[] = [];
+
+  // Inspect up to 3 consecutive days so the device has a rolling window across midnight into tomorrow.
+  for (let dayOffset = 0; dayOffset <= 2; dayOffset++) {
+    const d = (nowDay + dayOffset) % 7;
+    const dayName = dayNames[d];
+    const row: (string | null)[] = Array.isArray(grid[String(d)]) ? grid[String(d)] : [];
+
+    // Consecutive hours running the same show are one slot, not N.
+    const dayRawSlots: { showId: string | null; from: number; to: number }[] = [];
+    for (let h = 0; h < 24; h++) {
+      const id = h < row.length ? row[h] || null : null;
+      const last = dayRawSlots[dayRawSlots.length - 1];
+      if (last && last.showId === id) last.to = h + 1;
+      else dayRawSlots.push({ showId: id, from: h, to: h + 1 });
     }
-    const host = show.personaId ? personaById.get(show.personaId) : null;
-    const guests = (show.guestPersonaIds as string[] | undefined)
-      ?.map((id) => personaById.get(id))
-      .filter((p): p is any => Boolean(p))
-      .map((p) => ({ id: p.id, name: p.name })) ?? [];
-    return {
-      from: fmtHour(slot.from),
-      to: fmtHour(slot.to),
-      live,
-      show: {
-        id: show.id,
-        name: show.name,
-        host: host?.name,
-        hostId: host?.id,
-        avatar: host?.id ? `/api/devices/avatar?id=${encodeURIComponent(host.id)}` : undefined,
-        guests,
-      },
-    };
-  });
+
+    for (const slot of dayRawSlots) {
+      const live = dayOffset === 0 && nowHour >= slot.from && nowHour < slot.to;
+      const show = slot.showId ? showById.get(slot.showId) : null;
+      if (!show) {
+        // An empty slot is the station running itself. The web player calls this
+        // Auto DJ and gives it the station logo as its avatar; the screen does the
+        // same, by simply sending no avatar so it renders the logo itself.
+        allSlots.push({
+          from: fmtHour(slot.from),
+          to: fmtHour(slot.to),
+          live,
+          day: dayName,
+          dayOffset,
+          show: { id: null, name: "Auto DJ" },
+        });
+      } else {
+        const host = show.personaId ? personaById.get(show.personaId) : null;
+        const guests = (show.guestPersonaIds as string[] | undefined)
+          ?.map((id) => personaById.get(id))
+          .filter((p): p is any => Boolean(p))
+          .map((p) => ({ id: p.id, name: p.name })) ?? [];
+        allSlots.push({
+          from: fmtHour(slot.from),
+          to: fmtHour(slot.to),
+          live,
+          day: dayName,
+          dayOffset,
+          show: {
+            id: show.id,
+            name: show.name,
+            host: host?.name,
+            hostId: host?.id,
+            avatar: host?.id ? `/api/devices/avatar?id=${encodeURIComponent(host.id)}` : undefined,
+            guests,
+          },
+        });
+      }
+    }
+  }
+
+  let liveIdx = allSlots.findIndex((s) => s.live);
+  if (liveIdx === -1) liveIdx = 0;
+
+  // Take up to 10 slots from the live slot forward.
+  const slots: DeviceSlot[] = allSlots.slice(liveIdx, liveIdx + 10);
 
   let dayLabel = "";
   try {

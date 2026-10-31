@@ -359,8 +359,14 @@ void shows_refresh() {
       if (i < (int) slots.size()) {
         const auto &slot = slots[i];
         std::string time_lbl = slot.from;
-        if (!slot.to.empty()) time_lbl += " – " + slot.to;
-        if (slot.live) time_lbl = "LIVE · " + time_lbl;
+        if (!slot.to.empty()) time_lbl += " - " + slot.to;
+        if (slot.live) {
+          time_lbl = "LIVE · " + time_lbl;
+        } else if (!slot.day.empty() && (slot.day_offset > 0 || slot.day != c->schedule_day_label())) {
+          time_lbl += "\n" + slot.day;
+        } else if (slot.day_offset > 0) {
+          time_lbl += "\nTomorrow";
+        }
         lv_label_set_text(row_times[i], time_lbl.c_str());
         lv_label_set_text(row_names[i], slot.name.empty() ? "Auto DJ" : slot.name.c_str());
         lv_label_set_text(row_hosts[i], slot.host.empty() ? "Station Rotation" : slot.host.c_str());
