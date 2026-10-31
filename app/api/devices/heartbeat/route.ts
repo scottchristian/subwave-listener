@@ -88,3 +88,5 @@ export async function POST(req: NextRequest) {
     { headers: { "Cache-Control": "no-store" } },
   );
 }
+
+export const PATCH = POST;

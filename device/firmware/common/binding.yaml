@@ -22,10 +22,13 @@ script:
   - id: bind_widgets
     mode: single
     then:
-      # One second, because LVGL creates its widget tree during its own setup and
-      # binding before that would hand over null pointers. A screen that boots in
-      # under a second — the normal case — pays nothing for this.
-      - delay: 1s
+      # Wait for LVGL's on_boot hook to mark the widget tree ready (with a 2s
+      # safety ceiling), plus a brief settle before binding pointers.
+      - wait_until:
+          condition:
+            lambda: return id(lvgl_ready);
+          timeout: 2s
+      - delay: 200ms
       # A short, harmless splash so a screen that is mid-boot does not look
       # dead: one and a half seconds of SUB/WAVE branding while the first state
       # poll is still in flight. Previously this slot held a magenta-page
@@ -125,6 +128,9 @@ script:
           bind_object("window_1", id(window_1));
           bind_object("window_2", id(window_2));
           bind_object("setup_wifi_screen", id(setup_wifi_screen));
+          bind_object("setup_qr", id(setup_qr));
+          bind_object("setup_wifi_value", id(setup_wifi_value));
+          bind_object("setup_password_value", id(setup_password_value));
           bind_object("sleep_hint", id(sleep_hint));
 
           // ---- the palette and the window state -------------------------

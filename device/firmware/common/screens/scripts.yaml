@@ -515,7 +515,7 @@ script:
           auto result = c->check_connectivity();
           const char *message = c->connectivity_message(result);
           lv_obj_set_width(id(boot_bar_fill), 560);
-          bool bound = !c->device_id().empty() && !c->claim_token().empty() && !c->server_url().empty();
+          bool bound = !c->device_id().empty() && (!c->claim_token().empty() || !c->bearer().empty()) && !c->server_url().empty();
 
           // Unbound device with working Wi-Fi route: go straight to Bind Station (screen 4), NOT Wi-Fi setup!
           if (!bound &&
@@ -529,11 +529,19 @@ script:
           }
 
           if (result == subwave_display::SubwaveDisplay::Connectivity::OK && bound) {
+            c->refresh_now();
+            if (c->identity_lost()) {
+              c->ack_identity_lost();
+              ESP_LOGW("subwave.setup", "Stored identity rejected by station; opening Bind screen.");
+              lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
+              lv_label_set_text(id(status_line), "");
+              window_go->execute(4);
+              return;
+            }
             ESP_LOGI("subwave.setup", "All connectivity checks passed. Showing Now Playing.");
             lv_obj_add_flag(id(boot_overlay), LV_OBJ_FLAG_HIDDEN);
             lv_label_set_text(id(status_line), "");
             window_go->execute(0);
-            c->refresh_now();
             return;
           }
 
@@ -678,7 +686,16 @@ script:
           int from_index = id(window_index);
           id(window_index) = target;
           if (target == 3) id(setup_page) = 3;
-          if (target == 4) id(setup_page) = 4;
+          if (target == 4) {
+            id(setup_page) = 4;
+            // Pre-fill the last registered station address so it need not be
+            // retyped. Only when the field is empty: never overwrite an edit.
+            const char *typed = lv_textarea_get_text(id(bind_server_url));
+            const std::string &saved = id(display_client)->server_url();
+            if ((typed == nullptr || typed[0] == '\0') && !saved.empty()) {
+              lv_textarea_set_text(id(bind_server_url), saved.c_str());
+            }
+          }
 
           // Close any open on-screen keyboard when navigating between screens.
           id(keyboard_target) = -1;
@@ -746,6 +763,14 @@ script:
   - id: window_tick
     mode: restart
     then:
+      # The station rejected this screen's identity and the firmware wiped it.
+      # Open the Bind screen instead of leaving a permanent error on Now Playing.
+      - if:
+          condition:
+            lambda: return id(display_client)->identity_lost() && id(window_index) != 4;
+          then:
+            - lambda: id(display_client)->ack_identity_lost();
+            - script.execute: { id: window_go, target: 4 }
       - if:
           condition:
             lambda: return id(window_queued) >= 0 && !id(art_fading);

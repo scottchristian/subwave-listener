@@ -75,7 +75,51 @@ static bool bool_at(cJSON *obj, const char *key, bool fallback = false) {
   return fallback;
 }
 
+static std::string json_stringify(cJSON *root) {
+  if (root == nullptr) return "{}";
+  char *raw = cJSON_PrintUnformatted(root);
+  std::string out = raw != nullptr ? std::string(raw) : "{}";
+  if (raw != nullptr) cJSON_free(raw);
+  cJSON_Delete(root);
+  return out;
+}
+
+static std::string derive_ap_password_from_mac() {
+  static constexpr char CHARSET[] = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  static constexpr size_t CHARSET_LEN = sizeof(CHARSET) - 1;
+  uint8_t mac[6] = {0};
+  esphome::get_mac_address_raw(mac);
+  uint64_t h = 0xCBF29CE484222325ULL;
+  for (int round = 0; round < 2; round++) {
+    for (int i = 0; i < 6; i++) {
+      h ^= static_cast<uint64_t>(mac[i]) + static_cast<uint64_t>(round * 17);
+      h *= 0x100000001B3ULL;
+    }
+  }
+  std::string out(8, 'A');
+  for (size_t i = 0; i < 8; i++) {
+    out[i] = CHARSET[h % CHARSET_LEN];
+    h /= CHARSET_LEN;
+    h ^= (h >> 13);
+  }
+  return out;
+}
+
 void SubwaveDisplay::setup() {
+  // Derive a unique per-device setup AP WPA2 password from the hardware MAC
+  // before WiFiComponent::setup() starts the fallback AP.
+  this->setup_ap_pass_ = derive_ap_password_from_mac();
+  if (auto *wifi = esphome::wifi::global_wifi_component) {
+    if (wifi->has_ap()) {
+      auto ap = wifi->get_ap();
+      if (!this->setup_ap_ssid_.empty()) {
+        ap.set_ssid(this->setup_ap_ssid_);
+      }
+      ap.set_password(this->setup_ap_pass_);
+      wifi->set_ap(ap);
+    }
+  }
+
   // The identity lives in flash. A standard image carries none of it; the
   // device collects the server URL and a bind code during setup and stores the
   // result here. Per-device builds still work by passing substitutions, which
@@ -90,9 +134,6 @@ void SubwaveDisplay::setup() {
   if (this->claim_token_ == "unprovisioned" && !this->claimed_) {
     ESP_LOGW(TAG, "This firmware has no setup code in it. Flash it from the admin panel.");
   }
-
-  // Register our custom web handler for the setup wizard (overrides ESPHome dashboard).
-  this->register_web_handler_();
 }
 
 void SubwaveDisplay::dump_config() {
@@ -100,17 +141,6 @@ void SubwaveDisplay::dump_config() {
   ESP_LOGCONFIG(TAG, "  Station: %s", this->server_url_.c_str());
   ESP_LOGCONFIG(TAG, "  Setup AP: %s", this->setup_ap_ssid_.c_str());
   ESP_LOGCONFIG(TAG, "  Artwork: %dpx into %u bytes", this->artwork_size_, this->art_buffer_bytes_);
-  if (this->server_url_.find("ghostmaster") != std::string::npos) {
-    // Loud, because the one thing this device must never do is phone somewhere
-    // that is not the station, and a wrong substitution is otherwise invisible.
-    ESP_LOGE(TAG, "The station URL names a host that is not this station's app. Refusing.");
-  }
-}
-
-void SubwaveDisplay::loop() {
-  // A window slide queued behind a crossfade gets picked up here rather than in
-  // the crossfade's own callback, so the two motions never overlap and a screen
-  // switched every twenty seconds does not stutter once in a while.
 }
 
 // ---------------------------------------------------------------------------
@@ -124,17 +154,20 @@ void SubwaveDisplay::loop() {
 // ---------------------------------------------------------------------------
 bool SubwaveDisplay::claim_device_() {
   // Always try to claim if we don't have a bearer token yet
-  if (!this->bearer_.empty()) return true;
+  if (!this->bearer_.empty()) {
+    this->claimed_ = true;
+    return true;
+  }
+  if (this->claim_refused_) return false;
   // Need device_id + claim_token + server_url to claim
   if (!this->device_id_.empty() && !this->claim_token_.empty() && !this->server_url_.empty()) {
     this->api_base_ = this->server_url_;
-    std::string body = "{";
-    body += "\"deviceId\":\"" + this->device_id_ + "\",";
-    body += "\"claimToken\":\"" + this->claim_token_ + "\",";
-    body += "\"timezone\":\"\"";
-    body += "}";
+    cJSON *root = cJSON_CreateObject();
+    cJSON_AddStringToObject(root, "deviceId", this->device_id_.c_str());
+    cJSON_AddStringToObject(root, "claimToken", this->claim_token_.c_str());
+    cJSON_AddStringToObject(root, "timezone", "");
 
-    this->request_(Req::CLAIM, "POST", "/api/devices/claim", body, 15000);
+    this->request_(Req::CLAIM, "POST", "/api/devices/claim", json_stringify(root), 15000);
     return this->claimed_;  // true if bearer token received
   }
   if (this->device_id_.empty() || this->claim_token_.empty() || this->server_url_.empty()) {
@@ -147,7 +180,10 @@ bool SubwaveDisplay::claim_device_() {
 
 void SubwaveDisplay::poll_state_() {
   ESP_LOGD(TAG, "poll_state_(): claimed_=%d, claim_refused_=%d", (int)this->claimed_, (int)this->claim_refused_);
-  if (!this->claimed_) {
+  if (this->claim_refused_) {
+    return;
+  }
+  if (!this->claimed_ || this->bearer_.empty()) {
     this->claim_device_();
     if (!this->claimed_) {
       // claim_device_() couldn't arm us (no stored identity) — give up for now
@@ -174,9 +210,8 @@ void SubwaveDisplay::parse_state_(const std::string &json) {
     return;
   }
 
-  // The clock comes from the server, never from SNTP. One source, and the theme
-  // window and the countdown agree with the station's idea of the time.
   this->server_now_ms_ = int64_at(root, "serverNowMs", 0);
+  this->server_now_rx_ms_ = esphome::millis();
   this->poll_after_sec_ = int_at(root, "pollAfterSec", 10);
 
   if (cJSON *station = cJSON_GetObjectItem(root, "station")) {
@@ -209,16 +244,20 @@ void SubwaveDisplay::parse_state_(const std::string &json) {
     // because the safe direction matters: a screen that dims too far is obvious
     // and fixable from the app, and one that blazes at 3am is neither.
     this->is_night_ = bool_at(theme, "isNight", true);
-    int server_brightness = int_at(theme, "brightness", this->settings_.brightness);
-    if (server_brightness != this->settings_.brightness) {
-      ESP_LOGI(TAG, "Server set brightness: %d%% -> %d%%.", this->settings_.brightness, server_brightness);
+    if (!this->settings_dirty_) {
+      int server_brightness = int_at(theme, "brightness", this->settings_.brightness);
+      if (server_brightness != this->settings_.brightness) {
+        ESP_LOGI(TAG, "Server set brightness: %d%% -> %d%%.", this->settings_.brightness, server_brightness);
+      }
+      this->settings_.brightness = server_brightness;
     }
-    this->settings_.brightness = server_brightness;
   }
-  if (cJSON *idle = cJSON_GetObjectItem(root, "idle")) {
-    this->settings_.idle_mode = str_or(idle, "mode", this->settings_.idle_mode);
-    this->settings_.idle_min = int_at(idle, "min", this->settings_.idle_min);
-    this->settings_.idle_pct = int_at(idle, "pct", this->settings_.idle_pct);
+  if (!this->settings_dirty_) {
+    if (cJSON *idle = cJSON_GetObjectItem(root, "idle")) {
+      this->settings_.idle_mode = str_or(idle, "mode", this->settings_.idle_mode);
+      this->settings_.idle_min = int_at(idle, "min", this->settings_.idle_min);
+      this->settings_.idle_pct = int_at(idle, "pct", this->settings_.idle_pct);
+    }
   }
   if (cJSON *skip = cJSON_GetObjectItem(root, "skip")) {
     this->skip_.shown = bool_at(skip, "shown");
@@ -228,7 +267,9 @@ void SubwaveDisplay::parse_state_(const std::string &json) {
     this->skip_.locked = bool_at(skip, "locked");
   }
   this->stream_idle_ = bool_at(root, "streamIdle", false);
-  this->settings_rev_ = int_at(root, "settingsRev", this->settings_rev_);
+  if (!this->settings_dirty_) {
+    this->settings_rev_ = int_at(root, "settingsRev", this->settings_rev_);
+  }
   this->server_reachable_ = true;
   this->last_error_.clear();
 
@@ -338,34 +379,45 @@ void SubwaveDisplay::request_(Req kind, const char *method, const std::string &p
     return;
   }
 
-  // Read the whole body. The cap is not paranoia: an artwork response is a
-  // whole JPEG and there is no reason for any of these to be larger, so a
-  // misconfigured endpoint that streams forever cannot exhaust PSRAM and take
-  // the screen down with it.
+  // Read the whole body using http_read_loop_result().
+  //
+  // CRITICAL: Do NOT write `while (!container->is_read_complete())`. On ESP-IDF,
+  // HttpContainerIDF::is_read_complete() calls esp_http_client_is_complete_data_received(),
+  // which is ALREADY true before the first read() call whenever a small chunked
+  // response (every Next.js JSON route) arrives in the initial TLS record during
+  // esp_http_client_fetch_headers(). Checking is_read_complete() before read()
+  // skips the loop completely and returns an empty body ("") for every JSON API
+  // response. Always call container->read() first and let http_read_loop_result()
+  // check is_read_complete() only when read() returns 0.
   constexpr size_t MAX_BODY = 96 * 1024;
   std::string out;
   out.reserve(2048);
   uint8_t chunk[512];
-  uint32_t started = esphome::millis();
-  while (!container->is_read_complete()) {
+  uint32_t last_data_time = esphome::millis();
+  while (true) {
     int n = container->read(chunk, sizeof(chunk));
-    if (n > 0) {
+    esphome::App.feed_wdt();
+    esphome::yield();
+    auto loop_res = esphome::http_request::http_read_loop_result(
+        n, last_data_time, timeout_ms, container->is_read_complete());
+    if (loop_res == esphome::http_request::HttpReadLoopResult::DATA) {
       if (out.size() + static_cast<size_t>(n) > MAX_BODY) {
         ESP_LOGW(TAG, "%s response exceeded the cap; discarding.", path.c_str());
         container->end();
         return;
       }
       out.append(reinterpret_cast<char *>(chunk), static_cast<size_t>(n));
-      started = esphome::millis();
       continue;
     }
-    esphome::App.feed_wdt();
-    esphome::yield();
-    if (esphome::millis() - started > timeout_ms) {
+    if (loop_res == esphome::http_request::HttpReadLoopResult::RETRY) {
+      continue;
+    }
+    if (loop_res == esphome::http_request::HttpReadLoopResult::TIMEOUT) {
       ESP_LOGW(TAG, "%s timed out after %u ms.", path.c_str(), (unsigned) timeout_ms);
       container->end();
       return;
     }
+    break;
   }
   container->end();
 
@@ -378,6 +430,13 @@ void SubwaveDisplay::handle_(Req kind, int status, const std::string &body) {
   // looks identical to a working one otherwise, and the log is the only place
   // the difference shows.
   this->server_reachable_ = status > 0;
+  if (status >= 200 && status < 300) {
+    this->failure_count_ = 0;
+    this->backoff_until_ms_ = 0;
+  } else if (status <= 0 || status >= 500) {
+    if (this->failure_count_ < 4) this->failure_count_++;
+    this->backoff_until_ms_ = esphome::millis() + (10000u << std::min<uint8_t>(this->failure_count_, 3));
+  }
 
   switch (kind) {
     case Req::CLAIM:
@@ -389,17 +448,26 @@ void SubwaveDisplay::handle_(Req kind, int status, const std::string &body) {
           cJSON_Delete(root);
         }
         this->claimed_ = !this->bearer_.empty();
-        // Persist immediately. A claim that is not written to flash is a claim
-        // that is lost at the next power cut, and this screen is on a wall.
+        // Persist immediately. Once the long-lived bearer token is stored, wipe
+        // the single-use claim token from memory and flash.
         this->save_token_();
+        if (this->claimed_) {
+          this->claim_token_.clear();
+          this->save_identity_();
+        }
         ESP_LOGI(TAG, "Claimed. This screen is now a %s.", this->device_id_.c_str());
-      } else if (status == 409 || status == 404) {
-        // 409 Conflict or 404 Not Found means the claim code is invalid or
-        // already used (single-use, 7-day TTL). Stop retrying — the user needs
-        // to re-provision with a fresh bind code.
+      } else if (status == 409 || status == 404 || status == 410) {
+        // 409 Conflict, 404 Not Found, or 410 Gone means the claim code is
+        // invalid, expired, or already used. Stop retrying.
         this->claim_refused_ = true;
-        this->last_error_ = "This screen's claim code is invalid or already used.";
-        ESP_LOGW(TAG, "Claim refused (%d): claim code invalid or already used.", status);
+        this->last_error_ = status == 410
+                                ? "This screen's claim code has expired."
+                                : "This screen's claim code is invalid or already used.";
+        ESP_LOGW(TAG, "Claim refused (%d): stopping retries.", status);
+        // The stored identity belongs to a screen the station no longer knows
+        // (deleted, or its code already spent). Forget it so the next step is
+        // the Bind screen with the station URL pre-filled.
+        this->drop_identity_("claim refused");
       } else {
         this->last_error_ = "This screen's setup code was refused.";
         ESP_LOGW(TAG, "Claim refused (%d).", status);
@@ -409,13 +477,15 @@ void SubwaveDisplay::handle_(Req kind, int status, const std::string &body) {
     case Req::STATE:
       // 401 and 410 mean different things to someone holding a wall panel: 401 is
       // "flash it again", 410 is "someone removed this screen". The screen has to
-      // be able to say which.
-      if (status == 401) {
+      // be able to say which, and must clear its invalidated bearer token.
+      if (status == 401 || status == 410) {
         this->claimed_ = false;
-        this->last_error_ = "This screen is not set up. Flash it again.";
-      } else if (status == 410) {
-        this->claimed_ = false;
-        this->last_error_ = "This screen was removed from the station.";
+        this->bearer_.clear();
+        this->save_token_();
+        this->last_error_ = status == 410
+                                ? "This screen was removed from the station."
+                                : "This screen is not set up. Flash it again.";
+        if (this->claim_token_.empty()) this->drop_identity_("bearer rejected");
       } else if (status == 200) {
         this->last_error_.clear();
         this->parse_state_(body);
@@ -452,9 +522,26 @@ void SubwaveDisplay::handle_(Req kind, int status, const std::string &body) {
 
     case Req::HEARTBEAT:
     case Req::SETTINGS:
-      if (status == 401) {
-        ESP_LOGW(TAG, "This screen is not set up any more. Flash it again.");
+      if (status == 401 || status == 410) {
+        ESP_LOGW(TAG, "This screen is not set up any more (%d).", status);
         this->claimed_ = false;
+        this->bearer_.clear();
+        this->save_token_();
+      } else if (status == 200) {
+        if (kind == Req::SETTINGS) {
+          this->settings_dirty_ = false;
+        }
+        cJSON *root = cJSON_Parse(body.c_str());
+        if (root != nullptr) {
+          this->settings_rev_ = int_at(root, "settingsRev", this->settings_rev_);
+          std::string rotated = str_at(root, "rotatedToken");
+          if (!rotated.empty()) {
+            this->bearer_ = rotated;
+            this->save_token_();
+            ESP_LOGI(TAG, "Credential rotation completed; stored replacement token.");
+          }
+          cJSON_Delete(root);
+        }
       }
       return;
   }
@@ -470,27 +557,26 @@ void SubwaveDisplay::request_skip() {
 void SubwaveDisplay::send_heartbeat_() {
   if (!this->claimed_) return;
   auto *wifi = esphome::wifi::global_wifi_component;
-  std::string body = "{";
-  body += "\"deviceId\":\"" + this->device_id_ + "\",";
-  body += "\"appliedRev\":" + std::to_string(this->settings_rev_) + ",";
-  body += "\"orientation\":\"" + this->settings_.orientation + "\",";
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "deviceId", this->device_id_.c_str());
+  cJSON_AddNumberToObject(root, "appliedRev", this->settings_rev_);
+  cJSON_AddStringToObject(root, "orientation", this->settings_.orientation.c_str());
   // ESPHOME_PROJECT_VERSION is emitted from the `project:` block at build time, so
   // the screen cannot report a version that disagrees with the image it is running.
-  body += "\"firmwareVer\":\"" + std::string(ESPHOME_PROJECT_VERSION) + "\"";
+  cJSON_AddStringToObject(root, "firmwareVer", ESPHOME_PROJECT_VERSION);
   if (wifi != nullptr) {
-    body += ",\"rssi\":" + std::to_string(wifi->wifi_rssi());
+    cJSON_AddNumberToObject(root, "rssi", wifi->wifi_rssi());
     // get_ip_addresses() returns every interface the stack holds; the first
     // SET one is the address somebody would type to reach this screen.
     for (const auto &addr : wifi->get_ip_addresses()) {
       if (addr.is_set()) {
-        body += ",\"ip\":\"" + addr.str() + "\"";
+        cJSON_AddStringToObject(root, "ip", addr.str().c_str());
         break;
       }
     }
   }
-  body += "}";
 
-  this->request_(Req::HEARTBEAT, "POST", "/api/devices/heartbeat", body, 15000);
+  this->request_(Req::HEARTBEAT, "POST", "/api/devices/heartbeat", json_stringify(root), 15000);
 }
 
 void SubwaveDisplay::send_heartbeat() {
@@ -501,18 +587,20 @@ void SubwaveDisplay::send_heartbeat() {
 void SubwaveDisplay::push_settings(const StationSettings &s) {
   ESP_LOGI(TAG, "push_settings: idle_mode=%s idle_min=%d idle_pct=%d", s.idle_mode.c_str(), s.idle_min, s.idle_pct);
   this->settings_ = s;
+  this->settings_dirty_ = true;
   if (!this->claimed_) return;
-  std::string body = "{\"settings\":{";
-  body += "\"brightness\":" + std::to_string(s.brightness);
-  body += ",\"orientation\":\"" + s.orientation + "\"";
-  body += ",\"themeMode\":\"" + s.theme_mode + "\"";
-  body += ",\"idleMode\":\"" + s.idle_mode + "\"";
-  body += ",\"idleMin\":" + std::to_string(s.idle_min);
-  body += ",\"idlePct\":" + std::to_string(s.idle_pct);
-  body += ",\"skipEnabled\":" + std::string(s.skip_enabled ? "true" : "false");
-  body += "}}";
 
-  this->request_(Req::SETTINGS, "PATCH", "/api/devices/heartbeat", body, 15000);
+  cJSON *root = cJSON_CreateObject();
+  cJSON *settings = cJSON_AddObjectToObject(root, "settings");
+  cJSON_AddNumberToObject(settings, "brightness", std::clamp(s.brightness, 0, 100));
+  cJSON_AddStringToObject(settings, "orientation", s.orientation.c_str());
+  cJSON_AddStringToObject(settings, "themeMode", s.theme_mode.c_str());
+  cJSON_AddStringToObject(settings, "idleMode", s.idle_mode.c_str());
+  cJSON_AddNumberToObject(settings, "idleMin", s.idle_min);
+  cJSON_AddNumberToObject(settings, "idlePct", s.idle_pct);
+  cJSON_AddBoolToObject(settings, "skipEnabled", s.skip_enabled);
+
+  this->request_(Req::SETTINGS, "POST", "/api/devices/heartbeat", json_stringify(root), 15000);
 }
 
 void SubwaveDisplay::update() {
@@ -521,15 +609,24 @@ void SubwaveDisplay::update() {
     return;
   }
 
+  if (this->backoff_until_ms_ != 0 &&
+      static_cast<int32_t>(esphome::millis() - this->backoff_until_ms_) < 0) {
+    return;
+  }
+
   // Bind step: if we have a bind code but no identity, try to bind now.
   if (this->needs_bind()) {
-    ESP_LOGI(TAG, "Attempting bind with code %s", this->bind_code_.c_str());
+    ESP_LOGI(TAG, "Attempting station bind...");
     if (this->bind(this->server_url_, this->bind_code_)) {
       this->bind_code_.clear();
       this->save_bind_code_();
+      this->failure_count_ = 0;
+      this->backoff_until_ms_ = 0;
       ESP_LOGI(TAG, "Bind successful. Claiming...");
     } else {
-      ESP_LOGW(TAG, "Bind failed. Will retry.");
+      if (this->failure_count_ < 4) this->failure_count_++;
+      this->backoff_until_ms_ = esphome::millis() + (10000u << std::min<uint8_t>(this->failure_count_, 3));
+      ESP_LOGW(TAG, "Bind failed. Backing off before retry.");
       return;
     }
   }
@@ -645,20 +742,11 @@ void SubwaveDisplay::load_identity_from_flash_() {
       if (!stored.empty()) this->claim_token_ = stored;
     }
   }
-  // Bearer token
-  {
-    char buf[TOKEN_BYTES] = {0};
-    auto pref = esphome::global_preferences->make_preference<char[TOKEN_BYTES]>(TOKEN_KEY, true);
-    if (pref.load(&buf)) {
-      buf[TOKEN_BYTES - 1] = '\0';
-      std::string stored(buf);
-      if (!stored.empty()) this->bearer_ = stored;
-    }
-  }
 
-  if (!this->server_url_.empty() && !this->device_id_.empty() && !this->claim_token_.empty()) {
+  this->claimed_ = !this->bearer_.empty();
+  if (!this->server_url_.empty() && !this->device_id_.empty() &&
+      (!this->claim_token_.empty() || !this->bearer_.empty())) {
     ESP_LOGI(TAG, "Found stored identity: %s @ %s. claimed_=%d", this->device_id_.c_str(), this->server_url_.c_str(), (int)this->claimed_);
-    this->claimed_ = true;  // already claimed — no need to claim again after reboot
   } else {
     ESP_LOGI(TAG, "No stored identity. Setup required.");
   }
@@ -692,37 +780,62 @@ bool SubwaveDisplay::bind(const std::string &server_url, const std::string &bind
   this->server_url_ = server_url;
   this->api_base_ = server_url;
 
-  // POST to the bind endpoint
-  std::string body = "{\"bindCode\":\"" + bind_code + "\"}";
-
   auto *client = this->http();
   if (client == nullptr) return false;
+
+  cJSON *req_json = cJSON_CreateObject();
+  cJSON_AddStringToObject(req_json, "bindCode", bind_code.c_str());
+  std::string body = json_stringify(req_json);
 
   std::vector<esphome::http_request::Header> headers;
   headers.push_back({"Content-Type", "application/json"});
 
-  auto container = client->start(server_url + "/api/devices/bind", "POST", body, headers);
+  auto container = client->start(join(server_url, "/api/devices/bind"), "POST", body, headers);
   if (container == nullptr) {
     ESP_LOGW(TAG, "bind: could not start request");
     return false;
   }
 
-  // Read response
+  // Read response with a strict 15-second deadline and watchdog feed.
+  // Use http_read_loop_result() so chunked Next.js responses that arrive in the
+  // initial TLS buffer are drained by read() before checking is_read_complete().
   constexpr size_t MAX_BODY = 4096;
+  constexpr uint32_t BIND_TIMEOUT_MS = 15000;
   std::string out;
   out.reserve(512);
   uint8_t chunk[512];
-  while (!container->is_read_complete()) {
+  uint32_t last_data_time = esphome::millis();
+  while (true) {
     int n = container->read(chunk, sizeof(chunk));
-    if (n > 0) {
+    esphome::App.feed_wdt();
+    esphome::yield();
+    auto loop_res = esphome::http_request::http_read_loop_result(
+        n, last_data_time, BIND_TIMEOUT_MS, container->is_read_complete());
+    if (loop_res == esphome::http_request::HttpReadLoopResult::DATA) {
       if (out.size() + static_cast<size_t>(n) > MAX_BODY) {
         container->end();
         return false;
       }
       out.append(reinterpret_cast<char *>(chunk), static_cast<size_t>(n));
+      continue;
     }
+    if (loop_res == esphome::http_request::HttpReadLoopResult::RETRY) {
+      continue;
+    }
+    if (loop_res == esphome::http_request::HttpReadLoopResult::TIMEOUT) {
+      ESP_LOGW(TAG, "bind: timed out after %u ms", (unsigned) BIND_TIMEOUT_MS);
+      container->end();
+      return false;
+    }
+    break;
   }
+  int status = container->status_code;
   container->end();
+
+  if (status != 200 && status != 201) {
+    ESP_LOGW(TAG, "bind: server returned status %d", status);
+    return false;
+  }
 
   // Parse response
   cJSON *root = cJSON_Parse(out.c_str());
@@ -741,99 +854,61 @@ bool SubwaveDisplay::bind(const std::string &server_url, const std::string &bind
     return false;
   }
 
+  // The station accepted the bind code, so whatever identity this screen held
+  // before (a deleted device's id, claim token, bearer) is now wrong.
+  //
+  // THE STALE BEARER WAS THE BUG. claim_device_() returns early when it already
+  // holds a bearer, so a screen re-bound after its device was deleted on the
+  // server never exchanged the new claim token: bind() reported success, the
+  // reboot reloaded the OLD identity from flash, and the log showed a 401 from
+  // the old bearer followed by a 404 claiming the deleted device. Wipe it first.
+  this->bearer_.clear();
+  this->claimed_ = false;
+  this->claim_refused_ = false;
+  this->identity_lost_ = false;
+  this->failure_count_ = 0;
+  this->backoff_until_ms_ = 0;
+  this->save_token_();
+
   this->device_id_ = device_id;
   this->claim_token_ = claim_token;
+  if (bearer_token != nullptr && bearer_token[0] != '\0') {
+    this->bearer_ = bearer_token;
+    this->claimed_ = true;
+    this->save_token_();
+  }
   cJSON_Delete(root);
 
-  // Claim to get bearer token — synchronous so we don't reboot before it lands
-this->claim_refused_ = false;
-this->claimed_ = false;
-this->claim_device_();
+  // Persist the new identity BEFORE claiming so a power cut or reboot between
+  // here and the claim response can still retry the claim from flash.
+  this->save_identity_();
 
-  ESP_LOGI(TAG, "Bound successfully: %s", this->device_id_.c_str());
+  // Claim to get the bearer token — synchronous so we don't reboot before it lands.
+  if (!this->claimed_) {
+    this->claim_device_();
+  }
+
+  if (this->claim_refused_) {
+    ESP_LOGW(TAG, "bind: station accepted the code but refused the claim.");
+    return false;
+  }
+  ESP_LOGI(TAG, "Bound %s: %s", this->claimed_ ? "and claimed" : "(claim will retry)", this->device_id_.c_str());
   return true;
 }
 
-namespace {
-
-// Custom web handler for the setup wizard
-class SetupWizardHandler : public esphome::web_server_idf::AsyncWebHandler {
- public:
-  bool canHandle(esphome::web_server_idf::AsyncWebServerRequest *request) const override {
-    if (request->method() != HTTP_GET) return false;
-    char url_buf[esphome::web_server_idf::AsyncWebServerRequest::URL_BUF_SIZE];
-    return request->url_to(url_buf) == "/";
-  }
-
-  void handleRequest(esphome::web_server_idf::AsyncWebServerRequest *request) override {
-    if (!this->canHandle(request)) return;
-
-    std::string ssid = "SUBWAVE-SCREEN";
-    std::string ip = "192.168.4.1";
-    auto *wifi = esphome::wifi::global_wifi_component;
-    if (wifi != nullptr && wifi->is_connected()) {
-      for (const auto &addr : wifi->get_ip_addresses()) {
-        if (addr.is_set()) {
-          ip = addr.str();
-          break;
-        }
-      }
-    }
-    std::string qr_url = "http://" + ip;
-
-    std::string html = R"HTML(
-<!DOCTYPE html><html lang="en"><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>SUB/WAVE Screen Setup</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#06101e;color:#dce8f5;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:40px 20px}
-h1{font-size:2.5rem;font-weight:600;margin-bottom:0.5rem;color:#dce8f5}
-h2{font-size:1.2rem;font-weight:400;margin-bottom:2rem;color:#6a8ba8}
-.qr-container{background:#e8edf3;padding:32px;border-radius:16px;margin:2rem 0;display:inline-block}
-.qr-image{max-width:100%;height:auto;display:block}
-.url{font-family:monospace;font-size:1rem;color:#4e9fd4;word-break:break-all;background:#0d1f35;padding:1rem;border-radius:8px;margin:1.5rem 0;max-width:90%;text-align:center}
-.instructions{text-align:center;max-width:500px;line-height:1.6}
-.instructions p{margin:1rem 0;color:#6a8ba8}
-.step{font-weight:600;color:#4e9fd4}
-.brand{margin-top:3rem;padding-top:2rem;border-top:1px solid #1a3050;color:#6a8ba8;font-size:0.9rem}
-</style>
-</head><body>
-<h1>SUB/WAVE Screen</h1>
-<h2>Setup Wizard</h2>
-<div class="qr-container">
-<svg id="qr" class="qr-image"></svg>
-</div>
-<div class="url" id="url"></div>
-<div class="instructions">
-<p>Join the WiFi network <span class="step">)" + ssid + R"HTML(</span></p>
-<p>Then scan the QR code above, or visit <span class="step">)" + qr_url + R"HTML(</span> in your browser.</p>
-<p>Enter your WiFi credentials to connect this screen to the internet.</p>
-</div>
-<div class="brand">SUB/WAVE — causewayfm.subwave-screen</div>
-<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
-<script>
-new QRCode(document.getElementById("qr"), {text: ")" + qr_url + R"HTML(", width: 280, height: 280, colorDark: "#0b1a2b", colorLight: "#e8edf3", correctLevel: QRCode.CorrectLevel.M});
-document.getElementById("url").textContent = ")" + qr_url + R"HTML(";
-</script>
-</body></html>
-)HTML";
-
-    request->send(200, "text/html", html.c_str());
-  }
-};
-
-}  // namespace
-
-void SubwaveDisplay::register_web_handler_() {
-  auto *base = esphome::web_server_base::global_web_server_base;
-  if (base == nullptr) return;
-
-  auto *server = base->get_server();
-  if (server == nullptr) return;
-
-  auto *handler = new SetupWizardHandler();  // NOLINT(cppcoreguidelines-owning-memory)
-  server->addHandler(handler);
+void SubwaveDisplay::drop_identity_(const char *why) {
+  ESP_LOGW(TAG, "Forgetting stored identity %s (%s). Bind again from the setup screen.", this->device_id_.c_str(), why);
+  this->device_id_.clear();
+  this->claim_token_.clear();
+  this->bearer_.clear();
+  this->claimed_ = false;
+  this->bind_code_.clear();
+  this->save_token_();
+  this->save_identity_();
+  this->save_bind_code_();
+  // server_url_ is deliberately kept: it is saved by save_identity_() and the
+  // bind screen pre-fills it so the operator does not retype the address.
+  this->identity_lost_ = true;
 }
 
 // ---------------------------------------------------------------------------

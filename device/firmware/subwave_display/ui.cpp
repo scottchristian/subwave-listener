@@ -1,7 +1,10 @@
 #include "ui.h"
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <string>
+#include <sys/time.h>
 
 #include "esphome/core/log.h"
 #include "esphome/core/hal.h"
@@ -68,13 +71,6 @@ static SubwaveDisplay *g_client = nullptr;
 // widget binding table.
 static esphome::light::LightState *g_backlight = nullptr;
 
-// The "off" sequence has a second phase, and it needs somewhere to wait. ESPHome
-// 2026.7 has no App.schedule_timeout — the Application class has no timeout API
-// at all — so the delay is a deadline checked by the same tick that arms the
-// idle timer. See idle_poll().
-static uint32_t g_blank_at = 0;
-static bool g_blank_pending = false;
-
 // Whether the binding table is populated. Set by ui_mark_ready() once YAML has
 // handed over every widget.
 //
@@ -110,8 +106,26 @@ static void *lookup(const char *name) {
   return nullptr;
 }
 
+#define OBJ(name) ((lv_obj_t *) lookup(#name))
+#define INT(name) (*(int *) lookup(#name))
+#define BOOL(name) (*(bool *) lookup(#name))
+#define U32(name) (*(uint32_t *) lookup(#name))
+#define client() (g_client)
+
 void ui_mark_ready() {
   g_ui_ready = true;
+  if (auto *c = client()) {
+    if (lv_obj_t *ssid_lbl = OBJ(setup_wifi_value)) {
+      lv_label_set_text(ssid_lbl, c->setup_ap_ssid().c_str());
+    }
+    if (lv_obj_t *pass_lbl = OBJ(setup_password_value)) {
+      lv_label_set_text(pass_lbl, c->setup_ap_pass().c_str());
+    }
+    if (lv_obj_t *qr = OBJ(setup_qr)) {
+      std::string wifi_qr = "WIFI:T:WPA;S:" + c->setup_ap_ssid() + ";P:" + c->setup_ap_pass() + ";;";
+      lv_qrcode_update(qr, wifi_qr.c_str(), wifi_qr.size());
+    }
+  }
   shows_refresh();
   settings_refresh();
 }
@@ -124,12 +138,6 @@ void bindings_report_missing() {
     ESP_LOGE(TAG, "No display_client bound — the screen cannot show anything.");
   }
 }
-
-#define OBJ(name) ((lv_obj_t *) lookup(#name))
-#define INT(name) (*(int *) lookup(#name))
-#define BOOL(name) (*(bool *) lookup(#name))
-#define U32(name) (*(uint32_t *) lookup(#name))
-#define client() (g_client)
 
 /**
  * True once the widgets exist.
@@ -144,16 +152,16 @@ bool ui_ready() { return g_ui_ready; }
 /**
  * The station's clock, in milliseconds.
  *
- * The server's time, never SNTP and never the local counter. A screen with no RTC
- * drifts, and a wall display whose schedule is two minutes out is worse than one
- * showing nothing — so the station is the authority and every poll brings the
- * device's idea of the time back into line with it. The local counter is only the
- * fallback for the first seconds after boot, before the first poll has landed.
- *
- * NOT A PAINTER, AND NOT A TIMER. This is a reading, so that the painters that
- * need a clock and the interval that drives them can disagree about nothing.
+ * Reads the system clock synced via public SNTP servers (0/1/2.pool.ntp.org)
+ * when valid (> 2023-11-14 UTC), falling back to the station's interpolated
+ * serverNowMs timestamp, and finally the local millisecond counter right after
+ * boot before SNTP or the first poll has landed.
  */
 int64_t station_now_ms() {
+  struct timeval tv {};
+  if (::gettimeofday(&tv, nullptr) == 0 && tv.tv_sec > 1700000000) {
+    return static_cast<int64_t>(tv.tv_sec) * 1000LL + static_cast<int64_t>(tv.tv_usec / 1000);
+  }
   auto *c = client();
   if (c == nullptr || c->server_now_ms() == 0) return (int64_t) esphome::millis();
   return c->server_now_ms();
@@ -288,8 +296,11 @@ void now_refresh() {
   lv_label_set_text(OBJ(status_line), err);
 
   char runway[32];
-  if (b.ends_in_sec > 0) {
-    int h = (int) (b.ends_in_sec / 3600), m = (int) ((b.ends_in_sec % 3600) / 60);
+  const int64_t remaining_sec = b.ends_in_sec > 0
+                                    ? std::max<int64_t>(0, b.ends_in_sec - static_cast<int64_t>(c->state_age_sec()))
+                                    : b.ends_in_sec;
+  if (remaining_sec > 0) {
+    int h = (int) (remaining_sec / 3600), m = (int) ((remaining_sec % 3600) / 60);
     if (h > 0) snprintf(runway, sizeof(runway), "%dh %dm left", h, m);
     else snprintf(runway, sizeof(runway), "%dm left", m);
   } else {

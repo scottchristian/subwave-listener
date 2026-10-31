@@ -43,6 +43,7 @@ def find_port(timeout_seconds=None):
     Polls until a port appears (or timeout_seconds elapses, if given).
     """
     deadline = None if timeout_seconds is None else time.time() + timeout_seconds
+    announced_waiting = False
     while True:
         ttl = sorted(glob.glob("/dev/cu.usbserial-*"))
         if ttl:
@@ -50,6 +51,9 @@ def find_port(timeout_seconds=None):
         native = sorted(glob.glob("/dev/cu.usbmodem*"))
         if native:
             return native[0]
+        if not announced_waiting:
+            print("Waiting for device...", file=sys.stderr, flush=True)
+            announced_waiting = True
         if deadline is not None and time.time() > deadline:
             sys.exit("No serial port found within timeout. Check the cable.")
         time.sleep(0.5)
@@ -58,7 +62,7 @@ def find_port(timeout_seconds=None):
 def main():
     seconds = int(sys.argv[1]) if len(sys.argv) > 1 else 45
     port = find_port()
-    print(f"# port {port}, capturing {seconds}s", file=sys.stderr)
+    print(f"Device found on {port}. Capturing logs for {seconds}s...", file=sys.stderr, flush=True)
 
     s = serial.Serial(port, 115200, timeout=0.3)
 

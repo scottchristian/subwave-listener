@@ -11,3 +11,8 @@
 # during codegen, so __pycache__ appears next to every one of them.
 /__pycache__/
 *.pyc
+
+# Auto-generated per-device AP password files — never commit plaintext credentials.
+/common/ap_password.txt
+/common/ap_password.yaml
+

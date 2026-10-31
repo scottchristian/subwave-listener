@@ -14,7 +14,7 @@ wifi:
   reboot_timeout: 15min
   ap:
     ssid: "${setup_ap_ssid}"
-    password: ""
+    password: "${setup_ap_password}"
 
   # These live on `wifi:`, not on `esphome:`. They moved there upstream, and
   # ESPHome's error for the old spelling is "[on_connect] is an invalid option
@@ -39,6 +39,17 @@ web_server:
   version: 3
   include_internal: false
   log: false
+
+# Sync the system clock with public internet NTP servers so timekeeping stays
+# accurate even between station polls or when the station is unreachable.
+time:
+  - platform: sntp
+    id: sntp_time
+    servers:
+      - 0.pool.ntp.org
+      - 1.pool.ntp.org
+      - 2.pool.ntp.org
+
 
 globals:
   - id: device_claimed

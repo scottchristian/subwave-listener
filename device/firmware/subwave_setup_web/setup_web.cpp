@@ -122,6 +122,26 @@ void SetupWebHandler::send_scan_(AsyncWebServerRequest *request) {
 }
 
 void SetupWebHandler::save_(AsyncWebServerRequest *request) {
+  auto *wifi = wifi::global_wifi_component;
+  if (wifi == nullptr) {
+    request->send(500, "text/plain", "WiFi is not available.");
+    return;
+  }
+
+  // Once the device is associated with a station network AND already holds a
+  // bearer credential in flash, refuse unauthenticated /save calls over the LAN.
+  // Re-provisioning must happen either while the setup AP is active (disconnected
+  // from STA) or via the physical touchscreen UI.
+  if (wifi->is_connected() && esphome::global_preferences != nullptr) {
+    char tok_buf[65] = {0};
+    auto tok_pref = esphome::global_preferences->make_preference<char[65]>(0x53574231, true);
+    if (tok_pref.load(&tok_buf) && tok_buf[0] != '\0') {
+      ESP_LOGW(TAG, "save: refused on LAN because screen is already provisioned.");
+      request->send(403, "text/plain", "Screen is already provisioned. Use the on-screen Settings menu.");
+      return;
+    }
+  }
+
   std::string ssid = request->arg("ssid");
   std::string psk = request->arg("psk");
   std::string tz = request->arg("tz");
@@ -139,18 +159,12 @@ void SetupWebHandler::save_(AsyncWebServerRequest *request) {
   // Timezone and coordinates are asked here rather than guessed, but the
   // timezone is captured from the BROWSER, not the device: a phone that joined
   // the access point knows where it is standing far better than a screen with
-  // no RTC, no cell and no GNSS. Logged for now; persisting them is the next
-  // step and needs a preferences key, not another log line.
+  // no RTC, no cell and no GNSS.
   ESP_LOGI(TAG, "Requested WiFi settings change:");
   ESP_LOGI(TAG, "  SSID='%s'", ssid.c_str());
-  ESP_LOGI(TAG, "  Password='%s'", psk.c_str());
+  ESP_LOGI(TAG, "  Password=[REDACTED] (%u chars)", (unsigned) psk.size());
   ESP_LOGI(TAG, "  Timezone='%s'  Lat='%s'  Lon='%s'", tz.c_str(), lat.c_str(), lon.c_str());
 
-  auto *wifi = wifi::global_wifi_component;
-  if (wifi == nullptr) {
-    request->send(500, "text/plain", "WiFi is not available.");
-    return;
-  }
 
   // Deferred, not called inline: save_wifi_sta writes NVS and this runs on the
   // HTTP task. ESPHome's own captive portal defers for exactly the same reason.

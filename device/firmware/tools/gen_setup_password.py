@@ -1,14 +1,13 @@
-import random, string
-import sys
+import secrets
 
 chars = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
-pw = ''.join(random.choice(chars) for _ in range(8))
+pw = ''.join(secrets.choice(chars) for _ in range(8))
 
-# Write raw password file (for reference)
+# Write raw password file (gitignored, local reference only)
 with open('device/firmware/common/ap_password.txt', 'w') as f:
     f.write(pw)
 
-# Write ESPHome YAML fragment with substitution
+# Write ESPHome YAML fragment with substitution (gitignored)
 yaml_content = f'''# Auto-generated setup AP password.
 # Regenerate with: python3 device/firmware/tools/gen_setup_password.py
 # This password is used for the setup access point and displayed on screen / in QR code.
@@ -19,6 +18,4 @@ substitutions:
 with open('device/firmware/common/ap_password.yaml', 'w') as f:
     f.write(yaml_content)
 
-print(f"Generated setup AP password: {pw}")
-print("Written to device/firmware/common/ap_password.yaml")
-print("Written to device/firmware/common/ap_password.txt")
+print("Generated setup AP password and wrote to gitignored local files.")

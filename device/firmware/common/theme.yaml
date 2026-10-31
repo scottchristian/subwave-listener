@@ -210,7 +210,7 @@ script:
     then:
       - if:
           condition:
-            lambda: return id(theme_is_day) != id(display_client)->is_night();
+            lambda: return id(theme_is_day) == id(display_client)->is_night();
           then:
             # A leading `!` in an unquoted YAML value is read as a TAG, not as text
             # — so `to_day: !id(x)` fails to parse with "could not determine a

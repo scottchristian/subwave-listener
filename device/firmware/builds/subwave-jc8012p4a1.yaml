@@ -21,7 +21,7 @@ substitutions:
   device_id: ""
   claim_token: ""
   server_url: ""
-  firmware_version: "1.13.5"
+  firmware_version: "1.14.1"
 
   # The panel is natively 800x1280 portrait and driven as 1280x800 landscape.
   # Getting this backwards is the single most common mistake with this board.
@@ -185,19 +185,18 @@ subwave_setup_web:
   on_scan_script: wifi_scan_landed
 
 logger:
-  level: DEBUG
+  level: INFO
   hardware_uart: UART0
   baud_rate: 115200
 
-api:
-  # No Home Assistant. This screen is a thin client of the station, not of a
-  # home automation hub, and nothing about the station's state should be able to
-  # depend on one being present.
+# No `api:` block: this screen is a thin client of the station, not of a home
+# automation hub. Leaving `api:` enabled without a Home Assistant connection
+# opens an unauthenticated port and triggers ESPHome's 15-minute API reboot loop.
 
-# Safe mode disabled to prevent reboot loops on display-heavy builds.
-# Reference: esphome-media-player/common/device/base.yaml
 safe_mode:
-  disabled: true
+  num_attempts: 5
+  reboot_timeout: 5min
+
 
 ota:
   # `esphome`, not `esp32_ota` — that platform was removed upstream and this
@@ -257,6 +256,7 @@ interval:
       # Flush a cover that arrived while a crossfade was running. art_tick was
       # defined and never called, so a queued swap stayed queued forever.
       - script.execute: art_tick
+      - script.execute: window_tick
       # Backlight keepalive: re-assert the backlight every second so it can
       # never stay off for more than one second. Uses idle_apply() which reads
       # the current brightness setting rather than forcing 100%, so manual
@@ -277,6 +277,7 @@ interval:
       # re-armed by every touch and a self-rescheduling timer would have to be
       # torn down each time.
       - script.execute: idle_tick
+      - script.execute: theme_sync
     # NOT OPTIONAL, AND NOT COSMETIC. idle_poll() dereferences screen_asleep and
     # idle_deadline_ms, which live in the binding table that bind_widgets fills
     # one second after boot. An interval with no startup_delay fires on the first

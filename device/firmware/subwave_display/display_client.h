@@ -1,9 +1,8 @@
 #pragma once
 
 #include "esphome/core/component.h"
+#include "esphome/core/hal.h"
 #include "esphome/components/http_request/http_request.h"
-#include "esphome/components/api/api_server.h"
-#include "esphome/components/web_server_idf/web_server_idf.h"
 #include <string>
 #include <map>
 #include <vector>
@@ -101,8 +100,9 @@ class SubwaveDisplay
   /** The shared client. Null before setup, which is why no request may be made early. */
   esphome::http_request::HttpRequestComponent *http() { return this->get_parent(); }
  public:
+  static constexpr int MAX_SCHEDULE_SLOTS = 5;
+
   void setup() override;
-  void loop() override;
   void update() override;
   void dump_config() override;
 
@@ -114,12 +114,11 @@ class SubwaveDisplay
   // success. Stores the resulting identity in flash.
   bool bind(const std::string &server_url, const std::string &bind_code);
 
-  // Load identity from flash. Returns true if a complete identity was found.
-  bool load_identity_();
   void set_setup_ap_ssid(const std::string &s) { setup_ap_ssid_ = s; }
   void set_artwork_size(int v) { artwork_size_ = v; }
   void set_art_buffer_bytes(int v) { art_buffer_bytes_ = v; }
-  const std::string &get_setup_ap_ssid_() const { return setup_ap_ssid_; }
+  const std::string &setup_ap_ssid() const { return setup_ap_ssid_; }
+  const std::string &setup_ap_pass() const { return setup_ap_pass_; }
 
   /** The bearer token, for the online_image auth header. Public for the same
    *  reason send_heartbeat() is: YAML cannot reach a private member. */
@@ -135,7 +134,9 @@ class SubwaveDisplay
 
   const std::string &bind_code() const { return bind_code_; }
   void set_bind_code(const std::string &c) { bind_code_ = c; }
-  bool needs_bind() const { return !bind_code_.empty() && (device_id_.empty() || claim_token_.empty()); }
+  bool needs_bind() const {
+    return !bind_code_.empty() && (device_id_.empty() || (claim_token_.empty() && bearer_.empty()));
+  }
 
   // For the screens: the current state, and the artwork fetch to start.
   const NowPlaying &now_playing() const { return now_; }
@@ -157,8 +158,19 @@ class SubwaveDisplay
   bool stream_idle() const { return stream_idle_; }
   bool is_night() const { return is_night_; }
   bool claimed() const { return claimed_; }
+  /** True once the station has rejected this screen's identity and it was wiped.
+   *  The UI reads it, opens the Bind screen, then calls ack_identity_lost(). */
+  bool identity_lost() const { return identity_lost_; }
+  void ack_identity_lost() { identity_lost_ = false; }
   bool server_reachable() const { return server_reachable_; }
-  int64_t server_now_ms() const { return server_now_ms_; }
+  int64_t server_now_ms() const {
+    if (server_now_ms_ <= 0) return 0;
+    return server_now_ms_ + static_cast<int64_t>(esphome::millis() - server_now_rx_ms_);
+  }
+  uint32_t state_age_sec() const {
+    if (server_now_rx_ms_ == 0) return 0;
+    return (esphome::millis() - server_now_rx_ms_) / 1000u;
+  }
   std::string last_error() const { return last_error_; }
   /** The station's own name, for the shows window's header. */
   std::string state_station_name() const { return station_name_; }
@@ -207,7 +219,11 @@ class SubwaveDisplay
 
   /** True when setup should be demanded rather than merely offered. */
   bool needs_setup() const {
-    return this->connectivity_ != Connectivity::OK || this->device_id_.empty() || this->claim_token_.empty() || this->server_url_.empty() || this->claim_refused_;
+    return this->connectivity_ != Connectivity::OK ||
+           this->device_id_.empty() ||
+           (this->claim_token_.empty() && this->bearer_.empty()) ||
+           this->server_url_.empty() ||
+           this->claim_refused_;
   }
 
   /** The Skip button. Refused by the server under the same policy as a listener's. */
@@ -242,8 +258,6 @@ class SubwaveDisplay
    * been unplugged.
    */
   void send_heartbeat();
-  /** Register the custom web handler for the setup wizard. */
-  void register_web_handler_();
 
  protected:
   /**
@@ -293,6 +307,9 @@ class SubwaveDisplay
 
   void save_identity_();
   void load_identity_from_flash_();
+  /** Forget the device id, claim token and bearer (RAM and flash). Keeps server_url_
+   *  so the bind screen can pre-fill it. Raises identity_lost_ for the UI. */
+  void drop_identity_(const char *why);
   void save_bind_code_();
   void load_bind_code_();
 
@@ -300,6 +317,7 @@ class SubwaveDisplay
   std::string device_id_;
   std::string claim_token_;
   std::string setup_ap_ssid_{"SUBWAVE-SCREEN"};
+  std::string setup_ap_pass_;
   std::string api_base_;
   std::string bearer_;
   std::string last_error_;
@@ -307,12 +325,11 @@ class SubwaveDisplay
   int artwork_size_{640};
   uint32_t art_buffer_bytes_{65536};
   int settings_rev_{1};
-  // The STATION's clock, not the device's. A screen with no RTC drifts, and a
-  // wall display whose schedule is two minutes out is worse than one showing
-  // nothing — so the server's time is authoritative and this is refreshed with
-  // every state poll. Declared here because `server_now_ms()` reads it and was
-  // reading a member that did not exist.
   int64_t server_now_ms_{0};
+  uint32_t server_now_rx_ms_{0};
+  uint32_t backoff_until_ms_{0};
+  uint8_t failure_count_{0};
+  bool settings_dirty_{false};
   int poll_after_sec_{10};
   std::string station_name_;
   std::string logo_url_;
@@ -328,6 +345,7 @@ class SubwaveDisplay
   bool claimed_{false};
   bool server_reachable_{false};
   bool claim_refused_{false};
+  bool identity_lost_{false};
   Connectivity connectivity_{Connectivity::UNKNOWN};
   bool stream_idle_{false};
   bool is_night_{true};
