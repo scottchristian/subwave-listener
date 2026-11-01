@@ -94,7 +94,11 @@ struct ScopedTimer {
   ~ScopedTimer() {
     uint32_t elapsed = esphome::millis() - start;
     if (elapsed >= threshold_ms) {
-      ESP_LOGW(tag, "%s blocked main thread for %u ms!", name, (unsigned) elapsed);
+      if (xPortGetCoreID() == 1) {
+        ESP_LOGW(tag, "%s blocked main thread for %u ms!", name, (unsigned) elapsed);
+      } else {
+        ESP_LOGD(tag, "%s took %u ms on background worker (Core %d)", name, (unsigned) elapsed, xPortGetCoreID());
+      }
     }
   }
 };
