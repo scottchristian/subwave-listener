@@ -456,6 +456,7 @@ class SubwaveDisplay
   bool bind_device_(const std::string &server_url, const std::string &bind_code);
   Connectivity run_connectivity_ladder_();
   bool fetch_image_to_runtime_image_(const std::string &path, esphome::runtime_image::RuntimeImage *img);
+  bool fetch_cover_to_runtime_image_(const std::string &path, esphome::runtime_image::RuntimeImage *img);
   void trigger_connectivity_reported_();
 
   esphome::runtime_image::RuntimeImage *station_logo_image_{nullptr};
@@ -476,6 +477,8 @@ class SubwaveDisplay
 
   bool settings_pending_push_{false};
   uint32_t settings_push_ms_{0};
+  bool cover_in_flight_{false};
+  bool first_loop_{true};
 
   // The credential, in flash. A fixed-size buffer because preferences are stored
   // by memcpy of a trivially-copyable type — see the note on save_token_().

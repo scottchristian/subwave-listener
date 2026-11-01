@@ -202,6 +202,24 @@ ok(
   "fetch_image_to_runtime_image_ streams and decodes images chunk-by-chunk on background worker",
 );
 
+const fetchCoverFn = extractFunctionBody(cppSrc, /bool\s+SubwaveDisplay::fetch_cover_to_runtime_image_\s*\(/);
+ok(
+  fetchCoverFn.length > 0 &&
+    /img->begin_decode/.test(fetchCoverFn) &&
+    /img->feed_data/.test(fetchCoverFn) &&
+    /img->end_decode/.test(fetchCoverFn) &&
+    /vTaskDelay\(1\)/.test(fetchCoverFn),
+  "fetch_cover_to_runtime_image_ streams and decodes JPEG cover art on Core 0 background worker",
+);
+
+const loopFn = extractFunctionBody(cppSrc, /void\s+SubwaveDisplay::loop\s*\(\s*\)/);
+ok(
+  loopFn.length > 0 &&
+    !/target->update\(\)/.test(loopFn) &&
+    /WorkerCmdType::FETCH_COVER_ART/.test(loopFn),
+  "SubwaveDisplay::loop() enqueues FETCH_COVER_ART and contains zero synchronous target->update() calls",
+);
+
 // 12. Phase 3: UI apply helpers exist in ui.cpp and are dispatched safely
 const uiCpp = fs.readFileSync(path.join(FW, "ui.cpp"), "utf8");
 ok(

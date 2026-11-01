@@ -171,8 +171,8 @@ script:
           int32_t from_sf = id(c_surface), to_sf = to_day ? id(day_surface) : id(night_surface);
           int32_t from_ru = id(c_rule), to_ru = to_day ? id(day_rule) : id(night_rule);
 
-          for (int step = 0; step <= 40; step++) {
-            int32_t k = (step << 8) / 40;
+          for (int step = 0; step <= 5; step++) {
+            int32_t k = (step << 8) / 5;
             lv_color_t bg  = lv_color_mix(lv_color_hex(from_bg), lv_color_hex(to_bg),  k);
             lv_color_t tx  = lv_color_mix(lv_color_hex(from_tx), lv_color_hex(to_tx),  k);
             lv_color_t mu  = lv_color_mix(lv_color_hex(from_mu), lv_color_hex(to_mu),  k);
@@ -201,7 +201,7 @@ script:
 
             subwave_display::theme_paint_all();
             delay(1);
-            delay(500);   // 40 steps x 500ms = 20s
+            delay(20);
           }
           window_draw_rail->execute();
 
@@ -262,12 +262,12 @@ script:
           lv_obj_clear_flag(in, LV_OBJ_FLAG_HIDDEN);
           lv_obj_move_foreground(in);
 
-          for (int step = 0; step <= 26; step++) {
-            int32_t k = (step * 255) / 26;   // 26 steps x 25ms = 650ms
+          for (int step = 0; step <= 8; step++) {
+            int32_t k = (step * 255) / 8;
             lv_obj_set_style_opa(in, k, LV_PART_MAIN);
             lv_timer_handler();
             delay(1);
-            delay(25);
+            delay(15);
           }
           lv_obj_set_style_opa(in, LV_OPA_COVER, LV_PART_MAIN);
           lv_obj_add_flag(out, LV_OBJ_FLAG_HIDDEN);

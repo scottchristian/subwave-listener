@@ -218,23 +218,23 @@ void SubwaveDisplay::loop() {
     }
   }
 
-  // Non-blocking trigger for pending cover art decode
+  // Non-blocking trigger for pending cover art decode on background worker (Core 0)
   if (!this->pending_art_url_.empty() && this->art_in_image_ != nullptr && this->art_out_image_ != nullptr) {
-    if (this->is_network_ready_() && this->claimed_ && !this->bearer_.empty()) {
-      auto *online_in = static_cast<esphome::online_image::OnlineImage *>(this->art_in_image_);
-      auto *online_out = static_cast<esphome::online_image::OnlineImage *>(this->art_out_image_);
-      if (!online_in->is_decoding() && !online_out->is_decoding()) {
-        auto *target = (this->art_slot_ && *this->art_slot_) ? online_out : online_in;
-        std::string url = (this->pending_art_url_.rfind("http://", 0) == 0 || this->pending_art_url_.rfind("https://", 0) == 0)
-                              ? this->pending_art_url_
-                              : join(this->api_base_, this->pending_art_url_);
-        std::string attempting_url = this->pending_art_url_;
-        this->pending_art_url_.clear();
-        target->set_url(url);
-        target->update();
-        ESP_LOGI("subwave.art", "Fetching cover (slot %d): %s",
-                 (int)(this->art_slot_ ? *this->art_slot_ : false), url.c_str());
-      }
+    if (this->is_network_ready_() && this->claimed_ && !this->bearer_.empty() && !this->cover_in_flight_) {
+      auto *target = (this->art_slot_ && *this->art_slot_) ? this->art_out_image_ : this->art_in_image_;
+      std::string url = (this->pending_art_url_.rfind("http://", 0) == 0 || this->pending_art_url_.rfind("https://", 0) == 0)
+                            ? this->pending_art_url_
+                            : join(this->api_base_, this->pending_art_url_);
+      this->pending_art_url_.clear();
+      this->cover_in_flight_ = true;
+      WorkerCommand cmd{};
+      cmd.type = WorkerCmdType::FETCH_COVER_ART;
+      strncpy(cmd.url_or_path, url.c_str(), sizeof(cmd.url_or_path) - 1);
+      cmd.target_ptr = target;
+      cmd.slot_index = (this->art_slot_ && *this->art_slot_) ? 1 : 0;
+      this->enqueue_command_(cmd);
+      ESP_LOGI("subwave.art", "Enqueued background cover fetch (slot %d): %s",
+               cmd.slot_index, url.c_str());
     }
   }
 
@@ -267,7 +267,11 @@ void SubwaveDisplay::loop() {
     this->irq_low_start_ms_ = 0;
   }
 
-  if (this->last_loop_ms_ != 0) {
+  if (this->first_loop_) {
+    this->first_loop_ = false;
+    this->last_loop_ms_ = now;
+    this->max_loop_lag_ms_ = 0;
+  } else if (this->last_loop_ms_ != 0) {
     uint32_t lag = now - this->last_loop_ms_;
     if (lag > this->max_loop_lag_ms_) {
       this->max_loop_lag_ms_ = lag;
@@ -836,11 +840,26 @@ void SubwaveDisplay::handle_worker_result_(const WorkerResult &res) {
       }
       break;
 
-    case WorkerResultType::COVER_ART_READY:
-      if (res.target_img != nullptr) {
-        ui_apply_cover_art(static_cast<esphome::image::Image *>(res.target_img));
+    case WorkerResultType::COVER_ART_READY: {
+      auto *img = static_cast<esphome::runtime_image::RuntimeImage *>(res.target_img);
+      if (img != nullptr && img->get_data_start() != nullptr && img->get_width() > 0 && img->get_height() > 0) {
+        ESP_LOGI("subwave.art", "Cover ready in %s (%dx%d)",
+                 img == this->art_out_image_ ? "art_out_image" : "art_in_image",
+                 img->get_width(), img->get_height());
+        ui_apply_cover_art(img);
+        if (this->art_primed_ != nullptr) *this->art_primed_ = true;
+        if (this->art_fading_ != nullptr && !*this->art_fading_) {
+          if (this->art_swap_script_ != nullptr) this->art_swap_script_->execute();
+        } else if (this->art_queued_ != nullptr) {
+          *this->art_queued_ = true;
+        }
+      } else {
+        ESP_LOGW("subwave.art", "Cover art result was null or invalid; triggering retry");
+        this->on_art_error();
       }
+      this->cover_in_flight_ = false;
       break;
+    }
 
     case WorkerResultType::CONNECTIVITY_RESULT:
       this->connectivity_ = res.connectivity;
@@ -1094,9 +1113,17 @@ void SubwaveDisplay::handle_worker_command_(const WorkerCommand &cmd) {
       break;
     }
 
-    case WorkerCmdType::FETCH_COVER_ART:
-      // Kept for check:firmware-async compatibility
+    case WorkerCmdType::FETCH_COVER_ART: {
+      auto *img = static_cast<esphome::runtime_image::RuntimeImage *>(cmd.target_ptr);
+      bool ok = this->fetch_cover_to_runtime_image_(cmd.url_or_path, img);
+      auto *res = new WorkerResult();
+      res->type = WorkerResultType::COVER_ART_READY;
+      res->target_img = ok ? img : nullptr;
+      res->slot_index = cmd.slot_index;
+      res->status_code = ok ? 200 : 500;
+      this->enqueue_result_(res);
       break;
+    }
 
     case WorkerCmdType::CHECK_CONNECTIVITY: {
       Connectivity conn = this->run_connectivity_ladder_();
@@ -1222,6 +1249,90 @@ bool SubwaveDisplay::fetch_image_to_runtime_image_(const std::string &path, esph
 
 bool SubwaveDisplay::fetch_png(const std::string &path, esphome::runtime_image::RuntimeImage *img) {
   return this->fetch_image_to_runtime_image_(path, img);
+}
+
+bool SubwaveDisplay::fetch_cover_to_runtime_image_(const std::string &path, esphome::runtime_image::RuntimeImage *img) {
+  ScopedTimer timer("subwave.block", "fetch_cover", 100);
+  if (path.empty() || img == nullptr) return false;
+  auto *client = this->http();
+  if (client == nullptr) return false;
+
+  std::vector<esphome::http_request::Header> headers;
+  if (!this->bearer_.empty()) {
+    headers.push_back({"Authorization", "Bearer " + this->bearer_});
+  }
+  headers.push_back({"Accept", "image/jpeg,image/png,*/*;q=0.8"});
+
+  const std::string url =
+      (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0) ? path : join(this->api_base_, path);
+  auto container = client->start(url, "GET", "", headers);
+  if (container == nullptr) {
+    ESP_LOGW("subwave.art", "GET cover %s could not be started.", path.c_str());
+    return false;
+  }
+  int status = container->status_code;
+  if (status != 200) {
+    ESP_LOGW("subwave.art", "Cover %s returned HTTP status %d.", path.c_str(), status);
+    container->end();
+    return false;
+  }
+
+  std::vector<uint8_t> body;
+  if (container->content_length > 0 && container->content_length <= 2 * 1024 * 1024) {
+    body.reserve(container->content_length);
+  }
+
+  uint8_t chunk[2048];
+  uint32_t last_data_time = esphome::millis();
+  while (true) {
+    int n = container->read(chunk, sizeof(chunk));
+    vTaskDelay(1);
+    auto loop_res = esphome::http_request::http_read_loop_result(
+        n, last_data_time, 12000, container->is_read_complete());
+    if (loop_res == esphome::http_request::HttpReadLoopResult::DATA) {
+      body.insert(body.end(), chunk, chunk + n);
+      if (body.size() > 2 * 1024 * 1024) {
+        ESP_LOGW("subwave.art", "Cover %s exceeded 2MB limit; aborting.", path.c_str());
+        container->end();
+        return false;
+      }
+      continue;
+    }
+    if (loop_res == esphome::http_request::HttpReadLoopResult::RETRY) {
+      continue;
+    }
+    if (loop_res == esphome::http_request::HttpReadLoopResult::TIMEOUT) {
+      ESP_LOGW("subwave.art", "Cover %s timed out during download.", path.c_str());
+      container->end();
+      return false;
+    }
+    break;
+  }
+  container->end();
+
+  if (body.empty()) {
+    ESP_LOGW("subwave.art", "Cover %s returned empty body.", path.c_str());
+    return false;
+  }
+
+  img->release();
+  if (!img->begin_decode(body.size())) {
+    ESP_LOGW("subwave.art", "Cover %s begin_decode failed.", path.c_str());
+    return false;
+  }
+
+  int consumed = img->feed_data(body.data(), body.size());
+  img->end_decode();
+
+  if (consumed < 0 || img->get_width() <= 0 || img->get_height() <= 0) {
+    ESP_LOGW("subwave.art", "Cover %s stream decode error (consumed: %d, dims: %dx%d).",
+             path.c_str(), consumed, img->get_width(), img->get_height());
+    return false;
+  }
+
+  ESP_LOGI("subwave.art", "Decoded cover %s (%u bytes -> %dx%d) on Core %d.",
+           path.c_str(), (unsigned) body.size(), img->get_width(), img->get_height(), xPortGetCoreID());
+  return true;
 }
 
 // ---------------------------------------------------------------------------
