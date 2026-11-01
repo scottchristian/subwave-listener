@@ -4,9 +4,13 @@
 #include "esphome/core/hal.h"
 #include "esphome/components/http_request/http_request.h"
 #include "esphome/components/runtime_image/runtime_image.h"
+#include "esphome/components/script/script.h"
 #include <string>
 #include <map>
 #include <vector>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
+#include <freertos/queue.h>
 
 namespace subwave_display {
 
@@ -68,6 +72,122 @@ struct ScheduleSlot {
   std::string avatar_url;
 };
 
+enum class WorkerCmdType : uint8_t {
+  POLL_STATE,
+  POLL_SCHEDULE,
+  SEND_HEARTBEAT,
+  PUSH_SETTINGS,
+  SKIP_TRACK,
+  CLAIM_DEVICE,
+  BIND_STATION,
+  FETCH_PNG,
+  FETCH_COVER_ART,
+  CHECK_CONNECTIVITY
+};
+
+struct WorkerSettings {
+  int brightness = 70;
+  char orientation[16]{"landscape"};
+  char theme_mode[16]{"auto"};
+  char idle_mode[16]{"stay"};
+  int idle_min = 30;
+  int idle_pct = 20;
+  bool skip_enabled = true;
+
+  WorkerSettings() = default;
+  WorkerSettings(const StationSettings &s)
+      : brightness(s.brightness),
+        idle_min(s.idle_min),
+        idle_pct(s.idle_pct),
+        skip_enabled(s.skip_enabled) {
+    strncpy(orientation, s.orientation.c_str(), sizeof(orientation) - 1);
+    orientation[sizeof(orientation) - 1] = '\0';
+    strncpy(theme_mode, s.theme_mode.c_str(), sizeof(theme_mode) - 1);
+    theme_mode[sizeof(theme_mode) - 1] = '\0';
+    strncpy(idle_mode, s.idle_mode.c_str(), sizeof(idle_mode) - 1);
+    idle_mode[sizeof(idle_mode) - 1] = '\0';
+  }
+
+  StationSettings to_station_settings() const {
+    StationSettings s;
+    s.brightness = brightness;
+    s.orientation = orientation;
+    s.theme_mode = theme_mode;
+    s.idle_mode = idle_mode;
+    s.idle_min = idle_min;
+    s.idle_pct = idle_pct;
+    s.skip_enabled = skip_enabled;
+    return s;
+  }
+};
+
+struct WorkerCommand {
+  WorkerCmdType type{WorkerCmdType::POLL_STATE};
+  char url_or_path[128]{0};
+  char payload[256]{0};
+  void *target_ptr{nullptr};
+  int slot_index{-1};
+  WorkerSettings settings{};
+  int rssi{0};
+  char ip[32]{0};
+  char bind_code[32]{0};
+};
+
+enum class WorkerResultType : uint8_t {
+  STATE_UPDATED,
+  SCHEDULE_UPDATED,
+  HEARTBEAT_DONE,
+  SETTINGS_SYNCED,
+  SKIP_DONE,
+  IMAGE_DECODED,
+  COVER_ART_READY,
+  CONNECTIVITY_RESULT,
+  CLAIM_DONE,
+  BIND_DONE
+};
+
+enum class Connectivity : uint8_t {
+  UNKNOWN,   // not checked yet
+  NO_WIFI,   // no association, or wrong password
+  NO_ROUTE,  // associated, has an IP, nothing gets out
+  NO_DNS,    // a route exists, but names do not resolve
+  NO_SERVER, // the internet works, the station does not answer
+  OK,        // all four passed
+};
+
+struct WorkerResult {
+  WorkerResultType type{WorkerResultType::STATE_UPDATED};
+  int status_code{0};
+  void *target_img{nullptr};
+  int slot_index{-1};
+  Connectivity connectivity{Connectivity::UNKNOWN};
+  std::string err_msg{};
+
+  // Staged parsed data
+  NowPlaying now{};
+  Byline byline{};
+  StationSettings settings{};
+  std::vector<ScheduleSlot> schedule_slots{};
+  std::map<std::string, std::string> persona_ids{};
+
+  int signed_in{0};
+  int listening{0};
+  bool is_night{true};
+  bool stream_idle{false};
+  int settings_rev{1};
+  int64_t server_now_ms{0};
+  uint32_t server_now_rx_ms{0};
+  int poll_after_sec{10};
+  std::string station_name{};
+  std::string logo_url{};
+  std::string schedule_day_label{};
+  SkipState skip{};
+  bool server_reachable{true};
+  bool claim_refused{false};
+  bool identity_lost{false};
+  bool claimed{false};
+};
+
 /**
  * The screen's half of the station.
  *
@@ -109,8 +229,13 @@ class SubwaveDisplay
   static constexpr int MAX_SCHEDULE_SLOTS = 5;
 
   void setup() override;
+  void loop() override;
   void update() override;
   void dump_config() override;
+
+  // Performance and resource monitoring
+  void init_system_stats();
+  void log_system_stats();
 
   void set_server_url(const std::string &url) { server_url_ = url; }
   void set_device_id(const std::string &id) { device_id_ = id; }
@@ -119,6 +244,10 @@ class SubwaveDisplay
   // Bind to a station using a server URL and a bind code. Returns true on
   // success. Stores the resulting identity in flash.
   bool bind(const std::string &server_url, const std::string &bind_code);
+
+  // FreeRTOS worker queue producer (0 timeout: never block UI!)
+  bool enqueue_command_(const WorkerCommand &cmd);
+  bool is_network_ready_() const;
 
   void set_setup_ap_ssid(const std::string &s) { setup_ap_ssid_ = s; }
   void set_artwork_size(int v) { artwork_size_ = v; }
@@ -156,6 +285,30 @@ class SubwaveDisplay
 
   /** Fetch a PNG from the station (chunked or Content-Length) and decode into `img`. */
   bool fetch_png(const std::string &path, esphome::runtime_image::RuntimeImage *img);
+
+  void bind_runtime_images(
+      esphome::runtime_image::RuntimeImage *station_logo,
+      esphome::runtime_image::RuntimeImage *now_avatar,
+      esphome::runtime_image::RuntimeImage *row_0,
+      esphome::runtime_image::RuntimeImage *row_1,
+      esphome::runtime_image::RuntimeImage *row_2,
+      esphome::runtime_image::RuntimeImage *row_3,
+      esphome::runtime_image::RuntimeImage *row_4);
+
+  void bind_art_controls(
+      esphome::runtime_image::RuntimeImage *art_in,
+      esphome::runtime_image::RuntimeImage *art_out,
+      bool *art_slot,
+      bool *art_primed,
+      bool *art_queued,
+      bool *art_fading,
+      esphome::script::Script<> *art_swap);
+
+  void on_art_error();
+
+  void set_connectivity_reported_script(esphome::script::Script<> *script);
+
+  void request_connectivity_check();
 
   const std::string &bind_code() const { return bind_code_; }
   void set_bind_code(const std::string &c) { bind_code_ = c; }
@@ -217,14 +370,7 @@ class SubwaveDisplay
   // The four results, in the order they are tested. Each one exists because it
   // fails for a different reason and the fix differs — "it doesn't work" would
   // leave somebody holding a phone stuck.
-  enum class Connectivity : uint8_t {
-    UNKNOWN,   // not checked yet
-    NO_WIFI,   // no association, or wrong password
-    NO_ROUTE,  // associated, has an IP, nothing gets out
-    NO_DNS,    // a route exists, but names do not resolve
-    NO_SERVER, // the internet works, the station does not answer
-    OK,        // all four passed
-  };
+  using Connectivity = subwave_display::Connectivity;
 
   /** Run the ladder. Blocking — a few seconds. Call it from a script delay. */
   Connectivity check_connectivity();
@@ -258,17 +404,9 @@ class SubwaveDisplay
 
   /**
    * Fetch the state now rather than at the next poll.
-   *
-   * For a user action that must feel answered — a skip, a setting pushed from the
-   * device's own screen. Without it the server's answer arrives up to a poll
-   * interval later, and the gap between pressing a button and seeing anything is
-   * indistinguishable from the button being broken.
-   *
-   * Does not claim to be fast. request_() reads the response to completion, so
-   * this blocks for the round trip — which is why it is called from a script
-   * action rather than from a touch handler.
+   * Enqueues POLL_STATE to background worker. Non-blocking.
    */
-  void refresh_now() { this->poll_state_(); }
+  void refresh_now();
 
   /**
    * Tell the station the screen is alive. Driven by a YAML interval.
@@ -298,17 +436,46 @@ class SubwaveDisplay
    * table: a request says which kind it is, and handle_() decides what a given
    * status and body mean for it.
    */
-  enum class Req : uint8_t { CLAIM, STATE, SCHEDULE, ARTWORK, SKIP, HEARTBEAT, SETTINGS };
-
-  void request_(Req kind, const char *method, const std::string &path, const std::string &body, uint32_t timeout_ms);
-  void handle_(Req kind, int status, const std::string &body);
+  int request_(const char *method, const std::string &path, const std::string &body,
+               uint32_t timeout_ms, std::string *out_body);
 
   void poll_state_();
   void send_heartbeat_();
   bool claim_device_();
-  void parse_state_(const std::string &json);
-  void parse_schedule_(const std::string &json);
+  bool parse_state_(const std::string &json, WorkerResult *res);
+  bool parse_schedule_(const std::string &json, WorkerResult *res);
   void resolve_now_avatar_();
+
+  // Background worker task (Core 0) & queues
+  static void worker_task_entry_(void *arg);
+  void worker_loop_();
+  void handle_worker_command_(const WorkerCommand &cmd);
+  void handle_worker_result_(const WorkerResult &res);
+  bool enqueue_result_(WorkerResult *res);
+
+  bool bind_device_(const std::string &server_url, const std::string &bind_code);
+  Connectivity run_connectivity_ladder_();
+  bool fetch_image_to_runtime_image_(const std::string &path, esphome::runtime_image::RuntimeImage *img);
+  void trigger_connectivity_reported_();
+
+  esphome::runtime_image::RuntimeImage *station_logo_image_{nullptr};
+  esphome::runtime_image::RuntimeImage *now_avatar_image_{nullptr};
+  esphome::runtime_image::RuntimeImage *row_avatar_images_[MAX_SCHEDULE_SLOTS]{nullptr};
+  esphome::runtime_image::RuntimeImage *art_in_image_{nullptr};
+  esphome::runtime_image::RuntimeImage *art_out_image_{nullptr};
+  bool *art_slot_{nullptr};
+  bool *art_primed_{nullptr};
+  bool *art_queued_{nullptr};
+  bool *art_fading_{nullptr};
+  esphome::script::Script<> *art_swap_script_{nullptr};
+  esphome::script::Script<> *connectivity_reported_script_{nullptr};
+
+  TaskHandle_t worker_task_handle_{nullptr};
+  QueueHandle_t worker_cmd_queue_{nullptr};
+  QueueHandle_t ui_result_queue_{nullptr};
+
+  bool settings_pending_push_{false};
+  uint32_t settings_push_ms_{0};
 
   // The credential, in flash. A fixed-size buffer because preferences are stored
   // by memcpy of a trivially-copyable type — see the note on save_token_().
@@ -389,6 +556,16 @@ class SubwaveDisplay
   Byline byline_;
   SkipState skip_;
   StationSettings settings_;
+
+  // Performance and resource monitoring
+  uint32_t last_stats_ms_{0};
+  uint32_t last_loop_ms_{0};
+  uint32_t loop_count_{0};
+  uint32_t max_loop_lag_ms_{0};
+  uint32_t last_tick_total_[2]{0, 0};
+  uint32_t last_tick_idle_[2]{0, 0};
+  uint32_t irq_low_start_ms_{0};
+  uint32_t last_irq_warn_ms_{0};
 };
 
 }  // namespace subwave_display

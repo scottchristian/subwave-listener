@@ -266,18 +266,7 @@ script:
           c->set_server_url(url);
 
           lv_label_set_text(id(bind_status), "Testing connection to server...");
-          auto result = c->check_connectivity();
-          if (result == subwave_display::SubwaveDisplay::Connectivity::OK ||
-              result == subwave_display::SubwaveDisplay::Connectivity::NO_SERVER) {
-            if (result == subwave_display::SubwaveDisplay::Connectivity::OK) {
-              lv_label_set_text(id(bind_status), "Server reachable! Enter bind code and tap Bind Station.");
-            } else {
-              lv_label_set_text(id(bind_status), "Server not responding. Check the address.");
-            }
-          } else {
-            const char *msg = c->connectivity_message(result);
-            lv_label_set_text(id(bind_status), msg);
-          }
+          c->request_connectivity_check();
 
   # Bind the device to the station. Uses the server URL and bind code from the
   # on-screen fields. On success, stores identity in flash and reboots.
@@ -512,10 +501,32 @@ script:
             return;
           }
 
-          auto result = c->check_connectivity();
+          lv_label_set_text(id(wifi_status), "Checking network connection...");
+          c->request_connectivity_check();
+
+  # ---------------------------------------------------------------------------
+  # Connectivity reported: handles the result of an async connectivity check on loopTask.
+  # ---------------------------------------------------------------------------
+  - id: connectivity_reported
+    mode: single
+    then:
+      - lambda: |-
+          auto *c = id(display_client);
+          auto result = c->connectivity();
           const char *message = c->connectivity_message(result);
           lv_obj_set_width(id(boot_bar_fill), 560);
           bool bound = !c->device_id().empty() && (!c->claim_token().empty() || !c->bearer().empty()) && !c->server_url().empty();
+
+          // If bind screen is active, also update bind_status
+          if (id(bind_status) != nullptr) {
+            if (result == subwave_display::SubwaveDisplay::Connectivity::OK) {
+              lv_label_set_text(id(bind_status), "Server reachable! Enter bind code and tap Bind Station.");
+            } else if (result == subwave_display::SubwaveDisplay::Connectivity::NO_SERVER) {
+              lv_label_set_text(id(bind_status), "Server not responding. Check the address.");
+            } else {
+              lv_label_set_text(id(bind_status), message);
+            }
+          }
 
           // Unbound device with working Wi-Fi route: go straight to Bind Station (screen 4), NOT Wi-Fi setup!
           if (!bound &&
@@ -677,9 +688,19 @@ script:
     then:
       - lambda: |-
           if (target < 0 || target > 4) return;
+          static uint32_t s_art_fading_start = 0;
           if (id(art_fading)) {
-            id(window_queued) = target;
-            return;
+            if (s_art_fading_start == 0) s_art_fading_start = esphome::millis();
+            if (esphome::millis() - s_art_fading_start > 1200) {
+              ESP_LOGW("subwave.nav", "art_fading stuck for >1.2s; clearing guard");
+              id(art_fading) = false;
+              s_art_fading_start = 0;
+            } else {
+              id(window_queued) = target;
+              return;
+            }
+          } else {
+            s_art_fading_start = 0;
           }
           id(window_queued) = -1;
 

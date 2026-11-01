@@ -15,25 +15,24 @@ touchscreen:
     display: tft_display
     reset_pin: GPIO22
     interrupt_pin: GPIO21
+    touch_timeout: 50ms
     transform:
       mirror_x: true
       # VERIFIED IN PHASE 2 BEFORE ANYTHING ELSE. A wrong touch transform makes
       # every later step unverifiable: you cannot tell a layout bug from a
       # coordinate bug, and both look like "the button does nothing".
       mirror_y: false
-    # THE ONLY TOUCH LISTENER ON THE DEVICE, and it exists for one reason:
-    # waking. "Waking is touch-only" (device/design.md) because there is no audio
+    # WAKING & DIAGNOSTICS TOUCH LISTENERS:
+    # "Waking is touch-only" (device/design.md) because there is no audio
     # here and so no user activity to measure — a track change or a heartbeat
     # must not light up a screen in an empty room.
-    #
-    # It was missing entirely until 1.9.0, which is why the screen could not
-    # wake even once the dimming existed. Every other interaction — Skip, the
-    # brightness segments, the carousel arrows, the setup screen — is wired to
-    # its own widget, so this is the only path that fires when nothing is
-    # pressed-and-held on a control, and it has to exist for the screen to come
-    # back at all.
     on_touch:
+      - lambda: |-
+          ESP_LOGI("subwave.touch", "Touch down at (%d, %d)", touch.x, touch.y);
       - script.execute: idle_arm
+    on_release:
+      - lambda: |-
+          ESP_LOGI("subwave.touch", "Touch release");
 
 # WiFi is a SEPARATE ESP32-C6 on SPI, so the display and the network are
 # coupled only by the fact that they share a board.
@@ -248,6 +247,7 @@ lvgl:
                   widgets:
                     - label:
                         id: glyph_prev
+                        clickable: false
                         text: "‹"
                         text_font: font_title
                         text_color: 0xDCE8F5
@@ -273,12 +273,14 @@ lvgl:
                   widgets:
                     - label:
                         id: nav_lbl_0
+                        clickable: false
                         text: "Now Playing"
                         text_font: font_small
                         text_color: 0xDCE8F5
                         align: CENTER
                     - obj:
                         id: rail_0
+                        clickable: false
                         align: BOTTOM_MID
                         width: 56px
                         height: 3px
@@ -306,12 +308,14 @@ lvgl:
                   widgets:
                     - label:
                         id: nav_lbl_1
+                        clickable: false
                         text: "Schedule"
                         text_font: font_small
                         text_color: 0x6A8BA8
                         align: CENTER
                     - obj:
                         id: rail_1
+                        clickable: false
                         align: BOTTOM_MID
                         width: 56px
                         height: 3px
@@ -339,12 +343,14 @@ lvgl:
                   widgets:
                     - label:
                         id: nav_lbl_2
+                        clickable: false
                         text: "Settings"
                         text_font: font_small
                         text_color: 0x6A8BA8
                         align: CENTER
                     - obj:
                         id: rail_2
+                        clickable: false
                         align: BOTTOM_MID
                         width: 56px
                         height: 3px
@@ -369,6 +375,7 @@ lvgl:
                   widgets:
                     - label:
                         id: glyph_next
+                        clickable: false
                         text: "›"
                         text_font: font_title
                         text_color: 0xDCE8F5
@@ -485,7 +492,7 @@ online_image:
       - lambda: |-
           ESP_LOGI("subwave.art", "Cover decoded into art_out_image (%dx%d)",
                    id(art_out_image)->get_width(), id(art_out_image)->get_height());
-          lv_image_set_src(id(art_in), id(art_out_image));
+          lv_image_set_src(id(art_in), id(art_out_image)->get_lv_image_dsc());
           id(art_primed) = true;
           if (!id(art_fading)) {
             id(art_swap).execute();
@@ -493,7 +500,9 @@ online_image:
             id(art_queued) = true;
           }
     on_error:
-      - lambda: 'ESP_LOGW("subwave.art", "art_out_image: download or decode failed");'
+      - lambda: |-
+          ESP_LOGW("subwave.art", "art_out_image: download or decode failed");
+          id(display_client)->on_art_error();
 
   - id: art_in_image
     http_request_id: shared_http
@@ -519,7 +528,7 @@ online_image:
       - lambda: |-
           ESP_LOGI("subwave.art", "Cover decoded into art_in_image (%dx%d)",
                    id(art_in_image)->get_width(), id(art_in_image)->get_height());
-          lv_image_set_src(id(art_in), id(art_in_image));
+          lv_image_set_src(id(art_in), id(art_in_image)->get_lv_image_dsc());
           id(art_primed) = true;
           if (!id(art_fading)) {
             id(art_swap).execute();
@@ -527,7 +536,9 @@ online_image:
             id(art_queued) = true;
           }
     on_error:
-      - lambda: 'ESP_LOGW("subwave.art", "art_in_image: download or decode failed");'
+      - lambda: |-
+          ESP_LOGW("subwave.art", "art_in_image: download or decode failed");
+          id(display_client)->on_art_error();
 
   # ---- station logo & presenter avatars ----------------------------------
   - id: station_logo_image

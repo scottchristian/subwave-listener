@@ -58,7 +58,7 @@ function sourceFiles(dir: string): string[] {
   for (const entry of readdirSync(dir)) {
     const full = join(dir, entry);
     if (statSync(full).isDirectory()) {
-      if (entry === ".esphome" || entry === "builds") continue;
+      if (entry === ".esphome" || entry === "builds" || entry === "gsl3680") continue;
       out.push(...sourceFiles(full));
       continue;
     }

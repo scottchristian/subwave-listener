@@ -162,6 +162,25 @@ script:
           bind_uint32("idle_deadline_ms", &id(idle_deadline_ms));
 
           subwave_display::bind_client(id(display_client));
+          id(display_client)->bind_runtime_images(
+              id(station_logo_image),
+              id(now_avatar_image),
+              id(row_0_avatar_image),
+              id(row_1_avatar_image),
+              id(row_2_avatar_image),
+              id(row_3_avatar_image),
+              id(row_4_avatar_image)
+          );
+          id(display_client)->bind_art_controls(
+              id(art_in_image),
+              id(art_out_image),
+              &id(art_slot),
+              &id(art_primed),
+              &id(art_queued),
+              &id(art_fading),
+              id(art_swap)
+          );
+          id(display_client)->set_connectivity_reported_script(id(connectivity_reported));
       - delay: 500ms
       - lambda: subwave_display::bindings_report_missing();
       # LAST. Until this runs, every lookup is null and every painter is a crash.

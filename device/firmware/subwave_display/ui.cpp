@@ -32,6 +32,7 @@
 namespace subwave_display {
 
 static const char *const TAG = "subwave.ui";
+static uint32_t s_touch_counter = 0;
 
 // ---------------------------------------------------------------------------
 // The bindings, and why they exist.
@@ -446,10 +447,10 @@ void settings_refresh() {
   // Uptime, from the local millisecond counter. The station's clock is only a
   // reference; uptime is a fact about this device.
   uint32_t secs = esphome::millis() / 1000;
-  char up[48];
-  if (secs > 86400) snprintf(up, sizeof(up), "%d days %d hours", (int) (secs / 86400), (int) ((secs % 86400) / 3600));
-  else if (secs > 3600) snprintf(up, sizeof(up), "%d hours %d minutes", (int) (secs / 3600), (int) ((secs % 3600) / 60));
-  else snprintf(up, sizeof(up), "%d minutes", (int) (secs / 60));
+  char up[64];
+  if (secs > 86400) snprintf(up, sizeof(up), "%d days %d hours | touches: %u", (int) (secs / 86400), (int) ((secs % 86400) / 3600), (unsigned) s_touch_counter);
+  else if (secs > 3600) snprintf(up, sizeof(up), "%d hours %d minutes | touches: %u", (int) (secs / 3600), (int) ((secs % 3600) / 60), (unsigned) s_touch_counter);
+  else snprintf(up, sizeof(up), "%d minutes | touches: %u", (int) (secs / 60), (unsigned) s_touch_counter);
   lv_label_set_text(OBJ(val_up), up);
 }
 
@@ -495,6 +496,10 @@ void idle_apply(bool asleep) {
 }
 
 void idle_touch() {
+  s_touch_counter++;
+  if (ui_ready() && OBJ(val_up) != nullptr) {
+    settings_refresh();
+  }
   // Any touch wakes, and restarts the full timer. A track change, a show change
   // or a heartbeat deliberately do NOT: a screen nobody is touching should stay
   // as it is rather than lighting itself up in an empty room.
@@ -512,7 +517,7 @@ void idle_touch() {
   const uint32_t minutes = c == nullptr || c->settings().idle_min == 0 ? 30u : (uint32_t) c->settings().idle_min;
   const std::string mode = c == nullptr ? std::string("stay") : c->settings().idle_mode;
   float brightness = c == nullptr ? 1.0f : (float) c->settings().brightness / 100.0f;
-  ESP_LOGI(TAG, "Idle touch: wake (backlight %d%%), deadline %u minutes, mode=%s", (int) (brightness * 100.0f), minutes, mode.c_str());
+  ESP_LOGI(TAG, "Idle touch: wake (backlight %d%%), deadline %u minutes, mode=%s", (int) (brightness * 100.0f), (unsigned) minutes, mode.c_str());
   U32(idle_deadline_ms) = (uint32_t) esphome::millis() + minutes * 60000u;
 }
 
@@ -537,6 +542,43 @@ void idle_poll() {
   if (c == nullptr || !ui_ready()) return;
   if (g_backlight == nullptr) return;
   idle_apply(false);
+}
+
+void ui_apply_logo(esphome::image::Image *img) {
+  if (img == nullptr || img->get_data_start() == nullptr || img->get_width() <= 0 || img->get_height() <= 0) return;
+  lv_obj_t *obj = OBJ(station_logo);
+  if (obj != nullptr) {
+    ::lv_image_set_src(obj, img->get_lv_image_dsc());
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void ui_apply_now_avatar(esphome::image::Image *img) {
+  if (img == nullptr || img->get_data_start() == nullptr || img->get_width() <= 0 || img->get_height() <= 0) return;
+  lv_obj_t *obj = OBJ(now_avatar);
+  if (obj != nullptr) {
+    ::lv_image_set_src(obj, img->get_lv_image_dsc());
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void ui_apply_row_avatar(int slot, esphome::image::Image *img) {
+  if (img == nullptr || slot < 0 || slot >= 5 || img->get_data_start() == nullptr || img->get_width() <= 0 || img->get_height() <= 0) return;
+  char name[32];
+  snprintf(name, sizeof(name), "row_%d_avatar", slot);
+  lv_obj_t *obj = static_cast<lv_obj_t *>(lookup(name));
+  if (obj != nullptr) {
+    ::lv_image_set_src(obj, img->get_lv_image_dsc());
+    lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void ui_apply_cover_art(esphome::image::Image *img) {
+  if (img == nullptr || img->get_data_start() == nullptr || img->get_width() <= 0 || img->get_height() <= 0) return;
+  lv_obj_t *obj = OBJ(art_in);
+  if (obj != nullptr) {
+    ::lv_image_set_src(obj, img->get_lv_image_dsc());
+  }
 }
 
 }  // namespace subwave_display

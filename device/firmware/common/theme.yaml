@@ -236,7 +236,7 @@ script:
   #
   # 650ms, matching the web exactly. Single alpha blend, no wipe, no slide.
   - id: art_swap
-    mode: restart
+    mode: single
     then:
       - lambda: |-
           // Wait for the incoming cover to finish decoding. art_primed is set by
@@ -273,6 +273,15 @@ script:
           lv_obj_add_flag(out, LV_OBJ_FLAG_HIDDEN);
           lv_timer_handler();
           id(art_fading) = false;
+          if (id(art_queued)) {
+            id(art_queued) = false;
+            art_swap->execute();
+          }
+          if (id(window_queued) >= 0) {
+            int q = id(window_queued);
+            id(window_queued) = -1;
+            window_go->execute(q);
+          }
 
   # A swap deferred behind a slide or another fade. Motion never overlaps:
   # two competing animations at once read as a glitch, and the incoming artwork

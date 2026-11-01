@@ -102,22 +102,7 @@ external_components:
       # and appends the component name itself, so pointing it straight at the
       # component directory makes it look for subwave_display/subwave_display/.
       path: ..
-    components: [subwave_display, subwave_setup_web]
-
-  # The GSL3680 touch controller driver is not in ESPHome core. It is taken from
-  # the reference project for this panel, which is the only thing known to drive
-  # this screen.
-  #
-  # PINNED TO A COMMIT, not to `main` the way the reference uses it. A wall screen
-  # is flashed once and then runs unattended for months; a build that resolves
-  # "whatever main was at the time" means the binary on the wall is not
-  # reproducible from the source in this repo, and a driver change lands on a
-  # device nobody is standing next to. The pin is deliberate — bump it knowingly.
-  - source:
-      type: git
-      url: https://github.com/jtenniswood/esphome-media-player
-      ref: 8ab172b688861893db0cedc93abdb150932eccfc
-    components: [gsl3680]
+    components: [subwave_display, subwave_setup_web, gsl3680]
 
 subwave_display:
   id: display_client
@@ -241,62 +226,6 @@ interval:
       # steps visibly, and one fed from the five-second idle tick is worse; one
       # label write a second is not a cost worth optimising away.
       - lambda: subwave_display::clock_refresh();
-      # Apply pending images (station logo, presenter avatar, cover art, and
-      # schedule row avatars) one at a time when shared_http is idle.
-      - lambda: |-
-          auto *c = id(display_client);
-          if (id(art_in_image)->is_decoding() || id(art_out_image)->is_decoding()) return;
-
-          if (!c->pending_logo_url().empty()) {
-            const std::string path = c->pending_logo_url();
-            c->clear_pending_logo_url();
-            if (c->fetch_png(path, id(station_logo_image))) {
-              lv_image_set_src(id(station_logo), id(station_logo_image));
-              lv_obj_clear_flag(id(station_logo), LV_OBJ_FLAG_HIDDEN);
-            }
-            return;
-          }
-
-          if (!c->pending_now_avatar_url().empty()) {
-            const std::string path = c->pending_now_avatar_url();
-            c->clear_pending_now_avatar_url();
-            if (c->fetch_png(path, id(now_avatar_image))) {
-              lv_image_set_src(id(now_avatar), id(now_avatar_image));
-              lv_obj_clear_flag(id(now_avatar), LV_OBJ_FLAG_HIDDEN);
-            }
-            return;
-          }
-
-          if (!c->pending_art_url().empty()) {
-            const std::string path = c->pending_art_url();
-            const std::string url = c->api_base() + path;
-            auto *img = id(art_slot) ? id(art_out_image) : id(art_in_image);
-            img->set_url(url);
-            img->update();
-            c->clear_pending_art_url();
-            ESP_LOGI("subwave.art", "Fetching cover (slot %d): %s", (int) id(art_slot), url.c_str());
-            return;
-          }
-
-          esphome::runtime_image::RuntimeImage *row_imgs[5] = {
-              id(row_0_avatar_image), id(row_1_avatar_image), id(row_2_avatar_image),
-              id(row_3_avatar_image), id(row_4_avatar_image),
-          };
-          lv_obj_t *row_widgets[5] = {
-              id(row_0_avatar), id(row_1_avatar), id(row_2_avatar),
-              id(row_3_avatar), id(row_4_avatar),
-          };
-          for (int i = 0; i < 5; i++) {
-            const std::string path = c->pending_row_avatar_url(i);
-            if (!path.empty()) {
-              c->clear_pending_row_avatar_url(i);
-              if (c->fetch_png(path, row_imgs[i])) {
-                lv_image_set_src(row_widgets[i], row_imgs[i]);
-                lv_obj_clear_flag(row_widgets[i], LV_OBJ_FLAG_HIDDEN);
-              }
-              return;
-            }
-          }
       # Flush a cover that arrived while a crossfade was running. art_tick was
       # defined and never called, so a queued swap stayed queued forever.
       - script.execute: art_tick

@@ -8,7 +8,7 @@
 # Based on vendor docs: CH340 DTR→GPIO35, RTS→CHIP_PU auto-download circuit.
 # DTR=True pulls GPIO35 low (strap), RTS=True pulls CHIP_PU low (reset),
 # then RTS=False rises CHIP_PU while GPIO35 still low → ROM download mode.
-import serial, subprocess, sys, time
+import os, serial, subprocess, sys, time
 
 PORT = sys.argv[1]
 ARGS = sys.argv[2:]
@@ -32,18 +32,28 @@ time.sleep(0.20)
 
 # Release CHIP_PU while GPIO35 still low → ROM download mode
 s.rts = False
+time.sleep(0.1)
+s.close()
+
+env = dict(os.environ)
+env["PYTHONPATH"] = "device/firmware/.esphome/idf/penvs/5.5.4/lib/python3.14/site-packages"
 
 rc = subprocess.call([
-    "python3", "-m", "esptool",
+    "/opt/homebrew/bin/python3.14", "-m", "esptool",
     "--port", PORT,
-    "--before", "no-reset",
-    "--after", "hard-reset",
-] + ARGS)
+    "--before", "no_reset",
+    "--after", "hard_reset",
+] + ARGS, env=env)
 
-# Release strap
-s.dtr = False
-s.rts = True
-time.sleep(0.2)
-s.rts = False
-s.close()
+# Release strap and reset back into app if needed
+try:
+    s2 = serial.Serial(PORT, 115200, timeout=0.2)
+    s2.dtr = False
+    s2.rts = True
+    time.sleep(0.2)
+    s2.rts = False
+    s2.close()
+except Exception:
+    pass
+
 sys.exit(rc)

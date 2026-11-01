@@ -24,6 +24,12 @@ void now_refresh();
 void shows_refresh();
 void settings_refresh();
 
+/** Apply decoded images to LVGL widgets safely on loopTask */
+void ui_apply_logo(esphome::image::Image *img);
+void ui_apply_now_avatar(esphome::image::Image *img);
+void ui_apply_row_avatar(int slot, esphome::image::Image *img);
+void ui_apply_cover_art(esphome::image::Image *img);
+
 /** Blank the screen and show the "tap to wake" line, or the reverse. */
 void idle_apply(bool asleep);
 void idle_touch();
