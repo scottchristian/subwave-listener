@@ -8,7 +8,7 @@
 //
 // To prevent UI thread starvation, all network operations (state poll, schedule poll,
 // heartbeat, settings push, skip, claim, bind) MUST run asynchronously on Core 0
-// in `subwave_worker` via FreeRTOS queues with zero-timeout producer helpers.
+// in `subwave_worker`; command producers must never block the UI thread.
 //
 // Run: npm run check:firmware-async
 
@@ -83,11 +83,11 @@ ok(
   "enqueue_command_ uses 0-tick timeout to guarantee loopTask never blocks",
 );
 
+const enqueueResultFn = extractFunctionBody(cppSrc, /bool\s+SubwaveDisplay::enqueue_result_\s*\(/);
 ok(
-  /bool\s+SubwaveDisplay::enqueue_result_\s*\([^)]*\)\s*\{[\s\S]*?xQueueSend\s*\(\s*this->ui_result_queue_,\s*&res,\s*0\s*\)/.test(
-    cppSrc,
-  ),
-  "enqueue_result_ uses 0-tick timeout from worker task",
+  /TickType_t\s+wait_ticks\s*=\s*res->type\s*==\s*WorkerResultType::COVER_ART_READY\s*\?\s*portMAX_DELAY\s*:\s*0\s*;/.test(enqueueResultFn) &&
+    /xQueueSend\s*\(\s*this->ui_result_queue_,\s*&res,\s*wait_ticks\s*\)/.test(enqueueResultFn),
+  "worker retains cover completions until the UI can receive them; other results remain non-blocking",
 );
 
 // 4. UI Loop Drains Result Queue Safely on loopTask
@@ -275,6 +275,85 @@ ok(
     /request_connectivity_check/.test(scriptsYaml) &&
     !/auto\s+result\s*=\s*c->check_connectivity\(\)/.test(scriptsYaml),
   "UI setup scripts trigger async request_connectivity_check and handle results via connectivity_reported",
+);
+
+const enqueueCoverFn = extractFunctionBody(loopFn, /if\s*\(\s*this->enqueue_command_\(cmd\)\s*\)/);
+ok(
+  enqueueCoverFn.includes("this->pending_art_url_.clear();") &&
+    enqueueCoverFn.includes("this->cover_in_flight_ = true;") &&
+    (loopFn.match(/pending_art_url_\.clear\(\)/g) || []).length === 1 &&
+    (loopFn.match(/cover_in_flight_\s*=\s*true/g) || []).length === 1,
+  "cover URL and in-flight state change only when the fetch command is accepted",
+);
+
+const applyCoverFn = extractFunctionBody(uiCpp, /void\s+ui_apply_cover_art\s*\(/);
+const uiHeader = fs.readFileSync(path.join(FW, "ui.h"), "utf8");
+ok(
+  /ui_apply_cover_art\(esphome::image::Image \*img, int slot\)/.test(uiHeader) &&
+    /lv_obj_t\s*\*obj\s*=\s*slot\s*==\s*1\s*\?\s*OBJ\(art_out\)\s*:\s*OBJ\(art_in\)/.test(applyCoverFn),
+  "cover publication selects the fixed widget associated with the completed decode slot",
+);
+ok(
+  applyCoverFn.includes("img->get_data_start() == nullptr") &&
+    applyCoverFn.includes("img->get_width() <= 0") &&
+    applyCoverFn.includes("img->get_height() <= 0"),
+  "invalid artwork cannot replace the displayed cover",
+);
+const coverResultFn = extractFunctionBody(cppSrc, /case\s+WorkerResultType::COVER_ART_READY\s*:/);
+ok(
+  coverResultFn.includes("ui_apply_cover_art(img, res.slot_index);") &&
+    coverResultFn.includes("this->cover_in_flight_ = false;"),
+  "cover completion forwards its decode slot and releases the in-flight latch",
+);
+const themeYaml = fs.readFileSync(path.join(FW, "..", "common", "theme.yaml"), "utf8");
+ok(
+  /bind_object\("art_in", id\(art_in\)\)/.test(bindingYaml) &&
+    /bind_object\("art_out", id\(art_out\)\)/.test(bindingYaml) &&
+    /lv_obj_t\* out = id\(art_out\);\s*lv_obj_t\* in\s*= id\(art_in\);\s*id\(art_out\) = in;\s*id\(art_in\)\s*= out;\s*id\(art_slot\) = !id\(art_slot\);/.test(themeYaml) &&
+    /cmd.slot_index = \(this->art_slot_ && \*this->art_slot_\) \? 1 : 0;/.test(loopFn),
+  "crossfade roles and decode slot alternate together while C++ widget bindings remain fixed",
+);
+
+const effectsDrawFn = extractFunctionBody(uiCpp, /void\s+art_effects_draw\s*\(/);
+const effectsTickFn = extractFunctionBody(uiCpp, /void\s+art_effects_tick\s*\(/);
+const readyFn = extractFunctionBody(uiCpp, /void\s+ui_mark_ready\s*\(/);
+ok(
+  readyFn.includes("lv_obj_add_event_cb(OBJ(art_layers), art_effects_draw, LV_EVENT_DRAW_POST, nullptr);") &&
+    readyFn.includes("lv_timer_create(art_effects_tick, 33, OBJ(art_layers));"),
+  "artwork overlays draw above both covers and update on a nonblocking LVGL timer",
+);
+ok(
+  effectsTickFn.includes("!c->stream_idle()") && effectsTickFn.includes("lv_obj_is_visible(obj)") &&
+    effectsTickFn.includes("{OBJ(art_in), OBJ(art_out)}") &&
+    effectsTickFn.includes("!lv_obj_has_flag(cover, LV_OBJ_FLAG_HIDDEN)") &&
+    effectsTickFn.includes("lv_image_get_src(cover) != nullptr") &&
+    effectsTickFn.includes("lv_obj_get_style_opa(cover, LV_PART_MAIN) > LV_OPA_MIN") &&
+    effectsTickFn.includes("if (active || was_active)"),
+  "effects run only with visible artwork and clear the last frame when the stream becomes idle",
+);
+ok(
+  effectsDrawFn.includes("i < 4") && effectsDrawFn.includes("i * 450") &&
+    effectsDrawFn.includes("% 3200") && effectsDrawFn.includes("% 4500") &&
+    effectsDrawFn.includes("lv_draw_arc(layer, &ring)") && effectsDrawFn.includes("INT(c_accent)"),
+  "four accent-coloured sonar rings retain the web cadence and stagger alongside the light sweep",
+);
+ok(
+  effectsDrawFn.includes("sweep.bg_grad.stops_count = 2;") &&
+    (effectsDrawFn.match(/lv_draw_rect\(layer, &sweep, &band\)/g) || []).length === 2,
+  "light sweep uses two gradient halves within the firmware's two-stop limit",
+);
+ok(
+  effectsDrawFn.includes("std::max(saved_clip.x1, bounds.x1)") &&
+    effectsDrawFn.includes("std::max(saved_clip.y1, bounds.y1)") &&
+    effectsDrawFn.includes("std::min(saved_clip.x2, bounds.x2)") &&
+    effectsDrawFn.includes("std::min(saved_clip.y2, bounds.y2)") &&
+    effectsDrawFn.includes("layer->_clip_area = saved_clip;"),
+  "oversized rings and moving sweep remain clipped to artwork without leaking the clip state",
+);
+ok(
+  !/\b(?:delay|vTaskDelay|lv_timer_handler|lv_obj_invalidate|lv_obj_set_\w+)\s*\(/.test(effectsDrawFn) &&
+    !/\b(?:delay|vTaskDelay|lv_timer_handler)\s*\(/.test(effectsTickFn),
+  "effects never block or mutate widgets during drawing",
 );
 
 if (failed > 0) {

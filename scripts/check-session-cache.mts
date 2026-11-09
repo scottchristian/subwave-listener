@@ -101,8 +101,25 @@ ok((await cachedSession("t3", { now: T0, load: expired })) === null, "expired se
     cachedInAdmin.length === 0,
     `no admin route reads the cached session (found in ${cachedInAdmin.map((f) => path.relative(repo, f)).join(", ") || "none"})`
   );
-  const liveInAdmin = adminRoutes.filter((f) => /getServerSession/.test(readFileSync(f, "utf8")));
+  // Two sanctioned forms, one property. A route either calls getServerSession
+  // itself, or calls the shared requireAdmin(), which does the same lookup and
+  // additionally re-reads the User row — pinned below, because that is the part
+  // that makes the cookie's verdict live rather than remembered.
+  const liveInAdmin = adminRoutes.filter((f) => {
+    const src = readFileSync(f, "utf8");
+    return /getServerSession/.test(src) || /requireAdmin\s*\(/.test(src);
+  });
   ok(liveInAdmin.length === adminRoutes.length, "every admin route verifies the session live instead");
+  {
+    const helper = readFileSync(path.join(repo, "lib", "admin-auth.ts"), "utf8");
+    ok(/getServerSession\(/.test(helper), "requireAdmin() reads the session live");
+    ok(/prisma\.user\.findUnique/.test(helper), "and re-reads the user row");
+    ok(
+      /select:\s*\{\s*id:\s*true,\s*isAdmin:\s*true\s*\}/.test(helper),
+      "reads the row's isAdmin, so a demotion lands on the next request"
+    );
+    ok(!/cachedSession/.test(helper), "and never consults the cached verdict");
+  }
 
   // Every path that changes approval or removes an account must drop the cached
   // verdicts, or a revoked listener keeps their access until the interval ends.

@@ -86,6 +86,7 @@ await db.setting.createMany({
 });
 
 const auto = await import("../lib/auto-update.ts");
+const dbwake = await import("../lib/dbwake.ts");
 
 /**
  * Model a suspended database faithfully.
@@ -137,10 +138,25 @@ function makeAsleep(canWake: boolean) {
     return (savedRawUnsafe as any).call(client, q);
   };
 
+  // The wake path must knock through THIS connection, not a fresh client: the
+  // shared client is the one pretending to be asleep, and a fresh client still
+  // reaches a real file — it would report success while every read here keeps
+  // refusing. `timeoutMs: 0` makes "will not wake" answer after one knock
+  // instead of the real ten-second backoff.
+  dbwake.setWakeKnockForTests(async () => {
+    try {
+      await client.$queryRaw`SELECT 1`;
+      return true;
+    } catch {
+      return false;
+    }
+  }, 0);
+
   return () => {
     for (const m of models) client[m] = saved[m];
     client.$queryRaw = savedRaw;
     client.$queryRawUnsafe = savedRawUnsafe;
+    dbwake.setWakeKnockForTests(null);
   };
 }
 

@@ -38,6 +38,9 @@ function resolveFile(href) {
 const REPO_ROOT = process.env.TEST_REPO_ROOT || process.cwd();
 
 export async function resolve(specifier, context, nextResolve) {
+  if (specifier === "next/server") {
+    return nextResolve("next/server.js", context);
+  }
   const testClient = process.env.TEST_PRISMA_CLIENT;
   if (specifier.startsWith("@/")) {
     return resolveFile(new URL("./" + specifier.slice(2), `file://${REPO_ROOT}/`).href);

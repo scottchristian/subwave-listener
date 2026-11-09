@@ -238,6 +238,63 @@ ok(
 // Nested: a child is positioned relative to its parent, so a button and the
 // label inside it share coordinates by design. Comparing those would fail on
 // every button that has a label in it.
+
+// ---------------------------------------------------------------------------
+// The Now Playing co-host portrait, and the one pair it is exempt from.
+// ---------------------------------------------------------------------------
+// `now_avatar_2_well` occupies the space the live lamp occupies when a show has
+// a single host: the well is hidden and the lamp sits at x=172. Revealing the
+// co-host is the SAME call that moves the lamp across (x=272) and widens the
+// text column, and hiding it moves both back — `ui_apply_now_avatar_2()` and
+// `ui_hide_now_avatar_2()` drive `ui_set_now_avatar_dual()` in both directions.
+// There is no state where the lamp and the well are drawn at the same
+// coordinates, which is the same narrow test the keyboard exemption applies.
+//
+// THE NUMBERS ARE READ OUT OF THE C++, NOT RESTATED HERE. If somebody moves the
+// lamp or the well without updating the toggle, `cohostExclusive` goes false,
+// the exemption disappears, and the overlap assertion below fires again.
+function cppFunction(src: string, signature: string): string {
+  const start = src.indexOf(signature);
+  if (start < 0) return "";
+  const end = src.indexOf("\n}\n", start);
+  return end < 0 ? "" : src.slice(start, end + 3);
+}
+
+const uiSource = fs.readFileSync(
+  path.join(ROOT, "device/firmware/subwave_display/ui.cpp"),
+  "utf8",
+);
+const dualFn = cppFunction(uiSource, "void ui_set_now_avatar_dual(");
+const cohostShowFn = cppFunction(uiSource, "void ui_apply_now_avatar_2(");
+const cohostHideFn = cppFunction(uiSource, "void ui_hide_now_avatar_2(");
+const lampMove = /lv_obj_set_x\(lamp,\s*dual \? (\d+) : (\d+)\)/.exec(dualFn);
+const nowWidgets = parseWidgets(screenPath(ROOT, "now"));
+const cohostWell = nowWidgets.get("now_avatar_2_well");
+
+ok(dualFn !== "", "ui_set_now_avatar_dual() still states both Now Playing layouts");
+ok(
+  cohostShowFn.includes("ui_set_now_avatar_dual(true)"),
+  "showing the co-host moves the byline and lamp across",
+);
+ok(
+  cohostHideFn.includes("ui_set_now_avatar_dual(false)"),
+  "hiding the co-host moves the byline and lamp back",
+);
+ok(lampMove !== null, "the dual layout relocates live_lamp", "no `lv_obj_set_x(lamp, dual ? ...)` found");
+
+const dualLampX = lampMove ? Number(lampMove[1]) : null;
+const cohostWellRight =
+  cohostWell?.align === "TOP_LEFT" && cohostWell.x !== null && cohostWell.w !== null
+    ? cohostWell.x + cohostWell.w
+    : null;
+const cohostExclusive =
+  dualLampX !== null && cohostWellRight !== null && dualLampX >= cohostWellRight;
+ok(
+  cohostExclusive,
+  "the relocated live_lamp clears the co-host well",
+  `lamp x=${dualLampX}, well ends at ${cohostWellRight}`,
+);
+
 for (const name of SCREENS) {
   const widgets = parseWidgets(screenPath(ROOT, name));
   ok(widgets.size > 0, `${name}.yaml yields widgets`, `${widgets.size}`);
@@ -296,6 +353,15 @@ for (const name of SCREENS) {
         (kbState.shownWhileTyping.includes(p) && kbState.hiddenWhileTyping.includes(q)) ||
         (kbState.shownWhileTyping.includes(q) && kbState.hiddenWhileTyping.includes(p));
       if (exclusive(a.id, b.id)) continue;
+
+      // The only other runtime-exclusive pair. The toggle that reveals the
+      // co-host well is the one that relocates the lamp, so they are never
+      // drawn together at these coordinates — and only while that coupling
+      // still holds (see the derivation above).
+      const cohostPair =
+        (a.id === "live_lamp" && b.id === "now_avatar_2_well") ||
+        (a.id === "now_avatar_2_well" && b.id === "live_lamp");
+      if (cohostPair && cohostExclusive) continue;
       const overlapX = a.x! < b.x! + b.w! && b.x! < a.x! + a.w!;
       const overlapY = a.y! < b.y! + b.h! && b.y! < a.y! + a.h!;
       ok(
@@ -306,6 +372,24 @@ for (const name of SCREENS) {
       );
     }
   }
+}
+
+const artworkWidgets = parseWidgets(screenPath(ROOT, "now"));
+const artworkLayer = artworkWidgets.get("art_layers");
+ok(
+  artworkLayer?.x === 696 && artworkLayer.y === 80 && artworkLayer.w === 520 && artworkLayer.h === 520,
+  "artwork effects container preserves the cover rectangle",
+);
+for (const name of ["art_in", "art_out"]) {
+  const image = artworkWidgets.get(name);
+  ok(
+    image?.parentId === "art_layers" && image.nested,
+    `${name} remains below the shared parent post-draw effects when raised to foreground`,
+  );
+  ok(
+    image?.x === 0 && image.y === 0 && image.w === artworkLayer?.w && image.h === artworkLayer?.h,
+    `${name} fills the effects container without changing the cover placement`,
+  );
 }
 
 console.log(`  ${passed}/${passed + failed} screen-layout assertions passed`);
