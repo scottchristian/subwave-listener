@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import GlobalFirmwarePanel from "./GlobalFirmwarePanel";
 
 /**
  * Wall screens: add one, build it, flash it, and see whether it is alive.
@@ -39,6 +40,24 @@ type ScreenRow = {
   timezone: string;
   createdBy: string | null;
   uploadedBy: string | null;
+  // Shared-firmware state. Optional because an older server predates these
+  // fields; absent means "nothing reported", never "up to date".
+  otaCapable?: boolean;
+  otaInstalledVersion?: string | null;
+  otaInstalledSha?: string | null;
+  otaInstalledSlot?: string | null;
+  otaInstalledAt?: string | null;
+  otaAttempt?: {
+    id: string;
+    phase: string;
+    version: string;
+    errorCode: string | null;
+    errorMessage: string | null;
+    bootResult: string | null;
+    requestedAt: string | null;
+    finishedAt: string | null;
+    updatedAt: string;
+  } | null;
 };
 
 const STATUS_TONE: Record<string, string> = {
@@ -48,6 +67,79 @@ const STATUS_TONE: Record<string, string> = {
   claimed: "#c8a76a",
   revoked: "#b4432f",
 };
+
+/**
+ * What a screen last said about shared firmware — and nothing more.
+ *
+ * The one rule this function exists to enforce: SUCCESS IS A TERMINAL ATTEMPT
+ * WHOSE VERSION IS THE ONE THE SCREEN SAYS IT IS RUNNING. `status: "active"` is
+ * not evidence of anything (a screen running last month's image heartbeats just
+ * as happily), a `succeeded` report alone is not either (a report can be lost,
+ * and the version is the fact that outlives it), and a stale row is the LAST
+ * report rather than the current state. Anything this panel cannot show
+ * honestly is shown as unknown, not as current.
+ */
+function otaSummary(r: ScreenRow, stale: boolean): { tone: string; text: string } {
+  const installed = r.otaInstalledVersion ?? null;
+  const capability = r.otaCapable
+    ? "the installed firmware advertises over-the-air updates"
+    : r.lastSeenAt
+      ? "the installed firmware has not reported over-the-air support"
+      : "over-the-air support is unknown until the screen checks in";
+
+  const attempt = r.otaAttempt;
+  if (!attempt) {
+    return {
+      tone: "var(--color-muted)",
+      text: `Running ${installed ?? "a release it has not reported"} · ${capability}.`,
+    };
+  }
+
+  const at = attempt.finishedAt ?? attempt.updatedAt ?? attempt.requestedAt;
+  const stamp = at ? new Date(at).toLocaleString() : "an unknown time";
+  const caveat = stale ? " The screen has not checked in since, so this is its last report, not its current state." : "";
+  const detail = attempt.errorCode
+    ? ` (${attempt.errorCode}${attempt.errorMessage ? `: ${attempt.errorMessage}` : ""})`
+    : "";
+
+  switch (attempt.phase) {
+    case "succeeded": {
+      const confirmed = Boolean(r.otaInstalledVersion && r.otaInstalledVersion === attempt.version);
+      return confirmed
+        ? { tone: "#4e9fd4", text: `Installed ${attempt.version} over the air and the screen reports running it (${stamp}).${caveat}` }
+        : {
+            tone: "var(--color-accent-warm)",
+            text: `Reported success installing ${attempt.version} at ${stamp}, but the screen reports ${installed ?? "no running release"} — not confirmed.${caveat}`,
+          };
+    }
+    case "failed":
+      return { tone: "#b4432f", text: `Installing ${attempt.version} failed at ${stamp}${detail}. Retry from the screen's Settings.${caveat}` };
+    case "rejected":
+      return { tone: "#b4432f", text: `The request for ${attempt.version} was refused at ${stamp}${detail}. The screen shows why and offers Retry.${caveat}` };
+    case "rebooting":
+      return { tone: "var(--color-accent-warm)", text: `Rebooted to apply ${attempt.version}; waiting for the screen's boot report since ${stamp}.${caveat}` };
+    case "downloading":
+    case "verifying":
+    case "installing":
+    case "accepted":
+      return { tone: "var(--color-accent-warm)", text: `Installing ${attempt.version}; last report ${stamp}.${caveat}` };
+    case "requested":
+      return { tone: "var(--color-accent-warm)", text: `Update to ${attempt.version} requested at ${stamp}; not accepted yet.${caveat}` };
+    case "rolled_back":
+      // The screen kept the image it was already running. Not a bricked wall —
+      // say that plainly, because the operator's next move is to try again.
+      return { tone: "var(--color-accent-warm)", text: `The update to ${attempt.version} was rolled back at ${stamp}; the screen kept its previous image.${caveat}` };
+    case "unknown":
+      // Silence, aged out on the server. Neither success nor failure, and the
+      // slot is free, so a retry from the screen's Settings is the next step.
+      return { tone: "var(--color-muted)", text: `The screen stopped reporting during the update to ${attempt.version} (last heard ${stamp}). The outcome is unknown; it can retry from Settings.${caveat}` };
+    default:
+      return {
+        tone: "var(--color-muted)",
+        text: `The screen reported phase “${attempt.phase}” for ${attempt.version} at ${stamp}; this panel does not recognise it.${caveat}`,
+      };
+  }
+}
 
 export default function ScreensPanel({ hidden }: { hidden: boolean }) {
   const [rows, setRows] = useState<ScreenRow[]>([]);
@@ -237,6 +329,11 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
         never appears in the signed-in or listening counts.
       </p>
 
+      {/* One image for the whole fleet, above the per-screen controls that stay
+          for USB setup and recovery. Publishing here never installs anything by
+          itself; the button that does lives on the screen. */}
+      <GlobalFirmwarePanel hidden={hidden} targetCount={rows.filter((r) => r.status !== "revoked").length} />
+
       <form onSubmit={add} style={{ display: "flex", flexDirection: "column", gap: "0.75rem", marginTop: "1rem" }}>
         <div>
           <label htmlFor="screen-name" className="admin-label">Screen name</label>
@@ -289,6 +386,17 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
         {rows.map((r) => {
           const stale = r.lastSeenAt ? Date.now() - new Date(r.lastSeenAt).getTime() > 90_000 : false;
           const live = r.status === "active" && !stale;
+          const ota = otaSummary(r, stale);
+          const runningRelease = r.otaInstalledVersion
+            ? [
+                r.otaInstalledVersion,
+                r.otaInstalledSlot ? `on ${r.otaInstalledSlot}` : null,
+                r.otaInstalledSha ? r.otaInstalledSha.slice(0, 12) : null,
+                r.otaInstalledAt ? `reported ${new Date(r.otaInstalledAt).toLocaleString()}` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ")
+            : null;
           return (
             <div key={r.id} id={`screen-${r.id}`} style={{ border: "1px solid var(--color-border)", borderRadius: "8px", padding: "1rem" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
@@ -334,7 +442,12 @@ export default function ScreensPanel({ hidden }: { hidden: boolean }) {
                     <span style={{ color: "var(--color-accent-warm)" }}> — the screen has applied {r.appliedRev}, and will pick up the rest</span>
                   )}
                 </dd></div>
+                <div><dt>Running release</dt><dd>{runningRelease ?? "not reported"}</dd></div>
               </dl>
+              <p id={`ota-${r.id}`} style={{ margin: "0.6rem 0 0", fontSize: "0.85rem", color: ota.tone }}>
+                <strong style={{ color: "var(--color-text)" }}>Update: </strong>
+                {ota.text}
+              </p>
             </div>
           );
         })}

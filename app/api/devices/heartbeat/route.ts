@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { completeRotation, deviceAuth } from "@/lib/device-auth";
 import { applyDeviceSettings, deviceSettingsOf } from "@/lib/device-service";
+import { handleOtaHeartbeat } from "@/lib/firmware-ota";
 
 /**
  * A screen reports in, and is told what to do.
@@ -58,8 +59,23 @@ export async function POST(req: NextRequest) {
     settingsRev = result.settingsRev;
   }
 
-  const updated = await prisma.device.update({
-    where: { id: row.id },
+  // Shared-firmware OTA rides the same heartbeat: availability is read, an
+  // explicit request creates the one attempt, and a report moves it. This is a
+  // patch rather than its own Device write so the row is updated once. Firmware
+  // that never sent an `ota` object gets null and does no extra queries.
+  const ota = await handleOtaHeartbeat({ row, ota: body.ota, viaRotation }).catch(() => ({
+    patch: {} as Record<string, unknown>,
+    response: null,
+  }));
+
+  // Conditional on the row still being active. deviceAuth checked revocation at
+  // the start of this request, but an operator can revoke the screen while the
+  // request is in flight; an unconditional write would then set status back to
+  // "active" and hand the revoked screen a working future. Zero rows means the
+  // revocation won, and the only honest answer is the same 401 a revoked token
+  // gets on the next attempt.
+  const written = await prisma.device.updateMany({
+    where: { id: row.id, status: { not: "revoked" } },
     data: {
       status: "active",
       lastSeenAt: now,
@@ -69,13 +85,22 @@ export async function POST(req: NextRequest) {
       orientation,
       appliedRev: Number.isFinite(Number(body.appliedRev)) ? Math.round(Number(body.appliedRev)) : null,
       settingsRev,
+      ...ota.patch,
     },
   });
+  if (written.count === 0) {
+    return NextResponse.json(
+      { error: "This screen is not set up. Flash it again from the admin panel." },
+      { status: 401, headers: { "Cache-Control": "no-store" } },
+    );
+  }
+  const updated = await prisma.device.findUniqueOrThrow({ where: { id: row.id } });
 
   // A screen authenticating on a grace token is collecting a rotation. Mint the
   // replacement and hand it over here — the only moment after first issue that a
   // device token is ever returned. completeRotation clears the grace hash in the
-  // same write, so the old token dies the instant this response lands.
+  // same write, so the old token dies the instant this response lands. It
+  // returns null if a revocation or a completed rotation got there first.
   const rotatedToken = viaRotation ? await completeRotation(updated) : null;
 
   return NextResponse.json(
@@ -84,6 +109,7 @@ export async function POST(req: NextRequest) {
       settingsRev: updated.settingsRev,
       nextHeartbeatSec: 60,
       ...(rotatedToken ? { rotatedToken } : {}),
+      ...(ota.response ? { ota: ota.response } : {}),
     },
     { headers: { "Cache-Control": "no-store" } },
   );

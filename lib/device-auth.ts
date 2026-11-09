@@ -126,6 +126,14 @@ export class DeviceAuthError extends Error {
   }
 }
 
+/** A rotation that would strand a screen mid-install. Carries its own HTTP status. */
+export class RotationBlockedError extends Error {
+  readonly status = 409;
+  constructor(message = "This screen is installing an update. Let the install finish before rotating its credential.") {
+    super(message);
+  }
+}
+
 /**
  * START a rotation, from the admin panel.
  *
@@ -151,12 +159,38 @@ export async function beginRotation(row: import("@prisma/client").Device): Promi
   // grace token silently produces a rotation that grants nothing while appearing
   // to work. Reading fresh removes the stale-object hazard instead of documenting
   // it and hoping.
-  const current = await prisma.device.findUniqueOrThrow({ where: { id: row.id } });
   const now = new Date();
   const expiresAt = new Date(now.getTime() + ROTATION_GRACE_MINUTES * 60_000);
-  await prisma.device.update({
-    where: { id: row.id },
-    data: { tokenHash: null, prevTokenHash: current.tokenHash, prevTokenExpires: expiresAt, rotatedAt: now },
+
+  // Rotation and an OTA install are mutually exclusive. Both replace the
+  // device's stored credential while it is mid-flight, and a screen that lost
+  // its token partway through an install is not recoverable over the air —
+  // reverting that install needs a second, authenticated boot report. The check
+  // and the write share one transaction, so an install accepted between the two
+  // either wins the reservation or this refuses; they cannot both happen.
+  await prisma.$transaction(async (tx) => {
+    // Take the Device row's write lock BEFORE reading the live attempt. The
+    // install path does the same, so on Postgres the two transactions serialize
+    // on this row instead of each passing a check against a snapshot the other
+    // is about to invalidate. Without the lock, both can commit: a rotation and
+    // an install, which is exactly the state that strands a screen.
+    const locked = await tx.device.updateMany({ where: { id: row.id }, data: { updatedAt: now } });
+    if (locked.count === 0) {
+      throw new RotationBlockedError("This screen is not registered. Flash it again instead of rotating its credential.");
+    }
+    const current = await tx.device.findUniqueOrThrow({ where: { id: row.id } });
+    if (current.status === "revoked") {
+      throw new RotationBlockedError("This screen is revoked. Flash it again instead of rotating its credential.");
+    }
+    const live = await tx.deviceOtaAttempt.findFirst({
+      where: { activeDeviceId: row.id },
+      select: { id: true },
+    });
+    if (live) throw new RotationBlockedError();
+    await tx.device.update({
+      where: { id: row.id },
+      data: { tokenHash: null, prevTokenHash: current.tokenHash, prevTokenExpires: expiresAt, rotatedAt: now },
+    });
   });
   return { expiresAt };
 }
@@ -172,13 +206,23 @@ export async function beginRotation(row: import("@prisma/client").Device): Promi
  * Clears the grace hash in the same update, so the old token stops working the
  * instant the new one is delivered. No window is left dangling afterwards.
  */
-export async function completeRotation(row: import("@prisma/client").Device): Promise<string> {
+export async function completeRotation(row: import("@prisma/client").Device): Promise<string | null> {
   const raw = newToken();
-  await prisma.device.update({
-    where: { id: row.id },
+  // Conditional on the state that made this a rotation in the first place: the
+  // row is still active, its live hash is still cleared, and the grace window
+  // has not closed. A revocation that won the race must not receive a token —
+  // and must not be flipped back to a usable credential by a late heartbeat.
+  const moved = await prisma.device.updateMany({
+    where: {
+      id: row.id,
+      status: { not: "revoked" },
+      tokenHash: null,
+      prevTokenHash: { not: null },
+      prevTokenExpires: { gt: new Date() },
+    },
     data: { tokenHash: hashToken(raw), prevTokenHash: null, prevTokenExpires: null },
   });
-  return raw;
+  return moved.count === 1 ? raw : null;
 }
 
 /**

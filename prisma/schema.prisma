@@ -354,6 +354,24 @@ model Device {
   createdBy    User?   @relation("DeviceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
   uploadedBy   User?   @relation("DeviceUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
 
+  // ---- shared firmware OTA ----------------------------------------------
+  // Reported by firmware that understands the shared-release protocol. Every
+  // image built before it leaves this false, which is what keeps those screens
+  // working unchanged: the heartbeat skips OTA entirely when it is false.
+  //
+  // otaInstalledVersion is the version the RUNNING image reports, which is what
+  // a boot confirmation is checked against. Device.firmwareVer above stays the
+  // ESPHome project version and is deliberately not reused for this: the two
+  // mean different things, and conflating them is how a screen ends up labelled
+  // with a release it never booted.
+  otaCapable          Boolean   @default(false)
+  otaInstalledVersion String?
+  otaInstalledSha     String?
+  otaInstalledSlot    String?   // app0 | app1 — which OTA slot the image booted from
+  otaInstalledAt      DateTime?
+
+  otaAttempts DeviceOtaAttempt[]
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -361,4 +379,105 @@ model Device {
   // lastSeenAt is older than the stale window, in that order.
   @@index([status])
   @@index([lastSeenAt])
+}
+
+// A published, immutable shared firmware release.
+//
+// WHY IMMUTABLE. Every screen installs the same bytes, so a release's identity is
+// its sha256, not an editable row. The version is unique and the bytes behind it
+// never change: re-uploading the same version with different bytes is refused
+// rather than silently replacing the image a fleet is midway through installing.
+//
+// DESCRIPTOR VERSION MUST EQUAL RELEASE VERSION. That is checked at upload time.
+// Without it a screen would boot an image whose own descriptor names a different
+// release, and no boot report, rollback decision or audit could say which one is
+// actually running. Firmware whose descriptor still carries the ESPHome project
+// version is rejected with that reason rather than accepted under a label it does
+// not claim for itself.
+//
+// ARTIFACTS ARE NEVER DELETED. A withdrawn release may still be pinned by an
+// install in flight, and deleting the bytes would strand it mid-download. There is
+// deliberately no delete path.
+model FirmwareRelease {
+  id String @id @default(cuid())
+
+  // Dotted numeric, e.g. "1.15.0". Unique because a version names exactly one
+  // artifact, and a second upload under the same name is either the same bytes
+  // (idempotent) or a mistake (refused).
+  version   String @unique
+  sha256    String @unique
+  sizeBytes Int
+
+  // Relative to the firmware root, never absolute and never client-supplied.
+  storageKey String
+  filename   String
+
+  // What the bytes say about themselves. Stored so a published release can be
+  // audited without re-reading the artifact.
+  descriptorProject String
+  descriptorVersion String
+  chipId            Int
+  minChipRev        Int?
+  maxChipRev        Int?
+
+  // Audit only — plain column, never read in an authorisation branch.
+  uploadedById String?
+
+  createdAt   DateTime  @default(now())
+  publishedAt DateTime?
+  withdrawnAt DateTime?
+
+  attempts DeviceOtaAttempt[]
+
+  @@index([createdAt])
+}
+
+// One device's attempt to install one shared release.
+//
+// THE NULLABLE UNIQUE RESERVATION. activeDeviceId holds the device id only while
+// the attempt is live, and is nulled the moment it reaches a terminal phase. The
+// unique index therefore permits exactly one live attempt per device while
+// allowing unlimited history — SQLite and Postgres both treat NULLs as distinct.
+// A plain "check then insert" would let two heartbeats that arrive together both
+// pass the check, so the constraint, not the read, is what enforces the rule.
+//
+// PHASE IS A STRING for the same reason every other enum-shaped field here is:
+// this schema must generate for SQLite as well as Postgres.
+model DeviceOtaAttempt {
+  id String @id @default(cuid())
+
+  // The device's idempotency key from the explicit install tap. Repeating the
+  // request — a lost response, a reboot — returns this same row.
+  requestId String
+  deviceId  String
+  releaseId String
+
+  // requested | accepted | downloading | verifying | installing | rebooting |
+  // success | failure | rollback | unknown as decided by the screen. Terminal
+  // states are succeeded, failed, rolled_back, unknown and rejected; `unknown`
+  // is what silence ages into, never an assumption that it worked.
+  phase String @default("requested")
+
+  // See the model comment. Null once terminal.
+  activeDeviceId String? @unique
+
+  requestedAt  DateTime  @default(now())
+  acceptedAt   DateTime?
+  installingAt DateTime?
+  rebootingAt  DateTime?
+  finishedAt   DateTime?
+  bootResult   String? // ok | rolled_back
+  errorCode    String?
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  device  Device          @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  release FirmwareRelease @relation(fields: [releaseId], references: [id], onDelete: Restrict)
+
+  @@unique([deviceId, requestId])
+  @@index([deviceId, createdAt])
+  @@index([releaseId])
+  @@index([phase])
 }

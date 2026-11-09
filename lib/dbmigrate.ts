@@ -22,6 +22,13 @@ const GEN_SCRIPT = path.join(APP_DIR, "scripts", "gen-schema.mjs");
  * cannot talk to SQLite and vice versa. We keep one generated client per
  * provider on disk and import it on demand, so a copy can hold both open at
  * once — which is the whole point, since verification compares the two.
+ *
+ * The cache is keyed on the canonical schema (and the swap script), not merely
+ * on "a client exists". Before that, adding a model left an old client on disk
+ * that copyDatabase then asked for a table it had never heard of — and the
+ * failure surfaced as `findMany of undefined`, far from the schema change that
+ * caused it. Regenerating on the schema hash keeps the cached clients honest
+ * without a manual purge on every deploy.
  */
 export function clientDirFor(provider: DbProvider): string {
   return path.join(GEN_DIR, provider);
@@ -29,9 +36,28 @@ export function clientDirFor(provider: DbProvider): string {
 
 function generateFor(provider: DbProvider): string {
   const dir = clientDirFor(provider);
-  if (existsSync(path.join(dir, "index.js"))) return dir;
   if (!existsSync(GEN_SCRIPT)) {
     throw new Error(`Missing ${GEN_SCRIPT} — cannot generate the ${provider} schema.`);
+  }
+  const stamp = path.join(dir, "schema.sha256");
+  const freshHash = (() => {
+    try {
+      return createHash("sha256")
+        .update(provider)
+        .update(readFileSync(SCHEMA_SRC))
+        .update(readFileSync(GEN_SCRIPT))
+        .digest("hex");
+    } catch {
+      return "";
+    }
+  })();
+  if (
+    freshHash &&
+    existsSync(path.join(dir, "index.js")) &&
+    existsSync(stamp) &&
+    readFileSync(stamp, "utf8").trim() === freshHash
+  ) {
+    return dir;
   }
   mkdirSync(dir, { recursive: true });
   // A temp schema inside prisma/ so Prisma resolves the project's package.json
@@ -50,6 +76,7 @@ function generateFor(provider: DbProvider): string {
       )
     );
     execFileSync("npx", ["prisma", "generate", "--schema", tmpSchema], { stdio: "pipe" });
+    writeFileSync(stamp, freshHash);
   } finally {
     rmSync(tmpSchema, { force: true });
   }
@@ -68,11 +95,19 @@ function generateFor(provider: DbProvider): string {
  * Postgres would come back with no wall screens and no error to explain it.
  * check-dbmigrate asserts this list against the schema, in both directions: a
  * model missing here fails the build, and an entry here with no model fails too.
+ *
+ * OTA additions: FirmwareRelease has no required parent, but DeviceOtaAttempt
+ * references both Device and FirmwareRelease, so it must come after both. The
+ * artifact BYTES are not in either engine — cutover copies the rows, and a
+ * release whose file did not travel is served as artifact_missing (410) rather
+ * than silently offered; copy data/firmware/ota/artifacts by hand if the
+ * station is moving machines.
  */
 export const MODEL_ORDER = [
   "user", "account", "session", "streamSession", "songRequest", "songLike",
   "pushSubscription", "presenceHeartbeat", "verificationToken",
   "setting", "songLinkCache", "donation", "skillRun", "device",
+  "firmwareRelease", "deviceOtaAttempt",
 ] as const;
 
 export type TableReport = {

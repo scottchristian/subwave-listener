@@ -17,7 +17,16 @@ import { getSubwaveConfig } from "@/lib/subwave";
  * before building a URL; this route does the same, because a screen that renders
  * six broken images is worse than one that renders six blank rows.
  */
-const EDGE = 128;
+const DEFAULT_SIZE = 128;
+const MIN_SIZE = 32;
+const MAX_SIZE = 512;
+
+function parseSize(raw: string | null): number {
+  if (!raw) return DEFAULT_SIZE;
+  const parsed = parseInt(raw, 10);
+  if (!Number.isFinite(parsed)) return DEFAULT_SIZE;
+  return Math.min(Math.max(parsed, MIN_SIZE), MAX_SIZE);
+}
 
 export async function GET(req: NextRequest) {
   const authed = await deviceAuth(req);
@@ -29,6 +38,8 @@ export async function GET(req: NextRequest) {
   if (!id || !/^[A-Za-z0-9_-]{1,64}$/.test(id)) {
     return NextResponse.json({ error: "No persona was asked for." }, { status: 400 });
   }
+
+  const size = parseSize(req.nextUrl.searchParams.get("size"));
 
   const cfg = await getSubwaveConfig();
   if (!cfg.apiUrl) return NextResponse.json({ error: "The station backend is not reachable." }, { status: 503 });
@@ -42,7 +53,7 @@ export async function GET(req: NextRequest) {
     if (!res.ok) return NextResponse.json({ error: "No picture for that person." }, { status: 404 });
 
     const upstream = Buffer.from(await res.arrayBuffer());
-    const resized = await sharp(upstream).resize(EDGE, EDGE, { fit: "cover" }).png().toBuffer();
+    const resized = await sharp(upstream).resize(size, size, { fit: "cover" }).png().toBuffer();
 
     return new NextResponse(new Uint8Array(resized), {
       headers: {

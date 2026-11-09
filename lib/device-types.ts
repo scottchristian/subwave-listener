@@ -51,6 +51,20 @@ export interface DeviceSettings {
   skipEnabled: boolean;
 }
 
+/**
+ * A presenter appearing on-air or scheduled for a show (host, co-host, or guest).
+ *
+ * Populated from station personas. Avatars use the `/api/devices/avatar?id=<id>`
+ * proxy route. Taglines provide concise bio descriptions for cards and modals.
+ */
+export interface DevicePresenter {
+  id: string;
+  name: string;
+  role: string;
+  tagline?: string | null;
+  avatar?: string | null;
+}
+
 export interface DeviceState {
   /** The device sets its clock from this and counts everything else off it. */
   serverNowMs: number;
@@ -76,6 +90,9 @@ export interface DeviceState {
     show: string | null;
     /** /api/devices/avatar?id=<personaId> when an on-air persona is resolved. */
     avatar?: string | null;
+    tagline?: string | null;
+    /** All on-air presenters (primary host first, then co-hosts/guests). */
+    presenters?: DevicePresenter[];
     /** From the state feed's session.startedAt. */
     onAirForSec: number | null;
     /** From computeShowRunway() over the schedule feed. NOT from now-playing. */
@@ -130,7 +147,17 @@ export interface DeviceSlot {
     name: string;
     host?: string;
     hostId?: string;
-    guests?: { id: string; name: string }[];
+    tagline?: string | null;
+    /** All scheduled presenters for this show (host and co-hosts/guests). */
+    presenters?: DevicePresenter[];
+    /** Guests scheduled for this show, enriched with role, tagline, and avatar. */
+    guests?: {
+      id: string;
+      name: string;
+      role?: string;
+      tagline?: string | null;
+      avatar?: string | null;
+    }[];
     /** Only on expandable shows, and only fetched when a row is expanded. */
     avatar?: string;
   };

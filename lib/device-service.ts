@@ -10,6 +10,7 @@ import {
 } from "@/lib/skipvisibility";
 import { solarWindow, isNightAt } from "@/lib/solar";
 import type {
+  DevicePresenter,
   DeviceSchedule,
   DeviceSettings,
   DeviceSlot,
@@ -141,8 +142,10 @@ export async function fetchBackendFeeds(): Promise<BackendFeeds> {
     get("/now-playing"),
     get("/state"),
   ]);
-  // Schedule is only needed for the shows window and the runway, and it is
-  // large, so it is fetched lazily rather than on every 10-second poll.
+  // The byline resolves presenter bios from the schedule's personas, because
+  // now-playing carries names and faces but no taglines. Fetch it alongside the
+  // other feeds when there is a show on air, and hand the same copy to callers
+  // that also need the runway or the shows window.
   let schedule: any | null = null;
   if (nowPlaying) {
     schedule = await get("/schedule");
@@ -262,6 +265,53 @@ export function buildSkipState(
 // ---------------------------------------------------------------------------
 
 /**
+ * Normalizes a tagline: returns trimmed non-empty string or null.
+ * Rejects non-string inputs, empty strings, and whitespace-only strings.
+ */
+function cleanTagline(val: unknown): string | null {
+  if (typeof val === "string") {
+    const trimmed = val.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+}
+
+/**
+ * Builds O(1) lookup indices for schedule personas by ID and name.
+ * Safe against null, undefined, primitive, or cyclic elements in personas array.
+ */
+function indexSchedulePersonas(personas: unknown): {
+  byId: Map<string, any>;
+  byName: Map<string, any>;
+} {
+  const byId = new Map<string, any>();
+  const byName = new Map<string, any>();
+  if (Array.isArray(personas)) {
+    for (const p of personas) {
+      if (p && typeof p === "object") {
+        if (typeof p.id === "string" && p.id && !byId.has(p.id)) {
+          byId.set(p.id, p);
+        }
+        if (typeof p.name === "string" && p.name && !byName.has(p.name)) {
+          byName.set(p.name, p);
+        }
+      }
+    }
+  }
+  return { byId, byName };
+}
+
+function findPersona(
+  index: { byId: Map<string, any>; byName: Map<string, any> },
+  id?: string | null,
+  name?: string | null,
+): any | null {
+  if (id && index.byId.has(id)) return index.byId.get(id);
+  if (name && index.byName.has(name)) return index.byName.get(name);
+  return null;
+}
+
+/**
  * Who is on air, and for how much longer.
  *
  * The presenter precedence is the player's (app/page.tsx:2290): the show's own
@@ -275,17 +325,31 @@ export function buildByline(
   state: any | null,
   schedule: any | null,
 ): DeviceState["byline"] {
-  const show = nowPlaying?.activeShow?.name ?? null;
-  const presenter = nowPlaying?.activeShow?.persona?.name || nowPlaying?.dj?.name || null;
+  const show = typeof nowPlaying?.activeShow?.name === "string" ? nowPlaying.activeShow.name : null;
+  const presenter =
+    typeof nowPlaying?.activeShow?.persona?.name === "string"
+      ? nowPlaying.activeShow.persona.name
+      : typeof nowPlaying?.dj?.name === "string"
+        ? nowPlaying.dj.name
+        : null;
+
   const presenterPersona =
-    nowPlaying?.activeShow?.persona ||
-    nowPlaying?.dj ||
-    (presenter && Array.isArray(schedule?.personas)
-      ? schedule.personas.find((p: any) => p?.name === presenter)
-      : null);
-  const presenterId = typeof presenterPersona?.id === "string" ? presenterPersona.id : null;
-  const avatar = presenterId ? `/api/devices/avatar?id=${encodeURIComponent(presenterId)}` : null;
+    (nowPlaying?.activeShow?.persona && typeof nowPlaying.activeShow.persona === "object"
+      ? nowPlaying.activeShow.persona
+      : null) ||
+    (nowPlaying?.dj && typeof nowPlaying.dj === "object" ? nowPlaying.dj : null);
+
+  const personaIndex = indexSchedulePersonas(schedule?.personas);
+
+  const presenterId = typeof presenterPersona?.id === "string" && presenterPersona.id ? presenterPersona.id : null;
+  const matchedPersona = findPersona(personaIndex, presenterId, presenter);
+
+  const effectivePresenterId = presenterId || (typeof matchedPersona?.id === "string" ? matchedPersona.id : null);
+  const avatar = effectivePresenterId ? `/api/devices/avatar?id=${encodeURIComponent(effectivePresenterId)}` : null;
   const live = Boolean(nowPlaying) && !state?.streamIdle;
+
+  const rawTagline = presenterPersona?.tagline ?? matchedPersona?.tagline;
+  const tagline = cleanTagline(rawTagline);
 
   let onAirForSec: number | null = null;
   const startedAt = state?.session?.startedAt;
@@ -313,7 +377,144 @@ export function buildByline(
     }
   }
 
-  return { presenter, show, avatar, onAirForSec, endsInSec, live };
+  // Multi-host / presenter resolution:
+  const presenters: DevicePresenter[] = [];
+  if (live) {
+    const seenIds = new Set<string>();
+    const seenNames = new Set<string>();
+
+    // 1. Primary host (if active / on-air)
+    const hostName =
+      (typeof presenterPersona?.name === "string" && presenterPersona.name) ||
+      presenter ||
+      null;
+
+    if (hostName) {
+      if (effectivePresenterId) seenIds.add(effectivePresenterId);
+      seenNames.add(hostName.toLowerCase());
+      presenters.push({
+        id: effectivePresenterId ?? "",
+        name: hostName,
+        role: "Host",
+        tagline: tagline ?? null,
+        avatar: avatar ?? null,
+      });
+    }
+
+    // 2. Guests from activeShow.guests
+    const rawGuests: any[] = Array.isArray(nowPlaying?.activeShow?.guests)
+      ? nowPlaying.activeShow.guests
+      : [];
+
+    for (const g of rawGuests) {
+      if (!g) continue;
+      let gId =
+        typeof g === "object" && typeof g.id === "string" && g.id
+          ? g.id
+          : typeof g === "string"
+            ? g
+            : null;
+      let gName =
+        typeof g === "object" && typeof g.name === "string" && g.name
+          ? g.name
+          : null;
+      let gRole =
+        typeof g === "object" && typeof g.role === "string" && g.role.trim()
+          ? g.role.trim()
+          : "Guest";
+
+      const matchedGuest = findPersona(personaIndex, gId, gName);
+      if (matchedGuest) {
+        if (!gId && typeof matchedGuest.id === "string") gId = matchedGuest.id;
+        if (!gName && typeof matchedGuest.name === "string") gName = matchedGuest.name;
+      }
+
+      if (!gName && !gId) continue;
+      const finalName = gName || gId || "";
+      const finalId = gId || "";
+
+      if (finalId && seenIds.has(finalId)) continue;
+      if (finalName && seenNames.has(finalName.toLowerCase())) continue;
+
+      if (finalId) seenIds.add(finalId);
+      if (finalName) seenNames.add(finalName.toLowerCase());
+
+      const rawGTag =
+        typeof g === "object" ? (g.tagline ?? matchedGuest?.tagline) : matchedGuest?.tagline;
+      const gTagline = cleanTagline(rawGTag);
+      const gAvatar = finalId
+        ? `/api/devices/avatar?id=${encodeURIComponent(finalId)}`
+        : null;
+
+      presenters.push({
+        id: finalId,
+        name: finalName,
+        role: gRole,
+        tagline: gTagline,
+        avatar: gAvatar,
+      });
+    }
+
+    // 3. Guests from schedule.shows (if show matches and has guestPersonaIds)
+    const activeShowId =
+      typeof nowPlaying?.activeShow?.id === "string" ? nowPlaying.activeShow.id : null;
+    // The schedule show is what carries the co-hosts. Match it three ways
+    // because the now-playing feed does not always agree with the schedule:
+    // an id when it has one, the name when it has that, and the host persona
+    // when a show has been renamed since it was saved. Falling back only to
+    // id/name dropped the second host of a renamed show entirely.
+    const matchedShow = Array.isArray(schedule?.shows)
+      ? schedule.shows.find(
+          (s: any) =>
+            (activeShowId && s?.id === activeShowId) ||
+            (show && typeof s?.name === "string" && s.name === show) ||
+            (effectivePresenterId && s?.personaId === effectivePresenterId),
+        )
+      : null;
+
+    const showGuestIds: string[] = [
+      ...(Array.isArray(nowPlaying?.activeShow?.guestPersonaIds)
+        ? nowPlaying.activeShow.guestPersonaIds
+        : []),
+      ...(Array.isArray(matchedShow?.guestPersonaIds)
+        ? matchedShow.guestPersonaIds
+        : []),
+    ];
+
+    for (const gid of showGuestIds) {
+      if (typeof gid !== "string" || !gid) continue;
+      if (seenIds.has(gid)) continue;
+
+      const gp = personaIndex.byId.get(gid);
+      const gName = typeof gp?.name === "string" ? gp.name : gid;
+      if (seenNames.has(gName.toLowerCase())) continue;
+
+      seenIds.add(gid);
+      seenNames.add(gName.toLowerCase());
+
+      const gTagline = cleanTagline(gp?.tagline);
+      const gAvatar = `/api/devices/avatar?id=${encodeURIComponent(gid)}`;
+
+      presenters.push({
+        id: gid,
+        name: gName,
+        role: typeof gp?.role === "string" && gp.role.trim() ? gp.role.trim() : "Guest",
+        tagline: gTagline,
+        avatar: gAvatar,
+      });
+    }
+  }
+
+  return {
+    presenter,
+    show,
+    avatar,
+    tagline,
+    onAirForSec,
+    endsInSec,
+    live,
+    presenters,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -349,10 +550,24 @@ export async function buildDeviceSchedule(atMs: number = Date.now()): Promise<De
   const grid = data?.schedule;
   if (!grid || !Array.isArray(data?.shows)) return { ...empty, timezone: tz };
 
-  const shows = data.shows as any[];
+  const shows = (data.shows as any[]) ?? [];
   const personas = (data.personas as any[]) ?? [];
-  const personaById = new Map(personas.map((p) => [p.id, p]));
-  const showById = new Map(shows.map((s) => [s.id, s]));
+  const personaById = new Map<string, any>();
+  if (Array.isArray(personas)) {
+    for (const p of personas) {
+      if (p && typeof p === "object" && typeof p.id === "string") {
+        personaById.set(p.id, p);
+      }
+    }
+  }
+  const showById = new Map<string, any>();
+  if (Array.isArray(shows)) {
+    for (const s of shows) {
+      if (s && typeof s === "object" && typeof s.id === "string") {
+        showById.set(s.id, s);
+      }
+    }
+  }
 
   // Which day is it, in station time? Ask in the station's own zone, never the
   // server's, or a morning show reads as yesterday's.
@@ -403,14 +618,75 @@ export async function buildDeviceSchedule(atMs: number = Date.now()): Promise<De
           live,
           day: dayName,
           dayOffset,
-          show: { id: null, name: "Auto DJ" },
+          show: { id: null, name: "Auto DJ", presenters: [] },
         });
       } else {
-        const host = show.personaId ? personaById.get(show.personaId) : null;
-        const guests = (show.guestPersonaIds as string[] | undefined)
-          ?.map((id) => personaById.get(id))
-          .filter((p): p is any => Boolean(p))
-          .map((p) => ({ id: p.id, name: p.name })) ?? [];
+        const host = typeof show.personaId === "string" ? personaById.get(show.personaId) : null;
+        const rawTagline = host?.tagline;
+        const tagline = cleanTagline(rawTagline);
+        const hostId = typeof host?.id === "string" ? host.id : undefined;
+        const hostName = typeof host?.name === "string" ? host.name : undefined;
+        const hostAvatar = hostId ? `/api/devices/avatar?id=${encodeURIComponent(hostId)}` : undefined;
+
+        const seenIds = new Set<string>();
+        if (hostId) seenIds.add(hostId);
+        if (typeof show.personaId === "string" && show.personaId) seenIds.add(show.personaId);
+
+        const guestIds: string[] = Array.isArray(show.guestPersonaIds) ? show.guestPersonaIds : [];
+        const guests: {
+          id: string;
+          name: string;
+          role: string;
+          tagline: string | null;
+          avatar: string | null;
+        }[] = [];
+
+        for (const gid of guestIds) {
+          if (typeof gid !== "string" || !gid) continue;
+          if (seenIds.has(gid)) continue;
+
+          const p = personaById.get(gid);
+          if (!p || typeof p !== "object") continue;
+
+          const guestId = typeof p.id === "string" && p.id ? p.id : gid;
+          if (seenIds.has(guestId)) continue;
+
+          seenIds.add(gid);
+          seenIds.add(guestId);
+
+          const rawGTag = p.tagline;
+          const guestTagline = cleanTagline(rawGTag);
+          const guestAvatar = guestId ? `/api/devices/avatar?id=${encodeURIComponent(guestId)}` : null;
+
+          guests.push({
+            id: guestId,
+            name: typeof p.name === "string" ? p.name : "",
+            role: typeof p.role === "string" && p.role.trim() ? p.role.trim() : "Guest",
+            tagline: guestTagline,
+            avatar: guestAvatar,
+          });
+        }
+
+        const presenters: DevicePresenter[] = [];
+        if (hostName) {
+          presenters.push({
+            id: hostId ?? "",
+            name: hostName,
+            role: "Host",
+            tagline: tagline ?? null,
+            avatar: hostAvatar ?? null,
+          });
+        }
+        for (const g of guests) {
+          presenters.push({
+            id: g.id,
+            name: g.name,
+            role: g.role || "Guest",
+            tagline: g.tagline ?? null,
+            avatar: g.avatar ?? null,
+          });
+        }
+
         allSlots.push({
           from: fmtHour(slot.from),
           to: fmtHour(slot.to),
@@ -420,10 +696,12 @@ export async function buildDeviceSchedule(atMs: number = Date.now()): Promise<De
           show: {
             id: show.id,
             name: show.name,
-            host: host?.name,
-            hostId: host?.id,
-            avatar: host?.id ? `/api/devices/avatar?id=${encodeURIComponent(host.id)}` : undefined,
+            host: hostName,
+            hostId,
+            tagline,
+            avatar: hostAvatar,
             guests,
+            presenters,
           },
         });
       }
@@ -456,7 +734,7 @@ export async function buildDeviceSchedule(atMs: number = Date.now()): Promise<De
  * check-device-isolation.mts rather than by good intentions.
  */
 export async function buildDeviceState(row: Device, atMs: number = Date.now()): Promise<DeviceState> {
-  const { nowPlaying, state } = await fetchBackendFeeds();
+  const { nowPlaying, state, schedule } = await fetchBackendFeeds();
 
   const np = nowPlaying?.nowPlaying;
   const counts = {
@@ -464,20 +742,12 @@ export async function buildDeviceState(row: Device, atMs: number = Date.now()): 
     listening: typeof nowPlaying?.listeners?.current === "number" ? nowPlaying.listeners.current : null,
   };
 
-  let byline = buildByline(nowPlaying, state, null);
-  let theme = resolveTheme(row, atMs);
-
-  // The runway needs the schedule feed, which is large. Only pay for it when the
-  // device is actually going to show a countdown.
-  if (byline.live) {
-    const cfg = await getSubwaveConfig();
-    if (cfg.apiUrl) {
-      try {
-        const res = await fetch(`${cfg.apiUrl}/schedule`, { signal: AbortSignal.timeout(BACKEND_TIMEOUT_MS), cache: "no-store" });
-        if (res.ok) byline = buildByline(nowPlaying, state, await res.json());
-      } catch {}
-    }
-  }
+  // The listener-facing now-playing feed strips persona taglines, so the bio
+  // only exists on /schedule. Use the copy the feeds already fetched: a second
+  // fetch per poll could fail or time out on its own and leave the screen
+  // saying "No bio provided" for a presenter who has one.
+  const byline = buildByline(nowPlaying, state, schedule);
+  const theme = resolveTheme(row, atMs);
 
   const skipSettings = await getSkipSettings();
   const skip = buildSkipState(skipSettings, row, {

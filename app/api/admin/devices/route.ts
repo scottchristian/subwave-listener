@@ -1,8 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
-import { getServerSession } from "next-auth/next";
-import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
-import { beginRotation, mintClaimToken, ROTATION_GRACE_MINUTES } from "@/lib/device-auth";
+import { beginRotation, mintClaimToken, RotationBlockedError, ROTATION_GRACE_MINUTES } from "@/lib/device-auth";
+import { requireAdmin } from "@/lib/admin-auth";
+import { reconcileStaleAttempts } from "@/lib/firmware-ota";
 import { deleteFirmware } from "@/lib/firmware-upload";
 
 /**
@@ -13,33 +13,59 @@ import { deleteFirmware } from "@/lib/firmware-upload";
  * screen to a wall and that authorises exactly that — the screen is never an
  * admin, at any setting, and no value stored on this row confers a privilege.
  *
- * The build command is returned from the create call rather than assembled in the
- * browser, because the claim token in it must never be rendered into a page the
- * operator might screenshot, log, or leave on a projector.
+ * The create call returns a short bind code, not a compiled-in credential. The
+ * screen claims its own token after the operator enters the code, so no secret
+ * is rendered into a page the operator might screenshot, log, or leave on a
+ * projector — and the build command no longer embeds a version the server has
+ * no business guessing. The release version comes from the firmware build.
  */
-export async function requireAdmin(): Promise<{ id: string | null } | null> {
-  const session = await getServerSession(authOptions);
-  const user = session?.user as any;
-  if (!user?.isAdmin) return null;
-  if (typeof user.id === "string" && user.id) {
-    const row = await prisma.user.findUnique({ where: { id: user.id }, select: { id: true } });
-    if (row) return { id: row.id };
-  }
-  if (typeof user.email === "string" && user.email) {
-    const row = await prisma.user.findUnique({ where: { email: user.email }, select: { id: true } });
-    if (row) return { id: row.id };
-  }
-  return { id: null };
-}
-
 export async function GET() {
   const admin = await requireAdmin();
   if (!admin) return new Response("Forbidden", { status: 403 });
+
+  // The panel is how an operator learns that a screen went quiet, so reap stale
+  // reservations here as well as on the heartbeat. Without this, a screen that
+  // never comes back leaves the panel saying "installing" for ever.
+  await reconcileStaleAttempts().catch(() => 0);
 
   const rows = await prisma.device.findMany({
     orderBy: { createdAt: "desc" },
     include: { createdBy: { select: { name: true } }, uploadedBy: { select: { name: true } } },
   });
+
+  // Exactly one row per device, in two bounded queries. A plain findMany of all
+  // attempts grows without limit as history accumulates; a findFirst per device
+  // is a query per row. groupBy gives the newest createdAt, and the second query
+  // fetches those rows, so the cost is proportional to the fleet size.
+  const latestTimes = rows.length
+    ? await prisma.deviceOtaAttempt.groupBy({
+        by: ["deviceId"],
+        where: { deviceId: { in: rows.map((d) => d.id) } },
+        _max: { createdAt: true },
+      })
+    : [];
+  const attemptPins = latestTimes
+    .filter((g) => g._max.createdAt)
+    .map((g) => ({ deviceId: g.deviceId, createdAt: g._max.createdAt! }));
+  const attemptRows = attemptPins.length
+    ? await prisma.deviceOtaAttempt.findMany({
+        where: { OR: attemptPins },
+        select: {
+          id: true,
+          deviceId: true,
+          phase: true,
+          errorCode: true,
+          errorMessage: true,
+          bootResult: true,
+          requestedAt: true,
+          finishedAt: true,
+          updatedAt: true,
+          release: { select: { version: true } },
+        },
+      })
+    : [];
+  const latestAttempt = new Map<string, (typeof attemptRows)[number]>();
+  for (const a of attemptRows) latestAttempt.set(a.deviceId, a);
 
   return NextResponse.json(
     {
@@ -63,6 +89,29 @@ export async function GET() {
         timezone: d.timezone,
         createdBy: d.createdBy?.name ?? null,
         uploadedBy: d.uploadedBy?.name ?? null,
+        // Shared-firmware state. `otaCapable` is reported by firmware that
+        // understands the shared-release protocol; every image built before it
+        // leaves this false, so false means "not reported", not "cannot".
+        otaCapable: d.otaCapable,
+        otaInstalledVersion: d.otaInstalledVersion,
+        otaInstalledSha: d.otaInstalledSha,
+        otaInstalledSlot: d.otaInstalledSlot,
+        otaInstalledAt: d.otaInstalledAt,
+        otaAttempt: (() => {
+          const a = latestAttempt.get(d.id);
+          if (!a) return null;
+          return {
+            id: a.id,
+            phase: a.phase,
+            version: a.release.version,
+            errorCode: a.errorCode,
+            errorMessage: a.errorMessage,
+            bootResult: a.bootResult,
+            requestedAt: a.requestedAt,
+            finishedAt: a.finishedAt,
+            updatedAt: a.updatedAt,
+          };
+        })(),
       })),
     },
     { headers: { "Cache-Control": "no-store" } },
@@ -103,17 +152,10 @@ export async function POST(req: NextRequest) {
   const proto = forwardedProto || (req.url.startsWith("https") ? "https" : "http");
   const serverUrl = `${proto}://${host}`;
 
-  // Quoted values: a cuid or a base64url token containing a colon will otherwise
-  // produce a substitutions file that does not parse, and the failure surfaces as
-  // an opaque YAML error at the far end of a fifteen-minute build.
-  const command = [
-    "python3 -m esphome \\",
-    `  -s device_id '${row.deviceId ?? row.id}' \\`,
-    `  -s claim_token '${claim.raw}' \\`,
-    `  -s server_url '${serverUrl}' \\`,
-    "  -s firmware_version '1.0.0' \\",
-    "  compile firmware/builds/subwave-jc8012p4a1.yaml",
-  ].join("\n");
+  // The version is deliberately absent. It belongs to the firmware build, where
+  // the descriptor, ESPHome project version and runtime banner can be made to
+  // agree; a hardcoded literal here was a second, silently wrong source.
+  void serverUrl;
 
   return NextResponse.json(
     {
@@ -163,13 +205,37 @@ export async function PATCH(req: NextRequest) {
           { status: 409 },
         );
       }
-      await beginRotation(row);
+      try {
+        await beginRotation(row);
+      } catch (e) {
+        if (e instanceof RotationBlockedError) {
+          return NextResponse.json({ error: e.message }, { status: e.status });
+        }
+        throw e;
+      }
       break;
     }
     case "revoke": {
-      await prisma.device.update({
-        where: { id },
-        data: { status: "revoked", tokenHash: null, prevTokenHash: null, prevTokenExpires: null },
+      // The live attempt is ended in the same transaction as the revocation, not
+      // left to age out. Its token stops authenticating the moment this commits,
+      // so the screen can never report on it again: "failed" is the honest end
+      // state, and the reservation must be released or a later attempt would be
+      // refused as already-in-progress by a device nobody can talk to.
+      await prisma.$transaction(async (tx) => {
+        await tx.device.update({
+          where: { id },
+          data: { status: "revoked", tokenHash: null, prevTokenHash: null, prevTokenExpires: null },
+        });
+        await tx.deviceOtaAttempt.updateMany({
+          where: { deviceId: id, activeDeviceId: { not: null } },
+          data: {
+            phase: "failed",
+            activeDeviceId: null,
+            finishedAt: new Date(),
+            errorCode: "device_revoked",
+            errorMessage: "The screen was revoked while an install was in flight.",
+          },
+        });
       });
       // A revoked screen's binary still carries a working claim token, so the
       // file has to go too — leaving it leaves a live credential on disk.
@@ -177,6 +243,19 @@ export async function PATCH(req: NextRequest) {
       break;
     }
     case "newClaim": {
+      // Re-provisioning replaces the identity the screen presents. An attempt
+      // pinned to the old identity can never be reported on, so end it for the
+      // same reason as revocation.
+      await prisma.deviceOtaAttempt.updateMany({
+        where: { deviceId: id, activeDeviceId: { not: null } },
+        data: {
+          phase: "failed",
+          activeDeviceId: null,
+          finishedAt: new Date(),
+          errorCode: "reprovisioned",
+          errorMessage: "The screen was re-provisioned while an install was in flight.",
+        },
+      });
       // Generate a fresh bind code for re-provisioning
       const chars = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
       let bindCode = "";
