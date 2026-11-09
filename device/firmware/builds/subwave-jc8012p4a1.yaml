@@ -21,7 +21,12 @@ substitutions:
   device_id: ""
   claim_token: ""
   server_url: ""
-  firmware_version: "1.14.3"
+  # THE RELEASE IDENTITY OF THIS BINARY. The station compares this against the
+  # version in the app descriptor before it will accept an upload, and the
+  # device reports it in its heartbeat, so these cannot drift: the sdkconfig
+  # options in hardware.yaml write this same value into the descriptor.
+  # One shared binary for every screen; bump this for every published release.
+  firmware_version: "1.15.7"
 
   # The panel is natively 800x1280 portrait and driven as 1280x800 landscape.
   # Getting this backwards is the single most common mistake with this board.
@@ -235,6 +240,10 @@ interval:
       # the current brightness setting rather than forcing 100%, so manual
       # brightness changes are preserved.
       - lambda: subwave_display::idle_apply(false);
+      # The firmware dialog's progress bar, one step a second while it is open.
+      # Does nothing (one hidden-flag read) when no dialog is showing; the
+      # Settings row itself stays on the five-second tick below.
+      - lambda: subwave_display::ui_tick_firmware_dialog();
     startup_delay: 2s
 
   - interval: 45s
@@ -251,6 +260,12 @@ interval:
       # torn down each time.
       - script.execute: idle_tick
       - script.execute: theme_sync
+      # Kept off the touch path on purpose; see ui_refresh_cache_stats().
+      - lambda: subwave_display::ui_refresh_cache_stats();
+      # The Firmware Update row: the worker owns the install, this only reads
+      # its snapshot. Same reason as the cache line — a tap must not wait on
+      # the worker's lock.
+      - lambda: subwave_display::ui_refresh_firmware_update();
     # NOT OPTIONAL, AND NOT COSMETIC. idle_poll() dereferences screen_asleep and
     # idle_deadline_ms, which live in the binding table that bind_widgets fills
     # one second after boot. An interval with no startup_delay fires on the first

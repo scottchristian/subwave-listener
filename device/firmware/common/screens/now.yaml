@@ -21,7 +21,10 @@
     border_opa: COVER
     pad_all: 0
     scrollable: false
-    clickable: false
+    clickable: true
+    on_click:
+      - lambda: |-
+          id(display_client)->open_presenter_modal_for_now();
     widgets:
       - label:
           id: now_avatar_label
@@ -50,6 +53,39 @@
     bg_opa: COVER
     border_width: 0
 
+# The co-host. Hidden until a show actually has a second presenter, so a solo
+# host keeps the layout it has always had. Tapping it opens that person's card,
+# not the host's.
+- obj:
+    id: now_avatar_2_well
+    width: 88px
+    height: 88px
+    radius: 10px
+    align: TOP_LEFT
+    x: 164px
+    y: 68px
+    bg_color: 0x0A182B
+    bg_opa: COVER
+    border_width: 2
+    border_color: 0x1A3050
+    border_opa: COVER
+    pad_all: 0
+    scrollable: false
+    clickable: true
+    hidden: true
+    on_click:
+      - lambda: |-
+          id(display_client)->open_presenter_modal_for_now_at(1);
+    widgets:
+      - image:
+          id: now_avatar_2
+          src: now_avatar_2_image
+          width: 88px
+          height: 88px
+          align: CENTER
+          clickable: false
+          hidden: true
+
 - label:
     id: byline_presenter
     text: "SUB/WAVE RADIO"
@@ -59,6 +95,10 @@
     x: 198px
     y: 64px
     width: 458px
+    clickable: true
+    on_click:
+      - lambda: |-
+          id(display_client)->open_presenter_modal_for_now();
 
 - label:
     id: byline_show
@@ -128,31 +168,44 @@
           align: CENTER
           y: 28px
 
-- image:
-    id: art_out
-    src: art_out_image
+- obj:
+    id: art_layers
     width: 520px
     height: 520px
     align: TOP_LEFT
     x: 696px
     y: 80px
-    bg_color: 0x0D1F35
-    bg_opa: COVER
+    bg_opa: TRANSP
+    border_width: 0
+    pad_all: 0
+    radius: 0
+    scrollable: false
     clickable: false
-    hidden: true
-
-- image:
-    id: art_in
-    src: art_in_image
-    width: 520px
-    height: 520px
-    align: TOP_LEFT
-    x: 696px
-    y: 80px
-    bg_color: 0x0D1F35
-    bg_opa: COVER
-    clickable: false
-    hidden: true
+    widgets:
+      - image:
+          id: art_out
+          src: art_out_image
+          width: 520px
+          height: 520px
+          align: TOP_LEFT
+          x: 0px
+          y: 0px
+          bg_color: 0x0D1F35
+          bg_opa: COVER
+          clickable: false
+          hidden: true
+      - image:
+          id: art_in
+          src: art_in_image
+          width: 520px
+          height: 520px
+          align: TOP_LEFT
+          x: 0px
+          y: 0px
+          bg_color: 0x0D1F35
+          bg_opa: COVER
+          clickable: false
+          hidden: true
 
 # ---- Tier 2: Current Track -----------------------------------
 - label:

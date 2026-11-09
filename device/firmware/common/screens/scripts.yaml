@@ -106,6 +106,22 @@ script:
           c->push_settings(draft);
           subwave_display::settings_refresh();
 
+  - id: clear_image_cache
+    mode: restart
+    then:
+      - lambda: |-
+          auto *c = id(display_client);
+          if (c != nullptr) {
+            c->clear_avatar_cache();
+          }
+          subwave_display::ui_refresh_cache_stats();
+          if (id(lbl_clear_cache) != nullptr) {
+            lv_label_set_text(id(lbl_clear_cache), "Cache Cleared");
+          }
+      - delay: 2s
+      - lambda: |-
+          subwave_display::settings_refresh();
+
   # ---------------------------------------------------------------------------
   # ---------------------------------------------------------------------------
   # WHY THE CALLS IN THIS FILE LOOK MIXED.
@@ -581,6 +597,34 @@ script:
           auto *c = id(display_client);
           c->request_skip();
           c->refresh_now();
+
+  # ---------------------------------------------------------------------------
+  # Firmware update: the operator's tap on Settings.
+  #
+  # THE FIRST TAP OPENS A DIALOG; IT NEVER INSTALLS. The person at the wall has
+  # to be able to say no, and has to be able to watch the download afterwards.
+  # request_firmware_update() is called only by firmware_update_confirm, which
+  # is the "Install now" button inside the dialog.
+  #
+  # Non-blocking, like every other button here: the confirm script enqueues
+  # OTA_INSTALL, and the download, checksum, flash write and reboot are the
+  # Core 0 worker's work. The dialog and the row are repainted from its
+  # snapshot by the five-second interval.
+  # ---------------------------------------------------------------------------
+  - id: firmware_update_tap
+    mode: single
+    then:
+      - lambda: subwave_display::ui_show_firmware_prompt();
+
+  - id: firmware_update_confirm
+    mode: single
+    then:
+      - lambda: subwave_display::ui_confirm_firmware_update();
+
+  - id: firmware_update_cancel
+    mode: single
+    then:
+      - lambda: subwave_display::ui_hide_firmware_prompt();
 
   # ---------------------------------------------------------------------------
   # Idle: arm, tick, wake.

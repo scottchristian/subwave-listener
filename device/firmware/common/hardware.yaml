@@ -21,6 +21,24 @@ esp32:
       # a path this board does not use well, and colours come out wrong rather
       # than absent — which reads as "the theme is broken", not "a flag is off".
       CONFIG_LV_DRAW_SW_SUPPORT_RGB565: "y"
+      # THE APP DESCRIPTOR'S VERSION COMES FROM ${firmware_version}, NOT FROM
+      # ESPHOME'S OWN VERSION.
+      #
+      # Without this, ESP-IDF builds the descriptor from the build's version.txt,
+      # which ESPHome writes as its own `__version__` (2026.7.0) — so every
+      # release of this firmware would claim to be the same version. The station
+      # refuses an upload whose descriptor version differs from the version the
+      # admin typed, and the screenshot of the screen reporting 2026.7.0 is a
+      # bug report nobody can act on. The device also reports this string in its
+      # heartbeat and after a reboot, so this is what makes one shared release
+      # identifiable end to end.
+      #
+      # The inner quotes are part of the value and not an accident: ESPHome
+      # writes user sdkconfig values through verbatim, and Kconfig needs a
+      # C string literal. Dropping them produces a compile error in the
+      # descriptor, not a silent wrong version.
+      CONFIG_APP_PROJECT_VER_FROM_CONFIG: "y"
+      CONFIG_APP_PROJECT_VER: '"${firmware_version}"'
     advanced:
       # Increase the main loop task stack size to avoid stack overflow during
       # LVGL/display initialization. The default 8192 is too small for the display

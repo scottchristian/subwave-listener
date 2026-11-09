@@ -5,12 +5,20 @@
 #include "esphome/components/http_request/http_request.h"
 #include "esphome/components/runtime_image/runtime_image.h"
 #include "esphome/components/script/script.h"
+#include <atomic>
+#include <memory>
 #include <string>
 #include <map>
 #include <vector>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 #include <freertos/queue.h>
+#include <freertos/semphr.h>
+#include <esp_heap_caps.h>
+
+// The heartbeat carries and answers an OTA block, which is built with cJSON.
+// Only the tag is needed here: the .cpp includes cJSON.h for the real type.
+struct cJSON;
 
 namespace subwave_display {
 
@@ -33,10 +41,20 @@ struct NowPlaying {
   bool live = false;
 };
 
+struct PresenterInfo {
+  std::string id;
+  std::string name;
+  std::string role;
+  std::string tagline;
+  std::string avatar_url;
+};
+
 struct Byline {
   std::string presenter;
   std::string show;
   std::string avatar_url;
+  std::string tagline;
+  std::vector<PresenterInfo> presenters;
   int64_t on_air_for_sec = -1;
   int64_t ends_in_sec = -1;
   bool live = false;
@@ -70,6 +88,33 @@ struct ScheduleSlot {
   std::string host;
   std::string host_id;
   std::string avatar_url;
+  std::string tagline;
+  std::vector<PresenterInfo> presenters;
+};
+
+struct PresenterModalState {
+  bool open{false};
+  std::vector<PresenterInfo> presenters;
+  size_t current_index{0};
+  std::string name;
+  std::string role;
+  std::string tagline;
+  std::string avatar_url;
+};
+
+/**
+ * PSRAM avatar cache entry holding raw PNG data downloaded from the server.
+ * Stored in external PSRAM (MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT).
+ * Timestamps use esphome::millis() for 24-hour expiration checks.
+ */
+struct AvatarCacheEntry {
+  // Shared ownership. The worker copies this handle under cache_mutex_ and then
+  // decodes outside the lock, so clearing the cache can drop the map entry
+  // without freeing a buffer that is still being decoded.
+  std::shared_ptr<uint8_t> data;
+  size_t length{0};
+  uint32_t timestamp_ms{0};
+  std::string url;
 };
 
 enum class WorkerCmdType : uint8_t {
@@ -82,7 +127,8 @@ enum class WorkerCmdType : uint8_t {
   BIND_STATION,
   FETCH_PNG,
   FETCH_COVER_ART,
-  CHECK_CONNECTIVITY
+  CHECK_CONNECTIVITY,
+  OTA_INSTALL
 };
 
 struct WorkerSettings {
@@ -155,6 +201,33 @@ enum class Connectivity : uint8_t {
   OK,        // all four passed
 };
 
+/**
+ * What the Settings row may say about a shared firmware release.
+ *
+ * A VIEW, NOT A STATE MACHINE. The worker owns the install; the UI core only
+ * ever reads this snapshot. Every value here is produced by the worker, so the
+ * screen cannot render a phase the install has not actually reached.
+ */
+enum class OtaUiState : uint8_t {
+  Idle,        // nothing newer is published, or the running release is current
+  Available,   // a newer shared release exists; a tap installs it
+  Checking,    // the tap is taken; waiting for the station to accept or refuse
+  Downloading,
+  Verifying,
+  Installing,
+  Rebooting,
+  Confirming,  // restarted; waiting for the station to confirm the running image
+  Failed,
+};
+
+struct OtaView {
+  OtaUiState state{OtaUiState::Idle};
+  int progress{0};
+  std::string published_version;
+  std::string installed_version;
+  std::string message;
+};
+
 struct WorkerResult {
   WorkerResultType type{WorkerResultType::STATE_UPDATED};
   int status_code{0};
@@ -162,6 +235,10 @@ struct WorkerResult {
   int slot_index{-1};
   Connectivity connectivity{Connectivity::UNKNOWN};
   std::string err_msg{};
+  // What was fetched. Async replies can outlive the request that started them,
+  // so the UI needs the URL to tell "this is the avatar on screen now" from
+  // "this is the presenter the user swiped past two taps ago".
+  std::string url{};
 
   // Staged parsed data
   NowPlaying now{};
@@ -228,6 +305,9 @@ class SubwaveDisplay
  public:
   static constexpr int MAX_SCHEDULE_SLOTS = 5;
 
+  SubwaveDisplay();
+  ~SubwaveDisplay();
+
   void setup() override;
   void loop() override;
   void update() override;
@@ -274,6 +354,8 @@ class SubwaveDisplay
   const std::string &pending_now_avatar_url() const { return pending_now_avatar_url_; }
   void clear_pending_now_avatar_url() { pending_now_avatar_url_.clear(); }
   const std::string &shown_now_avatar_url() const { return shown_now_avatar_url_; }
+  /** The co-host's face. Empty while a show has a single host. */
+  const std::string &shown_now_avatar_2_url() const { return shown_now_avatar_2_url_; }
 
   const std::string &pending_row_avatar_url(int i) const {
     static const std::string empty;
@@ -286,9 +368,32 @@ class SubwaveDisplay
   /** Fetch a PNG from the station (chunked or Content-Length) and decode into `img`. */
   bool fetch_png(const std::string &path, esphome::runtime_image::RuntimeImage *img);
 
+  // PSRAM Avatar Cache Management
+  static constexpr uint32_t AVATAR_CACHE_TTL_MS = 86400000U;  // 24 hours (86,400,000 ms)
+  void clear_avatar_cache();
+  size_t avatar_cache_count() const;
+  size_t avatar_cache_kb() const;
+
   void bind_runtime_images(
       esphome::runtime_image::RuntimeImage *station_logo,
       esphome::runtime_image::RuntimeImage *now_avatar,
+      esphome::runtime_image::RuntimeImage *row_0,
+      esphome::runtime_image::RuntimeImage *row_1,
+      esphome::runtime_image::RuntimeImage *row_2,
+      esphome::runtime_image::RuntimeImage *row_3,
+      esphome::runtime_image::RuntimeImage *row_4);
+
+  void bind_modal_avatar_image(esphome::runtime_image::RuntimeImage *modal_avatar);
+
+  /**
+   * The second face on each surface: the co-host beside the on-air portrait,
+   * and the second presenter on each schedule row.
+   *
+   * Separate from bind_runtime_images() so that call stays a readable list of
+   * the widgets every screen has, rather than every widget any screen has.
+   */
+  void bind_secondary_avatar_images(
+      esphome::runtime_image::RuntimeImage *now_avatar_2,
       esphome::runtime_image::RuntimeImage *row_0,
       esphome::runtime_image::RuntimeImage *row_1,
       esphome::runtime_image::RuntimeImage *row_2,
@@ -402,6 +507,30 @@ class SubwaveDisplay
   /** Push a settings change made on the device's own settings screen. */
   void push_settings(const StationSettings &s);
 
+  // -------------------------------------------------------------------------
+  // Shared firmware releases, installed from this screen's own Settings.
+  //
+  // ONE BINARY SERVES EVERY SCREEN. The admin uploads and publishes a release
+  // once; this device hears about it in its heartbeat and installs it only when
+  // somebody standing at the screen asks. Nothing here installs on its own.
+  //
+  // THE INSTALL IS THE WORKER'S, NOT THE UI'S. request_firmware_update() records
+  // the intent and returns; the download, verification, flash write and reboot
+  // all happen on the Core 0 worker, because a multi-megabyte HTTPS download on
+  // the LVGL core is exactly the kind of stall the whole design avoids.
+  // -------------------------------------------------------------------------
+  /** A mutex-free snapshot for the Settings row. Safe from the UI core. */
+  OtaView ota_view() const;
+
+  /**
+   * Settings -> Update firmware. NON-BLOCKING.
+   *
+   * The tap is deliberate and the install is explicit: this only enqueues
+   * OTA_INSTALL. A tap while an install is already running is ignored rather
+   * than queued, so two taps cannot start two downloads.
+   */
+  void request_firmware_update();
+
   /**
    * Fetch the state now rather than at the next poll.
    * Enqueues POLL_STATE to background worker. Non-blocking.
@@ -422,7 +551,31 @@ class SubwaveDisplay
    */
   void send_heartbeat();
 
+  // Presenter detail modal controls (non-blocking)
+  void open_presenter_modal_for_now();
+  /**
+   * The same modal, opened on a specific presenter.
+   *
+   * A show can be hosted by more than one person, and the now screen shows a
+   * face per host. Tapping the second one must open the second bio, not always
+   * the first.
+   */
+  void open_presenter_modal_for_now_at(size_t start_index);
+  void open_presenter_modal_for_slot(int slot_index);
+  void open_presenter_modal_for_slot_at(int slot_index, size_t start_index);
+  void close_presenter_modal();
+  void next_presenter_in_modal();
+  void prev_presenter_in_modal();
+  void show_presenter_in_modal(size_t index);
+  const PresenterModalState &presenter_modal_state() const { return presenter_modal_state_; }
+
  protected:
+  /**
+   * Ask for the 280px portrait the modal is currently showing, if it has not
+   * landed and is not already in flight. Called on open, on presenter change,
+   * and from loop() so a fetch that failed retries while the modal stays open.
+   */
+  void ensure_modal_avatar_();
   /**
    * Which request a response belongs to.
    *
@@ -456,14 +609,165 @@ class SubwaveDisplay
   bool bind_device_(const std::string &server_url, const std::string &bind_code);
   Connectivity run_connectivity_ladder_();
   bool fetch_image_to_runtime_image_(const std::string &path, esphome::runtime_image::RuntimeImage *img);
+  bool fetch_png_cached_(const std::string &path, esphome::runtime_image::RuntimeImage *img);
   bool fetch_cover_to_runtime_image_(const std::string &path, esphome::runtime_image::RuntimeImage *img);
   void trigger_connectivity_reported_();
 
+  // -------------------------------------------------------------------------
+  // Firmware OTA — worker-side internals.
+  // -------------------------------------------------------------------------
+  /**
+   * The one fact that has to survive a reboot: what this device was installing.
+   *
+   * A screen that loses power while writing the inactive slot must be able to
+   * tell, on the next boot, which outcome to report. It cannot ask the server —
+   * the attempt is only identified by an id the server issued — and it cannot
+   * infer it from the image alone, because "still running the old app" is both
+   * "the download never finished" and "the new app crashed and rolled back".
+   *
+   * Trivially copyable, fixed width, no pointers: preferences store it by
+   * memcpy, and a 256-byte record either lands whole or is rejected by magic.
+   * Written only by the worker; read once in setup() before the worker starts.
+   */
+  struct OtaJournal {
+    uint32_t magic;
+    uint8_t phase;
+    uint8_t reserved[3];
+    // Every buffer is one byte larger than the server's maximum for that field:
+    // ids are up to 40 characters, a requestId up to 64, a version up to 32. A
+    // record that cannot hold what the station sends would truncate an id and
+    // then report/install against a half-id, which the station rightly rejects.
+    char attempt_id[41];
+    char release_id[41];
+    char request_id[65];
+    char version[33];
+    char sha256[65];
+    char error_code[41];
+    // What to SAY, which is not what the server needs. The server is told the
+    // error code (an enum-like token it can count); the person who tapped the
+    // row is shown the sentence, and it has to survive the reboot that the
+    // failure may have caused — otherwise the retry prompt is unexplained.
+    char error_message[97];
+    uint32_t size_bytes;
+  };
+
+  /** The server's view of this device's live install, as a heartbeat returned it. */
+  struct OtaAttemptInfo {
+    std::string id;
+    std::string state;
+    std::string release_id;
+    std::string version;
+    std::string sha256;
+    std::string download_url;
+    uint32_t size{0};
+  };
+
+  /**
+   * The copy of the row the UI core reads.
+   *
+   * Deliberately POD and fixed-width: it is written under a mutex from the
+   * worker and copied under the same mutex by the UI, so no string is ever
+   * allocated or freed while the other core might be looking. It is a COPY, not
+   * a queue: the row's job is to show the latest truth, and an intermediate
+   * "42%" that gets overwritten before it is painted costs nothing.
+   */
+  struct OtaUiSnapshot {
+    uint8_t state{0};
+    int progress{0};
+    char published_version[32]{0};
+    char installed_version[32]{0};
+    char message[96]{0};
+  };
+
+  static constexpr uint32_t OTA_JOURNAL_MAGIC = 0x4F544131;  // "OTA1"
+  // "SWB6". Distinct from the identity keys so a corrupt journal can never take
+  // the device's credential with it, and vice versa.
+  static constexpr uint32_t OTA_KEY = 0x53574236;
+
+  // Persisted phases. These values are the on-flash format: do not renumber.
+  static constexpr uint8_t OTA_J_NONE = 0;
+  static constexpr uint8_t OTA_J_REQUESTED = 1;      // tapped; request not yet acknowledged
+  static constexpr uint8_t OTA_J_DOWNLOADING = 2;
+  static constexpr uint8_t OTA_J_VERIFYING = 3;
+  static constexpr uint8_t OTA_J_INSTALLING = 4;
+  static constexpr uint8_t OTA_J_REBOOTING = 5;      // boot slot switched; restart pending
+  static constexpr uint8_t OTA_J_REPORT_OK = 6;
+  static constexpr uint8_t OTA_J_REPORT_ROLLED_BACK = 7;
+  static constexpr uint8_t OTA_J_REPORT_FAILED = 8;
+
+  /** Boot-time setup: mutex, journal, running-image fingerprint, reconciliation. */
+  void ota_init_();
+  /** Turn a journal left by the previous boot into a report and a visible state. */
+  bool ota_boot_reconcile_();
+  /** The whole install, on the worker. Returns false if nothing was installed. */
+  bool ota_install_();
+  /**
+   * Fingerprint the image this device is running: descriptor version, the
+   * whole-file SHA-256 the station publishes, and the slot label.
+   *
+   * THE HASH COVERS THE APPENDED DIGEST TOO. The station hashes the exact file
+   * it serves — header, segments, checksum and the 32-byte SHA-256 the image
+   * carries — so hashing only the image body here would never match.
+   */
+  bool ota_read_running_(std::string *version, std::string *sha, std::string *slot);
+
+  /**
+   * Whether this boot has been declared good.
+   *
+   * The bootloader keeps a freshly installed image on probation until the app
+   * marks itself valid (ESPHome does that after a minute). Before then a crash
+   * or a reset rolls the bootloader back to the previous slot. Calling a
+   * just-started image a success would therefore tell the station that an
+   * install worked during exactly the window in which it can still be undone.
+   */
+  bool ota_boot_validated_();
+
+  void ota_journal_save_();
+  void ota_journal_load_();
+  void ota_journal_clear_();
+  void ota_publish_(OtaUiState state, int progress, const std::string &message);
+  void ota_note_published_(const std::string &release_id, const std::string &version,
+                           const std::string &sha, uint32_t size);
+  void ota_note_installed_(const std::string &version, const std::string &sha, const std::string &slot);
+  /** Re-derive the row from the catalog and the running image (no install active). */
+  void ota_refresh_view_();
+  /** Add the OTA block to a heartbeat, including any journal-driven report. */
+  void ota_prepare_heartbeat_(cJSON *ota);
+  /** Apply the response's published/attempt/notice to the catalog and the row. */
+  void ota_apply_heartbeat_(cJSON *ota, OtaAttemptInfo *attempt_out, std::string *notice_out);
+  /** Record a failure on the row and in the journal, so it survives a reset. */
+  void ota_fail_(const std::string &message, const char *error_code);
+  /** The tap, on the worker: refuse, resume, or start a fresh request. */
+  void ota_handle_tap_();
+  /** Ask the station to reserve an attempt for the published release. */
+  void ota_begin_request_();
+  /**
+   * Continue an install this device had already asked for.
+   *
+   * Called after a heartbeat and at the end of a request: the journal says an
+   * install was intended, and the attempt is downloadable. It never starts one
+   * on its own — a heartbeat that merely announces a release must not install
+   * it, because nobody tapped.
+   */
+  void ota_resume_();
+  /**
+   * One heartbeat, OTA block included. Returns the HTTP status (or -1).
+   *
+   * The report, when there is one, comes from the journal rather than a caller
+   * argument: there is exactly one source of truth for "what am I owed to tell
+   * the station", and it is the record that survives a reset.
+   */
+  int send_heartbeat_request_(const char *ip, int rssi, int *settings_rev,
+                              OtaAttemptInfo *attempt_out, std::string *notice_out);
+
   esphome::runtime_image::RuntimeImage *station_logo_image_{nullptr};
   esphome::runtime_image::RuntimeImage *now_avatar_image_{nullptr};
+  esphome::runtime_image::RuntimeImage *now_avatar_2_image_{nullptr};
   esphome::runtime_image::RuntimeImage *row_avatar_images_[MAX_SCHEDULE_SLOTS]{nullptr};
+  esphome::runtime_image::RuntimeImage *row_avatar2_images_[MAX_SCHEDULE_SLOTS]{nullptr};
   esphome::runtime_image::RuntimeImage *art_in_image_{nullptr};
   esphome::runtime_image::RuntimeImage *art_out_image_{nullptr};
+  esphome::runtime_image::RuntimeImage *modal_avatar_image_{nullptr};
   bool *art_slot_{nullptr};
   bool *art_primed_{nullptr};
   bool *art_queued_{nullptr};
@@ -540,10 +844,58 @@ class SubwaveDisplay
   std::string shown_logo_url_;
   std::string pending_now_avatar_url_;
   std::string shown_now_avatar_url_;
+  std::string pending_now_avatar_2_url_;
+  std::string shown_now_avatar_2_url_;
   std::string pending_row_avatar_url_[MAX_SCHEDULE_SLOTS];
   std::string shown_row_avatar_url_[MAX_SCHEDULE_SLOTS];
+  std::string pending_row_avatar2_url_[MAX_SCHEDULE_SLOTS];
+  std::string shown_row_avatar2_url_[MAX_SCHEDULE_SLOTS];
   std::map<std::string, std::string> persona_ids_;
+  PresenterModalState presenter_modal_state_{};
+  // Two URLs, not one: the modal's 280px avatar is requested before it exists.
+  // `requested` is the fetch in flight, `shown` is the one that actually landed
+  // and is safe to paint. Collapsing them into one pointer is what made a failed
+  // fetch permanent — the URL was recorded before the queue accepted the work,
+  // so every later tap was suppressed and the well kept the 88px thumbnail.
+  std::string modal_avatar_requested_url_;
+  std::string shown_modal_avatar_url_;
+  uint32_t modal_avatar_retry_ms_{0};
   std::string bind_code_;
+
+  // ---- shared firmware releases -------------------------------------------
+  //
+  // The catalog is what the station last reported, and the running block is
+  // what this device last hashed out of its own flash. Both are worker facts:
+  // the UI only ever sees the snapshot below.
+  std::string ota_pub_release_id_;
+  std::string ota_pub_version_;
+  std::string ota_pub_sha_;
+  uint32_t ota_pub_size_{0};
+  std::string ota_run_version_;
+  std::string ota_run_sha_;
+  std::string ota_run_slot_;
+  // The release that failed most recently, so a later heartbeat cannot replace
+  // a retry prompt with an "available" one before the operator has seen it.
+  std::string ota_failed_release_id_;
+  // The live attempt, as the last heartbeat described it. Empty id means none.
+  OtaAttemptInfo ota_attempt_{};
+  // One install at a time. Set for the whole of ota_install_(); checked by the
+  // command handler so a queued second tap is dropped rather than started.
+  bool ota_install_running_{false};
+  // The record that survives a reset mid-install. Worker-only.
+  OtaJournal ota_journal_{};
+
+  // Read on the UI core, written on the worker. Short critical sections only.
+  mutable SemaphoreHandle_t ota_ui_mutex_{nullptr};
+  mutable OtaUiSnapshot ota_ui_{};
+
+  // PSRAM Avatar Cache
+  std::map<std::string, AvatarCacheEntry> avatar_cache_{};
+  SemaphoreHandle_t cache_mutex_{nullptr};
+  // Mirrors of the map, updated under cache_mutex_. Read from the UI core, so
+  // they are atomic: the stats label must never wait on the cache lock.
+  std::atomic<uint32_t> avatar_cache_count_{0};
+  std::atomic<uint32_t> avatar_cache_bytes_{0};
 
   bool claimed_{false};
   bool server_reachable_{false};

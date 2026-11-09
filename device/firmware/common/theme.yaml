@@ -164,46 +164,67 @@ script:
       to_day: bool
     then:
       - lambda: |-
-          int32_t from_bg = id(c_bg), to_bg = to_day ? id(day_bg) : id(night_bg);
-          int32_t from_tx = id(c_text), to_tx = to_day ? id(day_text) : id(night_text);
-          int32_t from_mu = id(c_muted), to_mu = to_day ? id(day_muted) : id(night_muted);
-          int32_t from_ac = id(c_accent), to_ac = to_day ? id(day_accent) : id(night_accent);
-          int32_t from_sf = id(c_surface), to_sf = to_day ? id(day_surface) : id(night_surface);
-          int32_t from_ru = id(c_rule), to_ru = to_day ? id(day_rule) : id(night_rule);
+          static int32_t theme_from[6];
+          static int32_t theme_to[6];
+          theme_from[0] = id(c_bg);
+          theme_from[1] = id(c_text);
+          theme_from[2] = id(c_muted);
+          theme_from[3] = id(c_accent);
+          theme_from[4] = id(c_surface);
+          theme_from[5] = id(c_rule);
+          theme_to[0] = to_day ? id(day_bg) : id(night_bg);
+          theme_to[1] = to_day ? id(day_text) : id(night_text);
+          theme_to[2] = to_day ? id(day_muted) : id(night_muted);
+          theme_to[3] = to_day ? id(day_accent) : id(night_accent);
+          theme_to[4] = to_day ? id(day_surface) : id(night_surface);
+          theme_to[5] = to_day ? id(day_rule) : id(night_rule);
 
-          for (int step = 0; step <= 5; step++) {
-            int32_t k = (step << 8) / 5;
-            lv_color_t bg  = lv_color_mix(lv_color_hex(from_bg), lv_color_hex(to_bg),  k);
-            lv_color_t tx  = lv_color_mix(lv_color_hex(from_tx), lv_color_hex(to_tx),  k);
-            lv_color_t mu  = lv_color_mix(lv_color_hex(from_mu), lv_color_hex(to_mu),  k);
-            lv_color_t ac  = lv_color_mix(lv_color_hex(from_ac), lv_color_hex(to_ac),  k);
-            lv_color_t sf  = lv_color_mix(lv_color_hex(from_sf), lv_color_hex(to_sf),  k);
-            lv_color_t ru  = lv_color_mix(lv_color_hex(from_ru), lv_color_hex(to_ru),  k);
-
-            // BACK TO THE PALETTE FORMAT.
-            //
-            // The globals are `type: int` holding 0xRRGGBB — the same shape as
-            // the literals at the top of this file — because that is what
-            // lv_color_hex() takes and what every other reader expects. LVGL's
-            // lv_color_t is a {blue, green, red} struct and lv_color32_t gained an
-            // alpha byte in 9.5, so neither converts to an int implicitly; the
-            // packing is spelled out rather than cast.
+          // BACK TO THE PALETTE FORMAT.
+          //
+          // The globals are `type: int` holding 0xRRGGBB — the same shape as
+          // the literals at the top of this file — because that is what
+          // lv_color_hex() takes and what every other reader expects. LVGL's
+          // lv_color_t is a {blue, green, red} struct and lv_color32_t gained an
+          // alpha byte in 9.5, so neither converts to an int implicitly; the
+          // packing is spelled out rather than cast.
+          //
+          // ANIMATED ON THE RENDER THREAD, NOT BY SLEEPING HERE. The old loop
+          // slept ~21ms per step with lv_timer_handler() in between. That block
+          // serviced LVGL's input timer while the press flag was not yet latched,
+          // which is how a tap during a fade loses its click.
+          auto frame = [](void *, int32_t k) {
             auto pack = [](lv_color_t c) -> int32_t {
               return ((int32_t) c.red << 16) | ((int32_t) c.green << 8) | (int32_t) c.blue;
             };
-
-            id(c_bg) = pack(bg);
-            id(c_text) = pack(tx);
-            id(c_muted) = pack(mu);
-            id(c_accent) = pack(ac);
-            id(c_surface) = pack(sf);
-            id(c_rule) = pack(ru);
-
+            id(c_bg)      = pack(lv_color_mix(lv_color_hex(theme_from[0]), lv_color_hex(theme_to[0]), k));
+            id(c_text)    = pack(lv_color_mix(lv_color_hex(theme_from[1]), lv_color_hex(theme_to[1]), k));
+            id(c_muted)   = pack(lv_color_mix(lv_color_hex(theme_from[2]), lv_color_hex(theme_to[2]), k));
+            id(c_accent)  = pack(lv_color_mix(lv_color_hex(theme_from[3]), lv_color_hex(theme_to[3]), k));
+            id(c_surface) = pack(lv_color_mix(lv_color_hex(theme_from[4]), lv_color_hex(theme_to[4]), k));
+            id(c_rule)    = pack(lv_color_mix(lv_color_hex(theme_from[5]), lv_color_hex(theme_to[5]), k));
             subwave_display::theme_paint_all();
-            delay(1);
-            delay(20);
-          }
-          window_draw_rail->execute();
+          };
+
+          lv_anim_delete(theme_from, frame);
+
+          lv_anim_t a;
+          lv_anim_init(&a);
+          lv_anim_set_var(&a, theme_from);
+          lv_anim_set_values(&a, 0, 255);
+          lv_anim_set_duration(&a, 130);
+          lv_anim_set_path_cb(&a, lv_anim_path_linear);
+          lv_anim_set_exec_cb(&a, frame);
+          lv_anim_set_completed_cb(&a, [](lv_anim_t *) {
+            id(c_bg)      = theme_to[0];
+            id(c_text)    = theme_to[1];
+            id(c_muted)   = theme_to[2];
+            id(c_accent)  = theme_to[3];
+            id(c_surface) = theme_to[4];
+            id(c_rule)    = theme_to[5];
+            subwave_display::theme_paint_all();
+            window_draw_rail->execute();
+          });
+          lv_anim_start(&a);
 
   - id: theme_sync
     mode: single
@@ -262,26 +283,36 @@ script:
           lv_obj_clear_flag(in, LV_OBJ_FLAG_HIDDEN);
           lv_obj_move_foreground(in);
 
-          for (int step = 0; step <= 8; step++) {
-            int32_t k = (step * 255) / 8;
-            lv_obj_set_style_opa(in, k, LV_PART_MAIN);
-            lv_timer_handler();
-            delay(1);
-            delay(15);
-          }
-          lv_obj_set_style_opa(in, LV_OPA_COVER, LV_PART_MAIN);
-          lv_obj_add_flag(out, LV_OBJ_FLAG_HIDDEN);
-          lv_timer_handler();
-          id(art_fading) = false;
-          if (id(art_queued)) {
-            id(art_queued) = false;
-            art_swap->execute();
-          }
-          if (id(window_queued) >= 0) {
-            int q = id(window_queued);
-            id(window_queued) = -1;
-            window_go->execute(q);
-          }
+          // One frame per render tick. Never call lv_timer_handler() from a
+          // script: that services the input timer mid-block, which can consume
+          // a tap's pressed sample before it is latched.
+          lv_anim_t a;
+          lv_anim_init(&a);
+          lv_anim_set_var(&a, in);
+          lv_anim_set_user_data(&a, out);
+          lv_anim_set_values(&a, 0, 255);
+          lv_anim_set_duration(&a, 150);
+          lv_anim_set_path_cb(&a, lv_anim_path_linear);
+          lv_anim_set_exec_cb(&a, [](void *var, int32_t v) {
+            lv_obj_set_style_opa(static_cast<lv_obj_t *>(var), v, LV_PART_MAIN);
+          });
+          lv_anim_set_completed_cb(&a, [](lv_anim_t *anim) {
+            auto *in_obj  = static_cast<lv_obj_t *>(anim->var);
+            auto *out_obj = static_cast<lv_obj_t *>(lv_anim_get_user_data(anim));
+            lv_obj_set_style_opa(in_obj, LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_add_flag(out_obj, LV_OBJ_FLAG_HIDDEN);
+            id(art_fading) = false;
+            if (id(art_queued)) {
+              id(art_queued) = false;
+              art_swap->execute();
+            }
+            if (id(window_queued) >= 0) {
+              int q = id(window_queued);
+              id(window_queued) = -1;
+              window_go->execute(q);
+            }
+          });
+          lv_anim_start(&a);
 
   # A swap deferred behind a slide or another fade. Motion never overlaps:
   # two competing animations at once read as a glitch, and the incoming artwork

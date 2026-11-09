@@ -23,12 +23,76 @@ void theme_paint_all();
 void now_refresh();
 void shows_refresh();
 void settings_refresh();
+void ui_refresh_cache_stats();
+/**
+ * Paint the Settings -> Firmware Update row.
+ *
+ * On the slow tick rather than on every touch, for the same reason the cache
+ * statistics line is: the row's sentence changes when the worker says so, not
+ * when somebody touches the glass, and the install must not be able to repaint
+ * the screen from the Core 0 side.
+ */
+void ui_refresh_firmware_update();
+
+/**
+ * The firmware update dialog.
+ *
+ * ui_show_firmware_prompt() opens it with the answer to "install this?" and
+ * ui_hide_firmware_prompt() closes it. ui_confirm_firmware_update() is the
+ * only code path that enqueues an install; it is reached from the dialog's
+ * "Install now" button and nowhere else. The dialog repaints itself from the
+ * worker's snapshot, so the progress bar can only show work that happened.
+ */
+void ui_show_firmware_prompt();
+void ui_hide_firmware_prompt();
+void ui_confirm_firmware_update();
+/**
+ * Repaint the dialog only while it is open, on the one-second tick.
+ *
+ * The row stays on the five-second tick; a progress bar that moved in five
+ * second steps would look stuck during a sixty-second download. The check is
+ * one hidden-flag read when nothing is showing, and the row is untouched.
+ */
+void ui_tick_firmware_dialog();
+
+/**
+ * The backlight, handed to the install for the length of one flash write.
+ *
+ * ui_ota_screen_on(false) asks for the screen to go dark and
+ * ui_ota_screen_is_off() reports whether it has. The request is applied from
+ * loopTask — LightState belongs to it — and the worker polls rather than
+ * writing the light from Core 0. The screen stays dark until an install failure
+ * asks for it back; a successful install restarts the chip with it dark and the
+ * light's ALWAYS_ON restore mode brings it up again.
+ *
+ * This exists because the panel is scanned from PSRAM and every flash operation
+ * suspends the external-memory cache, so the panel cannot be fed during a
+ * write. There is no frame to show; a dark screen is the honest answer.
+ */
+void ui_ota_screen_on(bool on);
+bool ui_ota_screen_is_off();
+
+void presenter_modal_show(const char *name, const char *role, const char *tagline, esphome::image::Image *placeholder_img = nullptr, size_t current_idx = 0, size_t total_count = 1);
+void presenter_modal_dismiss();
 
 /** Apply decoded images to LVGL widgets safely on loopTask */
 void ui_apply_logo(esphome::image::Image *img);
 void ui_apply_now_avatar(esphome::image::Image *img);
+/**
+ * The co-host's portrait beside the on-air one.
+ *
+ * A show can be hosted by more than one person; the screen shows a face per
+ * host rather than picking one. Painting the second face also moves the byline
+ * text across, which is why the layout lives in ui_set_now_avatar_dual().
+ */
+void ui_apply_now_avatar_2(esphome::image::Image *img);
+void ui_hide_now_avatar_2();
+void ui_set_now_avatar_dual(bool dual);
 void ui_apply_row_avatar(int slot, esphome::image::Image *img);
-void ui_apply_cover_art(esphome::image::Image *img);
+/** The second presenter's face on a schedule row. */
+void ui_apply_row_avatar_2(int slot, esphome::image::Image *img);
+void ui_apply_cover_art(esphome::image::Image *img, int slot);
+void ui_apply_modal_avatar(esphome::image::Image *img);
 
 /** Blank the screen and show the "tap to wake" line, or the reverse. */
 void idle_apply(bool asleep);

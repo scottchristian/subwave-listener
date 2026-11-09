@@ -6,10 +6,12 @@
 #include <ctime>
 #include <cstring>
 #include <algorithm>
+#include <memory>
 
 #include "esphome/core/log.h"
 #include "esphome/core/application.h"
 #include "esphome/core/defines.h"
+#include "esphome/core/hal.h"
 #include "esphome/core/preferences.h"
 #include "esphome/components/wifi/wifi_component.h"
 #include "esphome/components/network/util.h"
@@ -36,6 +38,13 @@
 #include <esp_freertos_hooks.h>
 #include <esp_heap_caps.h>
 #include <esp_system.h>
+// Firmware OTA. The app image format and the partition that holds it are the
+// IDF's, not ours: the install writes through esp_ota_* so the bootloader's own
+// A/B swap and rollback behaviour is what decides which app starts.
+#include <esp_app_format.h>
+#include <esp_ota_ops.h>
+#include <esp_partition.h>
+#include <mbedtls/sha256.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
@@ -222,6 +231,12 @@ void SubwaveDisplay::loop() {
     }
   }
 
+  // Retry the modal portrait only while the modal is open; closing it stops the
+  // retries, and the backoff after a failure lives in ensure_modal_avatar_().
+  if (this->presenter_modal_state_.open) {
+    this->ensure_modal_avatar_();
+  }
+
   // Non-blocking trigger for pending cover art decode on background worker (Core 0)
   if (!this->pending_art_url_.empty() && this->art_in_image_ != nullptr && this->art_out_image_ != nullptr) {
     if (this->is_network_ready_() && this->claimed_ && !this->bearer_.empty() && !this->cover_in_flight_) {
@@ -229,16 +244,17 @@ void SubwaveDisplay::loop() {
       std::string url = (this->pending_art_url_.rfind("http://", 0) == 0 || this->pending_art_url_.rfind("https://", 0) == 0)
                             ? this->pending_art_url_
                             : join(this->api_base_, this->pending_art_url_);
-      this->pending_art_url_.clear();
-      this->cover_in_flight_ = true;
       WorkerCommand cmd{};
       cmd.type = WorkerCmdType::FETCH_COVER_ART;
       strncpy(cmd.url_or_path, url.c_str(), sizeof(cmd.url_or_path) - 1);
       cmd.target_ptr = target;
       cmd.slot_index = (this->art_slot_ && *this->art_slot_) ? 1 : 0;
-      this->enqueue_command_(cmd);
-      ESP_LOGI("subwave.art", "Enqueued background cover fetch (slot %d): %s",
-               cmd.slot_index, url.c_str());
+      if (this->enqueue_command_(cmd)) {
+        this->pending_art_url_.clear();
+        this->cover_in_flight_ = true;
+        ESP_LOGI("subwave.art", "Enqueued background cover fetch (slot %d): %s",
+                 cmd.slot_index, url.c_str());
+      }
     }
   }
 
@@ -366,6 +382,11 @@ void SubwaveDisplay::setup() {
   }
   this->api_base_ = this->server_url_;
 
+  // Before the worker exists and before the first heartbeat can be enqueued:
+  // the journal decides whether the previous boot owes the station a report,
+  // and the running-image fingerprint decides what "up to date" means.
+  this->ota_init_();
+
   if (this->claim_token_ == "unprovisioned" && !this->claimed_) {
     ESP_LOGW(TAG, "This firmware has no setup code in it. Flash it from the admin panel.");
   }
@@ -410,7 +431,9 @@ bool SubwaveDisplay::enqueue_result_(WorkerResult *res) {
     delete res;
     return false;
   }
-  BaseType_t ok = xQueueSend(this->ui_result_queue_, &res, 0);  // 0 timeout
+  // Only the UI consumer can clear cover_in_flight_, so its completion must not be dropped.
+  TickType_t wait_ticks = res->type == WorkerResultType::COVER_ART_READY ? portMAX_DELAY : 0;
+  BaseType_t ok = xQueueSend(this->ui_result_queue_, &res, wait_ticks);
   if (ok != pdTRUE) {
     ESP_LOGW(TAG, "UI result queue full! Dropping result type %d", static_cast<int>(res->type));
     delete res;
@@ -533,9 +556,58 @@ bool SubwaveDisplay::parse_state_(const std::string &json, WorkerResult *res) {
     res->byline.presenter = str_at(byline, "presenter");
     res->byline.show = str_at(byline, "show");
     res->byline.avatar_url = str_at(byline, "avatar");
+    res->byline.tagline = str_at(byline, "tagline");
     res->byline.on_air_for_sec = int64_at(byline, "onAirForSec", -1);
     res->byline.ends_in_sec = int64_at(byline, "endsInSec", -1);
     res->byline.live = bool_at(byline, "live");
+    if (cJSON *pres = cJSON_GetObjectItem(byline, "presenters")) {
+      if (cJSON_IsArray(pres)) {
+        int pcount = cJSON_GetArraySize(pres);
+        for (int p = 0; p < pcount; p++) {
+          cJSON *pitem = cJSON_GetArrayItem(pres, p);
+          if (pitem != nullptr) {
+            PresenterInfo pi;
+            pi.id = str_at(pitem, "id");
+            pi.name = str_at(pitem, "name");
+            pi.role = str_at(pitem, "role");
+            pi.tagline = str_at(pitem, "tagline");
+            pi.avatar_url = str_at(pitem, "avatar");
+            // The first entry is the host, and the byline carries the same bio
+            // and avatar at show level. Falling back per field means a payload
+            // that omits them on the entry still shows the bio instead of
+            // "No bio provided for this presenter."
+            if (p == 0) {
+              if (pi.tagline.empty()) pi.tagline = res->byline.tagline;
+              if (pi.avatar_url.empty()) pi.avatar_url = res->byline.avatar_url;
+            }
+            if (!pi.name.empty()) {
+              res->byline.presenters.push_back(pi);
+            }
+          }
+        }
+      }
+    }
+    if (res->byline.presenters.empty() && !res->byline.presenter.empty()) {
+      PresenterInfo pi;
+      pi.name = res->byline.presenter;
+      pi.role = "Host";
+      pi.tagline = res->byline.tagline;
+      pi.avatar_url = res->byline.avatar_url;
+      res->byline.presenters.push_back(pi);
+    }
+    if (res->byline.presenters.size() > 1) {
+      std::string combined;
+      for (size_t p = 0; p < res->byline.presenters.size(); p++) {
+        if (p == 0) {
+          combined = res->byline.presenters[p].name;
+        } else if (p == res->byline.presenters.size() - 1) {
+          combined += " & " + res->byline.presenters[p].name;
+        } else {
+          combined += ", " + res->byline.presenters[p].name;
+        }
+      }
+      res->byline.presenter = combined;
+    }
   }
   if (cJSON *counts = cJSON_GetObjectItem(root, "counts")) {
     res->signed_in = int_at(counts, "signedIn", 0);
@@ -608,6 +680,37 @@ void SubwaveDisplay::resolve_now_avatar_() {
     ESP_LOGI(TAG, "Resolved presenter avatar for '%s' (%s): %s",
              this->byline_.presenter.c_str(), this->byline_.show.c_str(), resolved.c_str());
   }
+
+  // The co-host's face. A show with two hosts paints both, side by side, so the
+  // second portrait gets its own buffer and its own request.
+  std::string co_host;
+  if (this->byline_.presenters.size() > 1) {
+    co_host = this->byline_.presenters[1].avatar_url;
+    if (co_host.empty()) {
+      auto it = this->persona_ids_.find(this->byline_.presenters[1].name);
+      if (it != this->persona_ids_.end() && !it->second.empty()) {
+        co_host = "/api/devices/avatar?id=" + it->second;
+      }
+    }
+  }
+  if (co_host.empty()) {
+    this->pending_now_avatar_2_url_.clear();
+    this->shown_now_avatar_2_url_.clear();
+  } else if (co_host != this->shown_now_avatar_2_url_ &&
+             co_host != this->pending_now_avatar_2_url_) {
+    if (this->now_avatar_2_image_ != nullptr) {
+      WorkerCommand cmd{};
+      cmd.type = WorkerCmdType::FETCH_PNG;
+      strncpy(cmd.url_or_path, co_host.c_str(), sizeof(cmd.url_or_path) - 1);
+      cmd.target_ptr = this->now_avatar_2_image_;
+      cmd.slot_index = -4;
+      // In flight only once the queue owns it, so a full queue retries on the
+      // next poll instead of waiting forever for a request that never happened.
+      if (this->enqueue_command_(cmd)) {
+        this->pending_now_avatar_2_url_ = co_host;
+      }
+    }
+  }
 }
 
 bool SubwaveDisplay::parse_schedule_(const std::string &json, WorkerResult *res) {
@@ -636,11 +739,37 @@ bool SubwaveDisplay::parse_schedule_(const std::string &json, WorkerResult *res)
           slot.host = str_at(show, "host");
           slot.host_id = str_at(show, "hostId");
           slot.avatar_url = str_at(show, "avatar");
+          slot.tagline = str_at(show, "tagline");
           if (slot.avatar_url.empty() && !slot.host_id.empty()) {
             slot.avatar_url = "/api/devices/avatar?id=" + slot.host_id;
           }
           if (!slot.host.empty() && !slot.host_id.empty()) {
             res->persona_ids[slot.host] = slot.host_id;
+          }
+          if (cJSON *pres = cJSON_GetObjectItem(show, "presenters")) {
+            if (cJSON_IsArray(pres)) {
+              int pcount = cJSON_GetArraySize(pres);
+              for (int p = 0; p < pcount; p++) {
+                cJSON *pitem = cJSON_GetArrayItem(pres, p);
+                if (pitem != nullptr) {
+                  PresenterInfo pi;
+                  pi.id = str_at(pitem, "id");
+                  pi.name = str_at(pitem, "name");
+                  pi.role = str_at(pitem, "role");
+                  pi.tagline = str_at(pitem, "tagline");
+                  pi.avatar_url = str_at(pitem, "avatar");
+                  // Same rule as the byline: the slot's own tagline/avatar is
+                  // the host's, so it may fill the first presenter's gaps.
+                  if (p == 0) {
+                    if (pi.tagline.empty()) pi.tagline = slot.tagline;
+                    if (pi.avatar_url.empty()) pi.avatar_url = slot.avatar_url;
+                  }
+                  if (!pi.name.empty()) {
+                    slot.presenters.push_back(pi);
+                  }
+                }
+              }
+            }
           }
           if (cJSON *guests = cJSON_GetObjectItem(show, "guests")) {
             if (cJSON_IsArray(guests)) {
@@ -653,9 +782,43 @@ bool SubwaveDisplay::parse_schedule_(const std::string &json, WorkerResult *res)
                   if (!gname.empty() && !gid.empty()) {
                     res->persona_ids[gname] = gid;
                   }
+                  if (slot.presenters.empty()) {
+                    PresenterInfo guest_p;
+                    guest_p.id = gid;
+                    guest_p.name = gname;
+                    guest_p.role = str_at(gitem, "role");
+                    if (guest_p.role.empty()) guest_p.role = "Guest";
+                    guest_p.tagline = str_at(gitem, "tagline");
+                    guest_p.avatar_url = str_at(gitem, "avatar");
+                    if (!guest_p.name.empty()) {
+                      slot.presenters.push_back(guest_p);
+                    }
+                  }
                 }
               }
             }
+          }
+          if (slot.presenters.empty() && !slot.host.empty()) {
+            PresenterInfo host_p;
+            host_p.id = slot.host_id;
+            host_p.name = slot.host;
+            host_p.role = "Host";
+            host_p.tagline = slot.tagline;
+            host_p.avatar_url = slot.avatar_url;
+            slot.presenters.insert(slot.presenters.begin(), host_p);
+          }
+          if (slot.presenters.size() > 1) {
+            std::string combined;
+            for (size_t p = 0; p < slot.presenters.size(); p++) {
+              if (p == 0) {
+                combined = slot.presenters[p].name;
+              } else if (p == slot.presenters.size() - 1) {
+                combined += " & " + slot.presenters[p].name;
+              } else {
+                combined += ", " + slot.presenters[p].name;
+              }
+            }
+            slot.host = combined;
           }
         }
         all_slots.push_back(slot);
@@ -774,6 +937,31 @@ void SubwaveDisplay::handle_worker_result_(const WorkerResult &res) {
           }
         }
 
+        // The second presenter on each row, so a two-host show reads as two
+        // faces rather than one face and a name.
+        for (int i = 0; i < MAX_SCHEDULE_SLOTS; i++) {
+          std::string second;
+          if (i < (int) this->schedule_slots_.size() && this->schedule_slots_[i].presenters.size() > 1) {
+            second = this->schedule_slots_[i].presenters[1].avatar_url;
+          }
+          if (second.empty()) {
+            this->shown_row_avatar2_url_[i].clear();
+            this->pending_row_avatar2_url_[i].clear();
+          } else if (second != this->shown_row_avatar2_url_[i] &&
+                     second != this->pending_row_avatar2_url_[i]) {
+            if (this->row_avatar2_images_[i] != nullptr) {
+              WorkerCommand cmd{};
+              cmd.type = WorkerCmdType::FETCH_PNG;
+              strncpy(cmd.url_or_path, second.c_str(), sizeof(cmd.url_or_path) - 1);
+              cmd.target_ptr = this->row_avatar2_images_[i];
+              cmd.slot_index = -5 - i;
+              if (this->enqueue_command_(cmd)) {
+                this->pending_row_avatar2_url_[i] = second;
+              }
+            }
+          }
+        }
+
         this->resolve_now_avatar_();
         now_refresh();
         shows_refresh();
@@ -832,6 +1020,51 @@ void SubwaveDisplay::handle_worker_result_(const WorkerResult &res) {
       break;
 
     case WorkerResultType::IMAGE_DECODED:
+      if (res.slot_index == -3) {
+        // A slow reply for a presenter the user has already swiped past must
+        // not paint over the face now on screen.
+        if (res.url.empty() || res.url != this->modal_avatar_requested_url_) break;
+        this->modal_avatar_requested_url_.clear();
+        if (res.status_code == 200 && res.target_img != nullptr) {
+          this->modal_avatar_retry_ms_ = 0;
+          this->shown_modal_avatar_url_ = res.url;
+          ui_apply_modal_avatar(static_cast<esphome::image::Image *>(res.target_img));
+        } else {
+          // Nothing is recorded as shown, so the modal asks again after a
+          // short pause instead of leaving the 280 well empty until it closes.
+          this->modal_avatar_retry_ms_ = esphome::millis() + 3000;
+        }
+        break;
+      }
+      if (res.slot_index == -4) {
+        // The co-host portrait. Only the one still wanted may paint.
+        if (res.url.empty() || res.url != this->pending_now_avatar_2_url_) break;
+        this->pending_now_avatar_2_url_.clear();
+        if (res.status_code == 200 && res.target_img != nullptr) {
+          this->shown_now_avatar_2_url_ = res.url;
+          ui_apply_now_avatar_2(static_cast<esphome::image::Image *>(res.target_img));
+        } else {
+          // Hide the well rather than leave an empty frame where a face should
+          // be; the next poll asks again.
+          this->shown_now_avatar_2_url_.clear();
+          ui_hide_now_avatar_2();
+        }
+        break;
+      }
+      if (res.slot_index <= -5 && res.slot_index >= -5 - (MAX_SCHEDULE_SLOTS - 1)) {
+        // The second face on a schedule row. Checked and cleared outside the
+        // decode-success branch so a failed fetch releases the in-flight marker
+        // and the next schedule poll asks again instead of leaving the row with
+        // the previous show's co-host forever.
+        const int slot = -5 - res.slot_index;
+        if (res.url.empty() || res.url != this->pending_row_avatar2_url_[slot]) break;
+        this->pending_row_avatar2_url_[slot].clear();
+        if (res.status_code == 200 && res.target_img != nullptr) {
+          this->shown_row_avatar2_url_[slot] = res.url;
+          ui_apply_row_avatar_2(slot, static_cast<esphome::image::Image *>(res.target_img));
+        }
+        break;
+      }
       if (res.target_img != nullptr) {
         auto *img = static_cast<esphome::image::Image *>(res.target_img);
         if (res.slot_index == -1) {
@@ -850,7 +1083,7 @@ void SubwaveDisplay::handle_worker_result_(const WorkerResult &res) {
         ESP_LOGI("subwave.art", "Cover ready in %s (%dx%d)",
                  img == this->art_out_image_ ? "art_out_image" : "art_in_image",
                  img->get_width(), img->get_height());
-        ui_apply_cover_art(img);
+        ui_apply_cover_art(img, res.slot_index);
         if (this->art_primed_ != nullptr) *this->art_primed_ = true;
         if (this->art_fading_ != nullptr && !*this->art_fading_) {
           if (this->art_swap_script_ != nullptr) this->art_swap_script_->execute();
@@ -997,35 +1230,13 @@ void SubwaveDisplay::handle_worker_command_(const WorkerCommand &cmd) {
 
     case WorkerCmdType::SEND_HEARTBEAT: {
       if (!this->claimed_) break;
-      cJSON *root = cJSON_CreateObject();
-      cJSON_AddStringToObject(root, "deviceId", this->device_id_.c_str());
-      cJSON_AddNumberToObject(root, "appliedRev", this->settings_rev_);
-      cJSON_AddStringToObject(root, "orientation", this->settings_.orientation.c_str());
-      cJSON_AddStringToObject(root, "firmwareVer", ESPHOME_PROJECT_VERSION);
-      cJSON_AddNumberToObject(root, "rssi", cmd.rssi);
-      if (cmd.ip[0] != '\0') {
-        cJSON_AddStringToObject(root, "ip", cmd.ip);
-      }
-      std::string body = json_stringify(root);
-
-      std::string out;
-      int status = this->request_("POST", "/api/devices/heartbeat", body, 15000, &out);
       auto *res = new WorkerResult();
       res->type = WorkerResultType::HEARTBEAT_DONE;
-      res->status_code = status;
-      if (status == 200) {
-        cJSON *resp = cJSON_Parse(out.c_str());
-        if (resp != nullptr) {
-          res->settings_rev = int_at(resp, "settingsRev", this->settings_rev_);
-          std::string rotated = str_at(resp, "rotatedToken");
-          if (!rotated.empty()) {
-            this->bearer_ = rotated;
-            this->save_token_();
-            ESP_LOGI(TAG, "Credential rotation completed; stored replacement token.");
-          }
-          cJSON_Delete(resp);
-        }
-      }
+      res->status_code =
+          this->send_heartbeat_request_(cmd.ip, cmd.rssi, &res->settings_rev, nullptr, nullptr);
+      // A pending request or an interrupted install may now have an attempt to
+      // act on. ota_resume_ installs nothing unless the tap wrote that intent.
+      if (res->status_code == 200) this->ota_resume_();
       this->enqueue_result_(res);
       break;
     }
@@ -1107,13 +1318,15 @@ void SubwaveDisplay::handle_worker_command_(const WorkerCommand &cmd) {
     case WorkerCmdType::FETCH_PNG: {
       auto *img = static_cast<esphome::runtime_image::RuntimeImage *>(cmd.target_ptr);
       bool ok = this->fetch_png(cmd.url_or_path, img);
-      if (ok) {
-        auto *res = new WorkerResult();
-        res->type = WorkerResultType::IMAGE_DECODED;
-        res->target_img = img;
-        res->slot_index = cmd.slot_index;
-        this->enqueue_result_(res);
-      }
+      // Report failures too. A dropped fetch used to be invisible to the UI,
+      // which had already assumed the image was coming and never asked again.
+      auto *res = new WorkerResult();
+      res->type = WorkerResultType::IMAGE_DECODED;
+      res->target_img = ok ? img : nullptr;
+      res->slot_index = cmd.slot_index;
+      res->status_code = ok ? 200 : 500;
+      res->url = cmd.url_or_path;
+      this->enqueue_result_(res);
       break;
     }
 
@@ -1135,6 +1348,11 @@ void SubwaveDisplay::handle_worker_command_(const WorkerCommand &cmd) {
       res->type = WorkerResultType::CONNECTIVITY_RESULT;
       res->connectivity = conn;
       this->enqueue_result_(res);
+      break;
+    }
+
+    case WorkerCmdType::OTA_INSTALL: {
+      this->ota_handle_tap_();
       break;
     }
 
@@ -1252,7 +1470,7 @@ bool SubwaveDisplay::fetch_image_to_runtime_image_(const std::string &path, esph
 }
 
 bool SubwaveDisplay::fetch_png(const std::string &path, esphome::runtime_image::RuntimeImage *img) {
-  return this->fetch_image_to_runtime_image_(path, img);
+  return this->fetch_png_cached_(path, img);
 }
 
 bool SubwaveDisplay::fetch_cover_to_runtime_image_(const std::string &path, esphome::runtime_image::RuntimeImage *img) {
@@ -1337,6 +1555,1092 @@ bool SubwaveDisplay::fetch_cover_to_runtime_image_(const std::string &path, esph
   ESP_LOGI("subwave.art", "Decoded cover %s (%u bytes -> %dx%d) on Core %d.",
            path.c_str(), (unsigned) body.size(), img->get_width(), img->get_height(), xPortGetCoreID());
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// Shared firmware releases, installed from this screen's own Settings.
+//
+// ONE IMAGE FOR EVERY SCREEN, AN EXPLICIT TAP TO INSTALL IT, AND A RECORD THAT
+// OUTLIVES A RESET. The station publishes one release; a heartbeat announces it.
+// Nothing here downloads anything until somebody standing at the screen asks,
+// and no heartbeat can start an install on its own: the decision requires a
+// journal phase that only the tap writes.
+//
+// THE JOURNAL IS THE LOAD-BEARING PART. A screen that loses power while writing
+// the inactive slot comes back with no memory of what it was doing. The server
+// only knows the attempt by an id it issued, and the image alone cannot say
+// whether "still running the old app" means "the download never finished" or
+// "the new app crashed and the bootloader rolled back". So the attempt is
+// written to NVS before the first byte is fetched and updated at every boundary.
+//
+// EVERY BYTE CROSSES THE WORKER. Download, checksum, flash write and reboot all
+// happen on Core 0; the UI only ever reads a mutex-protected snapshot. A
+// multi-megabyte HTTPS download on the LVGL core is the exact stall this
+// component's design exists to avoid.
+// ---------------------------------------------------------------------------
+
+namespace {
+
+/** The one URL this firmware will ever fetch an image from. Not a parameter. */
+constexpr const char *OTA_DOWNLOAD_PATH = "/api/devices/ota";
+/** The station's own floor for a plausible app image, and one slot's ceiling. */
+constexpr uint32_t OTA_MIN_BYTES = 320;
+constexpr uint32_t OTA_MAX_BYTES = 0x7C0000;
+
+void ota_set_field(char *dst, size_t cap, const std::string &value) {
+  if (cap == 0) return;
+  size_t n = std::min(value.size(), cap - 1);
+  if (n > 0) memcpy(dst, value.data(), n);
+  dst[n] = '\0';
+}
+
+bool ota_state_is_downloadable(const std::string &state) {
+  return state == "accepted" || state == "downloading" || state == "verifying" || state == "installing";
+}
+
+bool ota_state_is_terminal(const std::string &state) {
+  return state == "succeeded" || state == "failed" || state == "rolled_back" || state == "unknown" ||
+         state == "rejected";
+}
+
+std::string ota_hex(const uint8_t *digest, size_t len) {
+  static const char *const HEX = "0123456789abcdef";
+  std::string out(len * 2, '0');
+  for (size_t i = 0; i < len; ++i) {
+    out[2 * i] = HEX[digest[i] >> 4];
+    out[2 * i + 1] = HEX[digest[i] & 0x0F];
+  }
+  return out;
+}
+
+bool ota_hex_matches(const std::string &expected, const std::string &actual) {
+  if (expected.size() != 64 || actual.size() != 64) return false;
+  for (size_t i = 0; i < 64; ++i) {
+    char a = expected[i];
+    char b = actual[i];
+    if (a >= 'A' && a <= 'Z') a = static_cast<char>(a - 'A' + 'a');
+    if (b >= 'A' && b <= 'Z') b = static_cast<char>(b - 'A' + 'a');
+    if (a != b) return false;
+  }
+  return true;
+}
+
+/**
+ * A fresh request id: 20 characters from the alphabet the station accepts.
+ *
+ * Derived from the MAC and the current millisecond, so two screens cannot
+ * collide and one screen's two taps always differ. It is NOT a secret and is
+ * never used as a credential; the bearer token is what authorises the request.
+ */
+std::string ota_new_request_id() {
+  uint8_t mac[6] = {0};
+  esphome::get_mac_address_raw(mac);
+  uint64_t h = 0xCBF29CE484222325ULL ^ (static_cast<uint64_t>(esphome::millis()) << 16);
+  for (int i = 0; i < 6; ++i) {
+    h ^= mac[i];
+    h *= 0x100000001B3ULL;
+  }
+  char buf[24];
+  snprintf(buf, sizeof(buf), "ota-%04x%04x%04x%04x", static_cast<unsigned>(h & 0xFFFF),
+           static_cast<unsigned>((h >> 16) & 0xFFFF), static_cast<unsigned>((h >> 32) & 0xFFFF),
+           static_cast<unsigned>((h >> 48) & 0xFFFF));
+  return std::string(buf);
+}
+
+/**
+ * What the person at the screen is told.
+ *
+ * The cause, in one sentence, and always as an instruction rather than a code:
+ * the person reading it has no log and no other way to find out which of a
+ * dozen things went wrong.
+ */
+const char *ota_message_for_notice(const std::string &notice) {
+  if (notice == "publication_changed") return "The published firmware changed. Tap to review it.";
+  if (notice == "already_in_progress") return "An update is already in progress.";
+  if (notice == "rotation_in_progress") return "Finishing a security update. Try again in a moment.";
+  if (notice == "release_unavailable") return "That firmware is no longer available.";
+  if (notice == "request_rejected") return "The station refused this update.";
+  if (notice == "bad_request") return "The station could not read this update request.";
+  if (notice == "device_revoked") return "This screen was removed from the station.";
+  if (notice == "stale_report") return "That update had already finished.";
+  if (notice == "bad_report") return "The station could not read this screen's report.";
+  if (notice == "installed_not_reported") return "Waiting for the station to confirm the update.";
+  if (notice == "success_mismatch") return "The screen booted a different image than was published.";
+  return "The station refused this update.";
+}
+
+}  // namespace
+
+int SubwaveDisplay::send_heartbeat_request_(const char *ip, int rssi, int *settings_rev,
+                                            OtaAttemptInfo *attempt_out, std::string *notice_out) {
+  if (attempt_out != nullptr) *attempt_out = OtaAttemptInfo{};
+  if (notice_out != nullptr) notice_out->clear();
+  if (!this->claimed_) return -1;
+
+  cJSON *root = cJSON_CreateObject();
+  cJSON_AddStringToObject(root, "deviceId", this->device_id_.c_str());
+  cJSON_AddNumberToObject(root, "appliedRev", this->settings_rev_);
+  cJSON_AddStringToObject(root, "orientation", this->settings_.orientation.c_str());
+  cJSON_AddStringToObject(root, "firmwareVer", ESPHOME_PROJECT_VERSION);
+  // Absent means "no opinion": a tap-triggered heartbeat does not pretend to
+  // know the signal, and the 45-second one still reports it.
+  if (rssi != 0) cJSON_AddNumberToObject(root, "rssi", rssi);
+  if (ip != nullptr && ip[0] != '\0') cJSON_AddStringToObject(root, "ip", ip);
+  cJSON *ota = cJSON_AddObjectToObject(root, "ota");
+  this->ota_prepare_heartbeat_(ota);
+  std::string body = json_stringify(root);
+
+  std::string out;
+  const int status = this->request_("POST", "/api/devices/heartbeat", body, 20000, &out);
+  if (status == 200) {
+    cJSON *resp = cJSON_Parse(out.c_str());
+    if (resp != nullptr) {
+      if (settings_rev != nullptr) *settings_rev = int_at(resp, "settingsRev", this->settings_rev_);
+      const std::string rotated = str_at(resp, "rotatedToken");
+      if (!rotated.empty()) {
+        this->bearer_ = rotated;
+        this->save_token_();
+        ESP_LOGI(TAG, "Credential rotation completed; stored replacement token.");
+      }
+      this->ota_apply_heartbeat_(cJSON_GetObjectItem(resp, "ota"), attempt_out, notice_out);
+      cJSON_Delete(resp);
+    }
+  }
+  return status;
+}
+
+void SubwaveDisplay::ota_prepare_heartbeat_(cJSON *ota) {
+  if (ota == nullptr) return;
+  cJSON_AddBoolToObject(ota, "capable", true);
+
+  // What this screen is actually running. A fact about the device, not about
+  // the install — and the only evidence the station accepts for "succeeded".
+  cJSON *installed = cJSON_AddObjectToObject(ota, "installed");
+  if (!this->ota_run_version_.empty()) cJSON_AddStringToObject(installed, "version", this->ota_run_version_.c_str());
+  if (!this->ota_run_sha_.empty()) cJSON_AddStringToObject(installed, "sha256", this->ota_run_sha_.c_str());
+  if (!this->ota_run_slot_.empty()) cJSON_AddStringToObject(installed, "slot", this->ota_run_slot_.c_str());
+
+  // A freshly installed image is on probation until the bootloader can no longer
+  // roll it back. Only then is a matching image a success worth telling the
+  // station about; a crash inside the window still lands on the previous slot.
+  if (this->ota_journal_.phase == OTA_J_REBOOTING &&
+      ota_hex_matches(std::string(this->ota_journal_.sha256), this->ota_run_sha_) &&
+      this->ota_boot_validated_()) {
+    this->ota_journal_.phase = OTA_J_REPORT_OK;
+    this->ota_journal_save_();
+    this->ota_refresh_view_();
+  }
+
+  const OtaJournal &j = this->ota_journal_;
+  if (j.phase == OTA_J_REPORT_OK || j.phase == OTA_J_REPORT_ROLLED_BACK || j.phase == OTA_J_REPORT_FAILED) {
+    if (j.attempt_id[0] == '\0') return;  // nothing to attach a report to
+    cJSON *report = cJSON_AddObjectToObject(ota, "report");
+    cJSON_AddStringToObject(report, "attemptId", j.attempt_id);
+    if (j.phase == OTA_J_REPORT_OK) {
+      cJSON_AddStringToObject(report, "phase", "succeeded");
+      cJSON_AddStringToObject(report, "bootResult", "ok");
+    } else if (j.phase == OTA_J_REPORT_ROLLED_BACK) {
+      cJSON_AddStringToObject(report, "phase", "rolled_back");
+      cJSON_AddStringToObject(report, "bootResult", "rolled_back");
+      cJSON_AddStringToObject(report, "errorCode", "boot_rollback");
+      cJSON_AddStringToObject(report, "errorMessage",
+                              "The new firmware did not start; the previous image is running.");
+    } else {
+      cJSON_AddStringToObject(report, "phase", "failed");
+      if (j.error_code[0] != '\0') cJSON_AddStringToObject(report, "errorCode", j.error_code);
+      if (j.error_message[0] != '\0') cJSON_AddStringToObject(report, "errorMessage", j.error_message);
+    }
+    // A report and a request are never sent together: once an attempt exists,
+    // the station must be told what became of it, not asked for another.
+    return;
+  }
+
+  if (j.phase == OTA_J_REQUESTED && j.attempt_id[0] == '\0' && j.request_id[0] != '\0' &&
+      j.release_id[0] != '\0') {
+    cJSON *request = cJSON_AddObjectToObject(ota, "request");
+    cJSON_AddStringToObject(request, "requestId", j.request_id);
+    cJSON_AddStringToObject(request, "releaseId", j.release_id);
+  }
+}
+
+void SubwaveDisplay::ota_apply_heartbeat_(cJSON *ota, OtaAttemptInfo *attempt_out, std::string *notice_out) {
+  OtaAttemptInfo info;
+  std::string notice;
+  bool saw_ota = false;
+
+  if (cJSON_IsObject(ota)) {
+    saw_ota = true;
+
+    cJSON *a = cJSON_GetObjectItem(ota, "attempt");
+    if (cJSON_IsObject(a)) {
+      info.id = str_at(a, "id");
+      info.state = str_at(a, "state");
+      info.release_id = str_at(a, "releaseId");
+      info.version = str_at(a, "version");
+      info.sha256 = str_at(a, "sha256");
+      info.size = static_cast<uint32_t>(std::max(0, int_at(a, "sizeBytes", 0)));
+      // The download address is fixed by the contract. An attempt that names
+      // any other address is not one this firmware will ever fetch.
+      const std::string url = str_at(a, "downloadUrl");
+      if (url == OTA_DOWNLOAD_PATH) info.download_url = url;
+      if (info.id.empty() || info.state.empty()) info = OtaAttemptInfo{};
+    }
+
+    cJSON *pub = cJSON_GetObjectItem(ota, "published");
+    if (cJSON_IsObject(pub)) {
+      const std::string release_id = str_at(pub, "releaseId");
+      const std::string version = str_at(pub, "version");
+      const std::string sha = str_at(pub, "sha256");
+      const uint32_t size = static_cast<uint32_t>(std::max(0, int_at(pub, "sizeBytes", 0)));
+      if (!release_id.empty() && sha.size() == 64) {
+        this->ota_note_published_(release_id, version, sha, size);
+      } else {
+        this->ota_pub_release_id_.clear();
+        this->ota_pub_version_.clear();
+        this->ota_pub_sha_.clear();
+        this->ota_pub_size_ = 0;
+      }
+    } else {
+      this->ota_pub_release_id_.clear();
+      this->ota_pub_version_.clear();
+      this->ota_pub_sha_.clear();
+      this->ota_pub_size_ = 0;
+    }
+
+    notice = str_at(ota, "notice");
+  }
+
+  if (attempt_out != nullptr) *attempt_out = info;
+  if (notice_out != nullptr) *notice_out = notice;
+
+  if (saw_ota && !notice.empty()) {
+    if (notice == "installed_not_reported") {
+      // Retryable, and deliberately NOT settled: the next heartbeat carries the
+      // same report until the station can take it.
+      if (this->ota_journal_.phase == OTA_J_REPORT_OK) {
+        this->ota_publish_(OtaUiState::Confirming, 100, ota_message_for_notice(notice));
+      }
+      return;
+    }
+    if (notice == "stale_report" || notice == "bad_report") {
+      if (this->ota_journal_.phase == OTA_J_REPORT_OK || this->ota_journal_.phase == OTA_J_REPORT_ROLLED_BACK ||
+          this->ota_journal_.phase == OTA_J_REPORT_FAILED) {
+        this->ota_journal_clear_();
+      }
+    } else if (notice == "success_mismatch") {
+      // The station recorded a success against an image this screen is not
+      // running. There is nothing left to report and nothing to retry silently.
+      this->ota_journal_clear_();
+      this->ota_attempt_ = info;
+      this->ota_failed_release_id_ = this->ota_pub_release_id_;
+      this->ota_publish_(OtaUiState::Failed, 0, ota_message_for_notice(notice));
+      return;
+    } else if (notice == "device_revoked") {
+      this->ota_journal_clear_();
+    } else if (notice == "already_in_progress" && ota_state_is_downloadable(info.state) &&
+               this->ota_journal_.release_id[0] != '\0' &&
+               info.release_id == std::string(this->ota_journal_.release_id)) {
+      // The station already holds a live attempt for exactly the release this
+      // screen asked for — the answer to an earlier tap was lost, or a second
+      // request arrived while one was running. Adopt it, below, instead of
+      // reporting a failure: the operator did ask for this update, and a
+      // refusal here would leave the row dead until the attempt expired.
+      //
+      // A live attempt for a DIFFERENT release is not adopted: continuing with
+      // it would install an image nobody at this screen chose.
+    } else if (this->ota_journal_.phase == OTA_J_REQUESTED) {
+      // A refusal of the request itself: there is no attempt to report, only
+      // something to say. A changed publication is not a failure of the new
+      // release, so it must not be remembered as one.
+      if (notice == "bad_request" || notice == "request_rejected") {
+        this->ota_failed_release_id_ = this->ota_pub_release_id_;
+      }
+      this->ota_journal_clear_();
+      this->ota_attempt_ = info;
+      this->ota_publish_(OtaUiState::Failed, 0, ota_message_for_notice(notice));
+      return;
+    }
+    // Any other notice describes an attempt that is still moving; fall through
+    // so the row is not left showing a stale sentence.
+  }
+
+  this->ota_attempt_ = info;
+  const uint8_t phase = this->ota_journal_.phase;
+
+  if (saw_ota && info.id.empty()) {
+    if (phase == OTA_J_DOWNLOADING || phase == OTA_J_VERIFYING || phase == OTA_J_INSTALLING) {
+      // The station reaped, cancelled or superseded the attempt. There is
+      // nothing left to resume and nothing to report.
+      //
+      // ONLY WHEN THE STATION ACTUALLY SAID SO. A heartbeat that failed to
+      // produce an `ota` block (a database error behind the API, a proxy that
+      // dropped the key) is not evidence that the attempt is gone, and treating
+      // it as evidence used to fail a perfectly live install.
+      this->ota_fail_("The station no longer has this install.", "attempt_lost");
+      return;
+    }
+  } else if (ota_state_is_downloadable(info.state)) {
+    if (phase == OTA_J_REQUESTED || phase == OTA_J_DOWNLOADING || phase == OTA_J_VERIFYING ||
+        phase == OTA_J_INSTALLING) {
+      ota_set_field(this->ota_journal_.attempt_id, sizeof(this->ota_journal_.attempt_id), info.id);
+      if (!info.release_id.empty()) {
+        ota_set_field(this->ota_journal_.release_id, sizeof(this->ota_journal_.release_id), info.release_id);
+      }
+      if (!info.version.empty()) {
+        ota_set_field(this->ota_journal_.version, sizeof(this->ota_journal_.version), info.version);
+      }
+      if (!info.sha256.empty()) {
+        ota_set_field(this->ota_journal_.sha256, sizeof(this->ota_journal_.sha256), info.sha256);
+      }
+      if (info.size > 0) this->ota_journal_.size_bytes = info.size;
+      if (phase == OTA_J_REQUESTED) this->ota_journal_.phase = OTA_J_DOWNLOADING;
+      this->ota_journal_save_();
+    }
+  } else if (ota_state_is_terminal(info.state)) {
+    if (phase != OTA_J_NONE && phase != OTA_J_REPORT_OK && phase != OTA_J_REPORT_ROLLED_BACK &&
+        phase != OTA_J_REPORT_FAILED) {
+      // An install was intended, and the station says it has ended. Nothing is
+      // owed and nothing can be resumed; show the outcome and let a tap decide.
+      this->ota_journal_clear_();
+    }
+  }
+
+  if (!this->ota_install_running_) this->ota_refresh_view_();
+}
+
+bool SubwaveDisplay::ota_read_running_(std::string *version, std::string *sha, std::string *slot) {
+  if (version == nullptr || sha == nullptr || slot == nullptr) return false;
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  if (running == nullptr) return false;
+
+  esp_app_desc_t desc{};
+  if (esp_ota_get_partition_description(running, &desc) != ESP_OK) return false;
+  version->assign(desc.version, strnlen(desc.version, sizeof(desc.version)));
+  slot->assign(running->label);
+
+  // Walk the segment table to find where the image ends. The file the station
+  // serves is exactly header + segments + checksum (+ the appended digest); any
+  // padding in the partition is not part of it and must not be hashed.
+  uint8_t header[24];
+  if (esp_partition_read(running, 0, header, sizeof(header)) != ESP_OK) return false;
+  if (header[0] != 0xE9) return false;  // ESP_IMAGE_HEADER_MAGIC
+  const uint8_t segments = header[1];
+  uint32_t pos = sizeof(header);
+  for (uint8_t i = 0; i < segments; ++i) {
+    uint8_t seg[8];
+    if (esp_partition_read(running, pos, seg, sizeof(seg)) != ESP_OK) return false;
+    const uint32_t len = static_cast<uint32_t>(seg[4]) | (static_cast<uint32_t>(seg[5]) << 8) |
+                         (static_cast<uint32_t>(seg[6]) << 16) | (static_cast<uint32_t>(seg[7]) << 24);
+    pos += 8 + ((len + 3u) & ~3u);
+    if (pos >= running->size) return false;
+  }
+  uint32_t image_end = (pos + 16u) & ~15u;  // one past the checksum byte
+  if (header[0x17] != 0) image_end += 32;    // the appended SHA-256 is part of the file
+  if (image_end == 0 || image_end > running->size) return false;
+
+  mbedtls_sha256_context ctx;
+  mbedtls_sha256_init(&ctx);
+  mbedtls_sha256_starts(&ctx, 0);
+  uint8_t buf[4096];
+  uint32_t off = 0;
+  while (off < image_end) {
+    const size_t want = std::min<size_t>(sizeof(buf), image_end - off);
+    if (esp_partition_read(running, off, buf, want) != ESP_OK) {
+      mbedtls_sha256_free(&ctx);
+      return false;
+    }
+    mbedtls_sha256_update(&ctx, buf, want);
+    off += want;
+    esphome::App.feed_wdt();
+    esphome::yield();
+  }
+  uint8_t digest[32];
+  mbedtls_sha256_finish(&ctx, digest);
+  mbedtls_sha256_free(&ctx);
+  sha->assign(ota_hex(digest, sizeof(digest)));
+  return true;
+}
+
+bool SubwaveDisplay::ota_boot_validated_() {
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  if (running == nullptr) return false;
+  esp_ota_img_states_t state = ESP_OTA_IMG_UNDEFINED;
+  if (esp_ota_get_state_partition(running, &state) != ESP_OK) {
+    // Rollback support is not compiled in, so there is no probation to wait for.
+    return true;
+  }
+  return state != ESP_OTA_IMG_PENDING_VERIFY;
+}
+
+void SubwaveDisplay::ota_journal_save_() {
+  auto *prefs = esphome::global_preferences;
+  if (prefs == nullptr) return;
+  auto pref = prefs->make_preference<OtaJournal>(OTA_KEY, true);
+  pref.save(&this->ota_journal_);
+  prefs->sync();
+}
+
+void SubwaveDisplay::ota_journal_load_() {
+  OtaJournal stored{};
+  auto *prefs = esphome::global_preferences;
+  bool loaded = false;
+  if (prefs != nullptr) {
+    auto pref = prefs->make_preference<OtaJournal>(OTA_KEY, true);
+    loaded = pref.load(&stored) && stored.magic == OTA_JOURNAL_MAGIC;
+  }
+  if (!loaded) {
+    memset(&this->ota_journal_, 0, sizeof(this->ota_journal_));
+    return;
+  }
+  // A record from another build could have no terminator in one of its fields.
+  stored.attempt_id[sizeof(stored.attempt_id) - 1] = '\0';
+  stored.release_id[sizeof(stored.release_id) - 1] = '\0';
+  stored.request_id[sizeof(stored.request_id) - 1] = '\0';
+  stored.version[sizeof(stored.version) - 1] = '\0';
+  stored.sha256[sizeof(stored.sha256) - 1] = '\0';
+  stored.error_code[sizeof(stored.error_code) - 1] = '\0';
+  stored.error_message[sizeof(stored.error_message) - 1] = '\0';
+  this->ota_journal_ = stored;
+}
+
+void SubwaveDisplay::ota_journal_clear_() {
+  // A zeroed record, not a removed key: preferences have no remove, and magic 0
+  // is how a torn or stale record is rejected on the next boot.
+  memset(&this->ota_journal_, 0, sizeof(this->ota_journal_));
+  this->ota_journal_save_();
+}
+
+void SubwaveDisplay::ota_publish_(OtaUiState state, int progress, const std::string &message) {
+  if (this->ota_ui_mutex_ == nullptr) return;
+  if (xSemaphoreTake(this->ota_ui_mutex_, pdMS_TO_TICKS(20)) != pdTRUE) return;
+  this->ota_ui_.state = static_cast<uint8_t>(state);
+  this->ota_ui_.progress = std::clamp(progress, 0, 100);
+  ota_set_field(this->ota_ui_.published_version, sizeof(this->ota_ui_.published_version), this->ota_pub_version_);
+  ota_set_field(this->ota_ui_.installed_version, sizeof(this->ota_ui_.installed_version), this->ota_run_version_);
+  ota_set_field(this->ota_ui_.message, sizeof(this->ota_ui_.message), message);
+  xSemaphoreGive(this->ota_ui_mutex_);
+}
+
+OtaView SubwaveDisplay::ota_view() const {
+  OtaView view;
+  if (this->ota_ui_mutex_ == nullptr) return view;
+  if (xSemaphoreTake(this->ota_ui_mutex_, pdMS_TO_TICKS(20)) != pdTRUE) return view;
+  view.state = static_cast<OtaUiState>(this->ota_ui_.state);
+  view.progress = this->ota_ui_.progress;
+  view.published_version = this->ota_ui_.published_version;
+  view.installed_version = this->ota_ui_.installed_version;
+  view.message = this->ota_ui_.message;
+  xSemaphoreGive(this->ota_ui_mutex_);
+  return view;
+}
+
+void SubwaveDisplay::ota_note_published_(const std::string &release_id, const std::string &version,
+                                         const std::string &sha, uint32_t size) {
+  this->ota_pub_release_id_ = release_id;
+  this->ota_pub_version_ = version;
+  this->ota_pub_sha_ = sha;
+  this->ota_pub_size_ = size;
+}
+
+void SubwaveDisplay::ota_note_installed_(const std::string &version, const std::string &sha, const std::string &slot) {
+  this->ota_run_version_ = version.empty() ? std::string(ESPHOME_PROJECT_VERSION) : version;
+  this->ota_run_sha_ = sha;
+  this->ota_run_slot_ = slot;
+}
+
+void SubwaveDisplay::ota_fail_(const std::string &message, const char *error_code) {
+  OtaJournal &j = this->ota_journal_;
+  const std::string failed_release =
+      j.release_id[0] != '\0' ? std::string(j.release_id)
+                              : (!this->ota_attempt_.release_id.empty() ? this->ota_attempt_.release_id
+                                                                        : this->ota_pub_release_id_);
+  if (j.release_id[0] == '\0') ota_set_field(j.release_id, sizeof(j.release_id), failed_release);
+  ota_set_field(j.error_code, sizeof(j.error_code), error_code == nullptr ? "" : error_code);
+  ota_set_field(j.error_message, sizeof(j.error_message), message);
+  if (j.attempt_id[0] != '\0') {
+    j.phase = OTA_J_REPORT_FAILED;
+    this->ota_journal_save_();
+  } else {
+    // Nothing for the station to record: the request never became an attempt.
+    // The reason stays on the row, not in a record that will never move.
+    this->ota_journal_clear_();
+  }
+  this->ota_failed_release_id_ = failed_release;
+  this->ota_publish_(OtaUiState::Failed, 0, message);
+}
+
+void SubwaveDisplay::ota_refresh_view_() {
+  if (this->ota_install_running_) return;
+
+  switch (this->ota_journal_.phase) {
+    case OTA_J_REQUESTED:
+      this->ota_publish_(OtaUiState::Checking, 0, "Contacting the station...");
+      return;
+    case OTA_J_DOWNLOADING:
+      this->ota_publish_(OtaUiState::Downloading, 0, "Downloading firmware...");
+      return;
+    case OTA_J_VERIFYING:
+      this->ota_publish_(OtaUiState::Verifying, 100, "Checking the download...");
+      return;
+    case OTA_J_INSTALLING:
+      this->ota_publish_(OtaUiState::Installing, 100, "Installing the update...");
+      return;
+    case OTA_J_REBOOTING:
+      // Before the restart the old image is still running and the sentence is an
+      // instruction. After it, the same phase means "installed, waiting to be
+      // sure it stays up" — two different facts, never one message.
+      if (ota_hex_matches(std::string(this->ota_journal_.sha256), this->ota_run_sha_)) {
+        this->ota_publish_(OtaUiState::Confirming, 100, "Checking that the update stays up...");
+      } else {
+        this->ota_publish_(OtaUiState::Rebooting, 100, "Restarting...");
+      }
+      return;
+    case OTA_J_REPORT_OK:
+      this->ota_publish_(OtaUiState::Confirming, 100, "Waiting for the station to confirm the update.");
+      return;
+    case OTA_J_REPORT_ROLLED_BACK:
+      this->ota_publish_(OtaUiState::Failed, 0, "The new firmware did not start. The previous one is running.");
+      return;
+    case OTA_J_REPORT_FAILED:
+      this->ota_publish_(OtaUiState::Failed, 0,
+                         this->ota_journal_.error_message[0] != '\0' ? std::string(this->ota_journal_.error_message)
+                                                                     : std::string("The update failed."));
+      return;
+    default:
+      break;
+  }
+
+  if (!this->ota_pub_release_id_.empty() && !this->ota_pub_sha_.empty() &&
+      !ota_hex_matches(this->ota_pub_sha_, this->ota_run_sha_)) {
+    if (this->ota_failed_release_id_ == this->ota_pub_release_id_) {
+      this->ota_publish_(OtaUiState::Failed, 0, "The last update failed.");
+      return;
+    }
+    const std::string message = this->ota_pub_version_.empty()
+                                    ? std::string("A firmware update is ready to install.")
+                                    : ("Firmware " + this->ota_pub_version_ + " is ready to install.");
+    this->ota_publish_(OtaUiState::Available, 0, message);
+    return;
+  }
+  this->ota_publish_(OtaUiState::Idle, 0, "Firmware is up to date.");
+}
+
+void SubwaveDisplay::ota_init_() {
+  if (this->ota_ui_mutex_ == nullptr) this->ota_ui_mutex_ = xSemaphoreCreateMutex();
+  this->ota_journal_load_();
+
+  std::string version;
+  std::string sha;
+  std::string slot;
+  if (this->ota_read_running_(&version, &sha, &slot)) {
+    this->ota_note_installed_(version, sha, slot);
+    ESP_LOGI(TAG, "Running firmware %s from %s (sha %s).", version.c_str(), slot.c_str(), sha.c_str());
+  } else {
+    this->ota_note_installed_(ESPHOME_PROJECT_VERSION, "", "");
+    ESP_LOGW(TAG, "Could not fingerprint the running image; update checks will offer the release again.");
+  }
+
+  if (this->ota_boot_reconcile_()) {
+    ESP_LOGI(TAG, "OTA journal needs a report (phase %u).", static_cast<unsigned>(this->ota_journal_.phase));
+  }
+  this->ota_refresh_view_();
+}
+
+bool SubwaveDisplay::ota_boot_reconcile_() {
+  OtaJournal &j = this->ota_journal_;
+  if (j.magic != OTA_JOURNAL_MAGIC || j.phase == OTA_J_NONE) return false;
+
+  switch (j.phase) {
+    case OTA_J_REQUESTED:
+      // The tap never became an attempt, so there is nothing to report and no
+      // id to report it against. The operator taps again.
+      this->ota_journal_clear_();
+      return false;
+
+    case OTA_J_DOWNLOADING:
+    case OTA_J_VERIFYING:
+    case OTA_J_INSTALLING: {
+      // A reset or power cut in the middle of an install. If the running image
+      // is the one being installed, the write finished and this boot is the new
+      // image; otherwise the previous image is still what runs.
+      if (ota_hex_matches(std::string(j.sha256), this->ota_run_sha_)) {
+        if (this->ota_boot_validated_()) {
+          j.phase = OTA_J_REPORT_OK;
+          this->ota_journal_save_();
+          return true;
+        }
+        // The new image is running but still on probation. Wait for the boot to
+        // be declared good before claiming anything; the heartbeat below
+        // promotes this once the bootloader stops being able to roll it back.
+        j.phase = OTA_J_REBOOTING;
+        this->ota_journal_save_();
+        return false;
+      }
+      j.phase = OTA_J_REPORT_FAILED;
+      ota_set_field(j.error_code, sizeof(j.error_code), "interrupted");
+      ota_set_field(j.error_message, sizeof(j.error_message),
+                    "The update was interrupted. The previous firmware is running.");
+      this->ota_journal_save_();
+      this->ota_failed_release_id_ = std::string(j.release_id);
+      return true;
+    }
+
+    case OTA_J_REBOOTING:
+      // Only written immediately before a restart, so this boot is the answer:
+      // the new image started, or the bootloader rolled it back. "Started" is
+      // not the same as "worked" until the boot is past its probation, so a
+      // matching image waits here rather than reporting success early.
+      if (ota_hex_matches(std::string(j.sha256), this->ota_run_sha_)) {
+        if (this->ota_boot_validated_()) {
+          j.phase = OTA_J_REPORT_OK;
+          this->ota_journal_save_();
+          return true;
+        }
+        return false;
+      }
+      j.phase = OTA_J_REPORT_ROLLED_BACK;
+      ota_set_field(j.error_message, sizeof(j.error_message),
+                    "The new firmware did not start. The previous one is running.");
+      this->ota_journal_save_();
+      this->ota_failed_release_id_ = std::string(j.release_id);
+      return true;
+
+    default:
+      // REPORT_* phases are still owed a heartbeat.
+      return true;
+  }
+}
+
+void SubwaveDisplay::ota_resume_() {
+  if (this->ota_install_running_) return;
+  const uint8_t phase = this->ota_journal_.phase;
+  if (phase != OTA_J_DOWNLOADING && phase != OTA_J_VERIFYING && phase != OTA_J_INSTALLING) return;
+
+  if (this->ota_attempt_.id.empty()) {
+    this->ota_fail_("The station no longer has this install.", "attempt_lost");
+    return;
+  }
+  if (!ota_state_is_downloadable(this->ota_attempt_.state)) {
+    // The attempt ended while this screen was not looking. Nothing to resume;
+    // the next tap decides what happens.
+    this->ota_journal_clear_();
+    this->ota_refresh_view_();
+    return;
+  }
+  if (this->ota_attempt_.download_url.empty()) {
+    this->ota_fail_("The station did not offer a download for this install.", "no_url");
+    return;
+  }
+  this->ota_install_();
+}
+
+void SubwaveDisplay::ota_begin_request_() {
+  OtaJournal &j = this->ota_journal_;
+  if (j.request_id[0] == '\0' || j.release_id[0] == '\0') {
+    this->ota_fail_("No update was selected.", "no_request");
+    return;
+  }
+
+  this->ota_publish_(OtaUiState::Checking, 0, "Contacting the station...");
+  OtaAttemptInfo info;
+  std::string notice;
+  const int status = this->send_heartbeat_request_(nullptr, 0, nullptr, &info, &notice);
+  if (status != 200) {
+    // The request id is already written down. The next heartbeat carries it
+    // again, and the station replays rather than creating a second attempt.
+    this->ota_publish_(OtaUiState::Checking, 0, "Waiting for the station. It will keep trying.");
+    return;
+  }
+
+  if (!info.id.empty() && ota_state_is_downloadable(info.state)) {
+    this->ota_attempt_ = info;
+    ota_set_field(j.attempt_id, sizeof(j.attempt_id), info.id);
+    if (!info.release_id.empty()) ota_set_field(j.release_id, sizeof(j.release_id), info.release_id);
+    if (!info.version.empty()) ota_set_field(j.version, sizeof(j.version), info.version);
+    if (!info.sha256.empty()) ota_set_field(j.sha256, sizeof(j.sha256), info.sha256);
+    if (info.size > 0) j.size_bytes = info.size;
+    j.phase = OTA_J_DOWNLOADING;
+    this->ota_journal_save_();
+    this->ota_install_();
+    return;
+  }
+
+  // A notice means the station answered and refused; ota_apply_heartbeat_ has
+  // already replaced the row with the reason.
+  if (!notice.empty()) return;
+  this->ota_publish_(OtaUiState::Checking, 0, "Waiting for the station.");
+}
+
+void SubwaveDisplay::ota_handle_tap_() {
+  if (this->ota_install_running_) return;
+
+  // 1. Anything owed to the station is settled first. Starting a second request
+  //    while a failed report is still pending would let the next heartbeat
+  //    replay the old outcome over the new attempt.
+  if (this->ota_journal_.phase == OTA_J_REPORT_OK || this->ota_journal_.phase == OTA_J_REPORT_ROLLED_BACK ||
+      this->ota_journal_.phase == OTA_J_REPORT_FAILED) {
+    OtaAttemptInfo info;
+    std::string notice;
+    const int status = this->send_heartbeat_request_(nullptr, 0, nullptr, &info, &notice);
+    if (status != 200) {
+      this->ota_publish_(OtaUiState::Failed, 0, "Could not reach the station. Tap to try again.");
+      return;
+    }
+    if (this->ota_journal_.phase == OTA_J_REPORT_OK && this->ota_run_sha_.empty()) {
+      // A success report is only accepted with the running image's hash as
+      // evidence, and this boot could not read one. The report would stay owed
+      // for ever and every later tap would be a silent no-op, so give up the
+      // claim honestly instead.
+      this->ota_journal_clear_();
+      this->ota_publish_(OtaUiState::Failed, 0, "This screen could not verify the update.");
+      return;
+    }
+    if (this->ota_journal_.phase == OTA_J_REPORT_OK || this->ota_journal_.phase == OTA_J_REPORT_ROLLED_BACK ||
+        this->ota_journal_.phase == OTA_J_REPORT_FAILED) {
+      // Still owed (the station could not take it yet). Do not start another.
+      return;
+    }
+  }
+
+  // 2. A request that never got an answer is retried with the same id, so one
+  //    tap can never become two attempts.
+  if (this->ota_journal_.phase == OTA_J_REQUESTED) {
+    this->ota_begin_request_();
+    return;
+  }
+
+  // 3. An install that stopped mid-flight (power loss, dropped connection)
+  //    resumes against the attempt the station still holds.
+  if (this->ota_journal_.phase == OTA_J_DOWNLOADING || this->ota_journal_.phase == OTA_J_VERIFYING ||
+      this->ota_journal_.phase == OTA_J_INSTALLING) {
+    if (this->ota_attempt_.id.empty()) {
+      OtaAttemptInfo info;
+      std::string notice;
+      if (this->send_heartbeat_request_(nullptr, 0, nullptr, &info, &notice) != 200) {
+        this->ota_publish_(OtaUiState::Failed, 0, "Could not reach the station. Tap to try again.");
+        return;
+      }
+    }
+    this->ota_resume_();
+    return;
+  }
+
+  // 4. A terminal attempt is finished business: forget it and ask for a new one.
+  if (!this->ota_attempt_.id.empty() && ota_state_is_terminal(this->ota_attempt_.state)) {
+    this->ota_attempt_ = OtaAttemptInfo{};
+    this->ota_journal_clear_();
+  }
+
+  // 5. An attempt the station has already accepted, with a recorded intent to
+  //    install it, is resumed rather than re-requested.
+  if (!this->ota_attempt_.id.empty() && ota_state_is_downloadable(this->ota_attempt_.state) &&
+      this->ota_journal_.phase != OTA_J_NONE) {
+    this->ota_resume_();
+    return;
+  }
+
+  // 6. Nothing newer than what is running: say so and do nothing.
+  if (this->ota_pub_release_id_.empty() || this->ota_pub_sha_.empty()) {
+    this->ota_publish_(OtaUiState::Idle, 0, "No firmware update is published.");
+    return;
+  }
+  if (ota_hex_matches(this->ota_pub_sha_, this->ota_run_sha_)) {
+    this->ota_publish_(OtaUiState::Idle, 0, "Firmware is up to date.");
+    return;
+  }
+
+  // 7. Start a fresh attempt: one request id, written down before it is sent.
+  this->ota_attempt_ = OtaAttemptInfo{};
+  this->ota_failed_release_id_.clear();
+  OtaJournal &j = this->ota_journal_;
+  memset(&j, 0, sizeof(j));
+  j.magic = OTA_JOURNAL_MAGIC;
+  j.phase = OTA_J_REQUESTED;
+  ota_set_field(j.request_id, sizeof(j.request_id), ota_new_request_id());
+  ota_set_field(j.release_id, sizeof(j.release_id), this->ota_pub_release_id_);
+  ota_set_field(j.version, sizeof(j.version), this->ota_pub_version_);
+  ota_set_field(j.sha256, sizeof(j.sha256), this->ota_pub_sha_);
+  j.size_bytes = this->ota_pub_size_;
+  this->ota_journal_save_();
+  this->ota_begin_request_();
+}
+
+bool SubwaveDisplay::ota_install_() {
+  if (this->ota_install_running_) return false;
+  if (this->ota_attempt_.id.empty()) {
+    this->ota_fail_("No install is reserved for this screen.", "no_attempt");
+    return false;
+  }
+  if (this->ota_attempt_.download_url != OTA_DOWNLOAD_PATH) {
+    // The address is fixed by the contract: bearer token, no query, no choice
+    // of release. A response naming anything else is not followed.
+    this->ota_fail_("The station offered an unexpected download address.", "bad_url");
+    return false;
+  }
+  const uint32_t expected = this->ota_attempt_.size;
+  if (expected < OTA_MIN_BYTES || expected > OTA_MAX_BYTES) {
+    this->ota_fail_("The published image is not a size this screen can install.", "bad_size");
+    return false;
+  }
+  auto *client = this->http();
+  if (client == nullptr) {
+    this->ota_fail_("The network is not ready. Tap again when it is.", "no_http");
+    return false;
+  }
+
+  this->ota_install_running_ = true;
+  struct RunningGuard {
+    bool *flag;
+    ~RunningGuard() { *flag = false; }
+  } guard{&this->ota_install_running_};
+
+  OtaJournal &j = this->ota_journal_;
+  ota_set_field(j.attempt_id, sizeof(j.attempt_id), this->ota_attempt_.id);
+  ota_set_field(j.release_id, sizeof(j.release_id), this->ota_attempt_.release_id);
+  ota_set_field(j.version, sizeof(j.version), this->ota_attempt_.version);
+  ota_set_field(j.sha256, sizeof(j.sha256), this->ota_attempt_.sha256);
+  ota_set_field(j.error_code, sizeof(j.error_code), "");
+  ota_set_field(j.error_message, sizeof(j.error_message), "");
+  j.size_bytes = expected;
+  j.phase = OTA_J_DOWNLOADING;
+  this->ota_journal_save_();
+  this->ota_publish_(OtaUiState::Downloading, 0, "Downloading firmware...");
+
+  std::vector<esphome::http_request::Header> headers;
+  if (!this->bearer_.empty()) headers.push_back({"Authorization", "Bearer " + this->bearer_});
+  headers.push_back({"Accept", "application/octet-stream"});
+
+  auto container = client->start(join(this->api_base_, OTA_DOWNLOAD_PATH), "GET", "", headers);
+  if (container == nullptr) {
+    this->ota_fail_("Could not reach the station. Tap to retry.", "offline");
+    return false;
+  }
+
+  const int status = container->status_code;
+  if (status != 200) {
+    container->end();
+    char buf[96];
+    if (status == 401) {
+      this->ota_fail_("This screen is no longer recognised by the station.", "unauthorized");
+    } else if (status == 409) {
+      this->ota_fail_("The station has no live install for this screen.", "no_live_attempt");
+    } else if (status == 410) {
+      this->ota_fail_("The published image is no longer available.", "artifact_missing");
+    } else {
+      snprintf(buf, sizeof(buf), "The station refused the download (HTTP %d).", status);
+      this->ota_fail_(buf, "download_refused");
+    }
+    return false;
+  }
+  if (container->content_length != 0 && container->content_length != expected) {
+    container->end();
+    this->ota_fail_("The station offered a different image size.", "size_mismatch");
+    return false;
+  }
+
+  const esp_partition_t *slot = esp_ota_get_next_update_partition(nullptr);
+  const esp_partition_t *running = esp_ota_get_running_partition();
+  if (slot == nullptr || slot == running) {
+    container->end();
+    this->ota_fail_("There is no second slot to write the update into.", "no_slot");
+    return false;
+  }
+
+  // STAGED FIRST, WRITTEN SECOND. Every flash write suspends the external-memory
+  // cache, and the panel is scanned out of PSRAM, so a write during the download
+  // shows on the glass as a band of garbage every eight kilobytes. Staging the
+  // whole image here means the download touches no flash at all: the progress
+  // bar moves on a quiet screen, and the write that follows happens behind a
+  // dark one (see ui_ota_screen_on). If PSRAM cannot hold the image the old
+  // streaming path is kept, flicker and all, because a failed allocation is not
+  // a reason to refuse an update this slot could still take.
+  std::unique_ptr<uint8_t, void (*)(void *)> staged(
+      static_cast<uint8_t *>(heap_caps_malloc(expected, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)), heap_caps_free);
+  const bool stage_in_ram = staged != nullptr;
+  if (!stage_in_ram) {
+    ESP_LOGW(TAG, "No %u-byte PSRAM buffer for the update; streaming it to flash instead.",
+             static_cast<unsigned>(expected));
+  }
+
+  esp_ota_handle_t handle = 0;
+  if (!stage_in_ram && esp_ota_begin(slot, expected, &handle) != ESP_OK) {
+    container->end();
+    this->ota_fail_("The update slot could not be opened.", "ota_begin");
+    return false;
+  }
+
+  mbedtls_sha256_context sha_ctx;
+  mbedtls_sha256_init(&sha_ctx);
+  mbedtls_sha256_starts(&sha_ctx, 0);
+
+  uint8_t chunk[2048];
+  uint32_t last_data_time = esphome::millis();
+  size_t received = 0;
+  int last_pct = -1;
+  const char *stop_reason = nullptr;
+  while (true) {
+    const int n = container->read(chunk, sizeof(chunk));
+    esphome::App.feed_wdt();
+    esphome::yield();
+    const auto loop_res = esphome::http_request::http_read_loop_result(
+        n, last_data_time, 30000, container->is_read_complete());
+    if (loop_res == esphome::http_request::HttpReadLoopResult::DATA) {
+      const size_t previous = received;
+      received += static_cast<size_t>(n);
+      if (received > static_cast<size_t>(expected)) {
+        stop_reason = "The download was longer than the published image.";
+        break;
+      }
+      if (stage_in_ram) {
+        memcpy(staged.get() + previous, chunk, static_cast<size_t>(n));
+      } else if (esp_ota_write(handle, chunk, static_cast<size_t>(n)) != ESP_OK) {
+        stop_reason = "Writing the update failed.";
+        break;
+      }
+      mbedtls_sha256_update(&sha_ctx, chunk, static_cast<size_t>(n));
+      const int pct = static_cast<int>((received * 100u) / expected);
+      if (pct != last_pct) {
+        last_pct = pct;
+        this->ota_publish_(OtaUiState::Downloading, pct, "Downloading firmware...");
+      }
+      continue;
+    }
+    if (loop_res == esphome::http_request::HttpReadLoopResult::RETRY) continue;
+    if (loop_res == esphome::http_request::HttpReadLoopResult::TIMEOUT) {
+      stop_reason = "The download timed out. Tap to retry.";
+      break;
+    }
+    if (loop_res == esphome::http_request::HttpReadLoopResult::ERROR) {
+      stop_reason = "The connection dropped. Tap to retry.";
+      break;
+    }
+    break;  // COMPLETE
+  }
+  container->end();
+
+  if (stop_reason != nullptr) {
+    // A staged download never opened the slot, so there is nothing to abort.
+    if (!stage_in_ram) esp_ota_abort(handle);
+    mbedtls_sha256_free(&sha_ctx);
+    this->ota_fail_(stop_reason, "download_failed");
+    return false;
+  }
+  if (received != static_cast<size_t>(expected)) {
+    if (!stage_in_ram) esp_ota_abort(handle);
+    mbedtls_sha256_free(&sha_ctx);
+    this->ota_fail_("The download stopped early. Tap to retry.", "short_read");
+    return false;
+  }
+
+  uint8_t digest[32];
+  mbedtls_sha256_finish(&sha_ctx, digest);
+  mbedtls_sha256_free(&sha_ctx);
+  const std::string got = ota_hex(digest, sizeof(digest));
+  this->ota_publish_(OtaUiState::Verifying, 100, "Checking the download...");
+  if (!ota_hex_matches(this->ota_attempt_.sha256, got)) {
+    if (!stage_in_ram) esp_ota_abort(handle);
+    this->ota_fail_("The download did not match the published checksum.", "checksum");
+    return false;
+  }
+
+  j.phase = OTA_J_INSTALLING;
+  this->ota_journal_save_();
+  this->ota_publish_(OtaUiState::Installing, 100, "Installing the update...");
+
+  if (stage_in_ram) {
+    // The bytes are here and they are the bytes the station published. From
+    // this point the only work left is flash, and flash cannot be shown: each
+    // write suspends the cache the panel scans out of. Let the tick paint the
+    // sentence, then take the screen and write behind it. The erase happens
+    // inside esp_ota_begin, after the screen is dark, which is also why the
+    // download no longer starts with a multi-second stall at zero percent.
+    esphome::delay(1500);
+    ui_ota_screen_on(false);
+    for (int waited = 0; waited < 40 && !ui_ota_screen_is_off(); waited++) {
+      esphome::delay(50);
+    }
+    if (!ui_ota_screen_is_off()) {
+      ESP_LOGW(TAG, "The screen did not go dark; this install will be visible.");
+    }
+    // The applied flag means the fade has started, not finished. Wait it out so
+    // the first write happens on a screen that is already black.
+    esphome::delay(400);
+
+    if (esp_ota_begin(slot, expected, &handle) != ESP_OK) {
+      ui_ota_screen_on(true);
+      this->ota_fail_("The update slot could not be opened.", "ota_begin");
+      return false;
+    }
+
+    // 8192 is the flash driver's own write chunk, so each piece is one
+    // cache-suspended window rather than four. The piece has to be in DRAM:
+    // with the cache suspended a PSRAM source is unreadable and the driver
+    // degrades to 32-byte copies with a toggle for each.
+    constexpr size_t kPiece = 8192;
+    uint8_t stack_piece[2048];
+    uint8_t *bounce = static_cast<uint8_t *>(heap_caps_malloc(kPiece, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT));
+    uint8_t *buffer = bounce != nullptr ? bounce : stack_piece;
+    const size_t piece = bounce != nullptr ? kPiece : sizeof(stack_piece);
+    bool written = true;
+    size_t offset = 0;
+    while (offset < static_cast<size_t>(expected)) {
+      const size_t n = std::min(piece, static_cast<size_t>(expected) - offset);
+      memcpy(buffer, staged.get() + offset, n);
+      if (esp_ota_write(handle, buffer, n) != ESP_OK) {
+        written = false;
+        break;
+      }
+      offset += n;
+      esphome::App.feed_wdt();
+      esphome::yield();
+    }
+    if (bounce != nullptr) heap_caps_free(bounce);
+    if (!written) {
+      esp_ota_abort(handle);
+      ui_ota_screen_on(true);
+      this->ota_fail_("The update could not be written to flash. Tap to retry.", "staged_write");
+      return false;
+    }
+    staged.reset();
+  }
+
+  if (esp_ota_end(handle) != ESP_OK) {
+    ui_ota_screen_on(true);
+    this->ota_fail_("The image was rejected. The previous firmware is intact.", "image_rejected");
+    return false;
+  }
+  if (esp_ota_set_boot_partition(slot) != ESP_OK) {
+    ui_ota_screen_on(true);
+    this->ota_fail_("The boot slot could not be switched.", "boot_partition");
+    return false;
+  }
+
+  j.phase = OTA_J_REBOOTING;
+  this->ota_journal_save_();
+  this->ota_publish_(OtaUiState::Rebooting, 100, "Restarting with the new firmware...");
+  ESP_LOGI(TAG, "Firmware %s verified (%u bytes) and written to %s; restarting.", this->ota_attempt_.version.c_str(),
+           static_cast<unsigned>(received), slot->label);
+  // On a staged install the screen is already dark, so this pause only has to
+  // cover the reboot; the light comes back with the new firmware, whose light
+  // has restore_mode ALWAYS_ON.
+  esphome::delay(1200);
+  esp_restart();
+  return true;
+}
+
+void SubwaveDisplay::request_firmware_update() {
+  // The tap is deliberate and the install is explicit. A second tap while one
+  // is running is dropped rather than queued, so two taps cannot start two
+  // downloads; the snapshot is the mutex-protected copy, not a worker flag.
+  const OtaView view = this->ota_view();
+  if (view.state == OtaUiState::Checking || view.state == OtaUiState::Downloading ||
+      view.state == OtaUiState::Verifying || view.state == OtaUiState::Installing ||
+      view.state == OtaUiState::Rebooting) {
+    return;
+  }
+  WorkerCommand cmd{};
+  cmd.type = WorkerCmdType::OTA_INSTALL;
+  this->enqueue_command_(cmd);
 }
 
 // ---------------------------------------------------------------------------
@@ -1591,6 +2895,25 @@ void SubwaveDisplay::bind_runtime_images(
   this->row_avatar_images_[4] = row_4;
 }
 
+void SubwaveDisplay::bind_modal_avatar_image(esphome::runtime_image::RuntimeImage *modal_avatar) {
+  this->modal_avatar_image_ = modal_avatar;
+}
+
+void SubwaveDisplay::bind_secondary_avatar_images(
+    esphome::runtime_image::RuntimeImage *now_avatar_2,
+    esphome::runtime_image::RuntimeImage *row_0,
+    esphome::runtime_image::RuntimeImage *row_1,
+    esphome::runtime_image::RuntimeImage *row_2,
+    esphome::runtime_image::RuntimeImage *row_3,
+    esphome::runtime_image::RuntimeImage *row_4) {
+  this->now_avatar_2_image_ = now_avatar_2;
+  this->row_avatar2_images_[0] = row_0;
+  this->row_avatar2_images_[1] = row_1;
+  this->row_avatar2_images_[2] = row_2;
+  this->row_avatar2_images_[3] = row_3;
+  this->row_avatar2_images_[4] = row_4;
+}
+
 void SubwaveDisplay::bind_art_controls(
     esphome::runtime_image::RuntimeImage *art_in,
     esphome::runtime_image::RuntimeImage *art_out,
@@ -1693,6 +3016,9 @@ void SubwaveDisplay::drop_identity_(const char *why) {
   this->save_token_();
   this->save_identity_();
   this->save_bind_code_();
+  this->clear_avatar_cache();
+  ESP_LOGI(TAG, "Identity dropped (%s); avatar cache cleared (%u entries, %u KB).",
+           why, (unsigned) this->avatar_cache_count(), (unsigned) this->avatar_cache_kb());
   // server_url_ is deliberately kept: it is saved by save_identity_() and the
   // bind screen pre-fills it so the operator does not retype the address.
   this->identity_lost_ = true;
@@ -1944,6 +3270,386 @@ const char *SubwaveDisplay::connectivity_message(Connectivity c) const {
     default:
       return "Still checking your network.";
   }
+}
+
+namespace {
+// One place decides how a device avatar URL asks for a bigger portrait, so the
+// request and the "have I already got this one?" comparison cannot drift apart.
+std::string sized_url(const std::string &url, int size) {
+  if (url.empty()) return {};
+  return url + (url.find('?') != std::string::npos ? "&size=" : "?size=") + std::to_string(size);
+}
+}  // namespace
+
+void SubwaveDisplay::open_presenter_modal_for_now() {
+  this->open_presenter_modal_for_now_at(0);
+}
+
+void SubwaveDisplay::open_presenter_modal_for_now_at(size_t start_index) {
+  this->presenter_modal_state_.open = true;
+  this->presenter_modal_state_.presenters.clear();
+  this->presenter_modal_state_.current_index = 0;
+
+  if (!this->byline_.presenters.empty()) {
+    this->presenter_modal_state_.presenters = this->byline_.presenters;
+  } else {
+    PresenterInfo p;
+    p.name = this->byline_.presenter.empty() ? (this->station_name_.empty() ? "Subwave Radio" : this->station_name_) : this->byline_.presenter;
+    p.role = "Host";
+    p.tagline = this->byline_.tagline;
+    p.avatar_url = this->byline_.avatar_url.empty() ? this->shown_now_avatar_url_ : this->byline_.avatar_url;
+    this->presenter_modal_state_.presenters.push_back(p);
+  }
+
+  this->show_presenter_in_modal(
+      start_index < this->presenter_modal_state_.presenters.size() ? start_index : 0);
+}
+
+void SubwaveDisplay::open_presenter_modal_for_slot(int slot_index) {
+  this->open_presenter_modal_for_slot_at(slot_index, 0);
+}
+
+void SubwaveDisplay::open_presenter_modal_for_slot_at(int slot_index, size_t start_index) {
+  if (slot_index < 0 || slot_index >= (int) this->schedule_slots_.size() || slot_index >= MAX_SCHEDULE_SLOTS) {
+    return;
+  }
+
+  const auto &slot = this->schedule_slots_[slot_index];
+  this->presenter_modal_state_.open = true;
+  this->presenter_modal_state_.presenters.clear();
+  this->presenter_modal_state_.current_index = 0;
+
+  if (!slot.presenters.empty()) {
+    this->presenter_modal_state_.presenters = slot.presenters;
+  } else {
+    PresenterInfo p;
+    p.name = slot.host.empty() ? slot.name : slot.host;
+    if (p.name.empty()) p.name = "Presenter";
+    p.role = "Host";
+    p.tagline = slot.tagline;
+    p.avatar_url = slot.avatar_url.empty() ? this->shown_row_avatar_url_[slot_index] : slot.avatar_url;
+    this->presenter_modal_state_.presenters.push_back(p);
+  }
+
+  this->show_presenter_in_modal(
+      start_index < this->presenter_modal_state_.presenters.size() ? start_index : 0);
+}
+
+void SubwaveDisplay::next_presenter_in_modal() {
+  if (!this->presenter_modal_state_.open || this->presenter_modal_state_.presenters.empty()) return;
+  size_t count = this->presenter_modal_state_.presenters.size();
+  size_t next_idx = (this->presenter_modal_state_.current_index + 1) % count;
+  this->show_presenter_in_modal(next_idx);
+}
+
+void SubwaveDisplay::prev_presenter_in_modal() {
+  if (!this->presenter_modal_state_.open || this->presenter_modal_state_.presenters.empty()) return;
+  size_t count = this->presenter_modal_state_.presenters.size();
+  size_t prev_idx = (this->presenter_modal_state_.current_index + count - 1) % count;
+  this->show_presenter_in_modal(prev_idx);
+}
+
+void SubwaveDisplay::show_presenter_in_modal(size_t index) {
+  if (index >= this->presenter_modal_state_.presenters.size()) return;
+  this->presenter_modal_state_.current_index = index;
+
+  const auto &p = this->presenter_modal_state_.presenters[index];
+  this->presenter_modal_state_.name = p.name;
+  this->presenter_modal_state_.role = p.role.empty() ? "Host" : p.role;
+  this->presenter_modal_state_.tagline = p.tagline;
+  this->presenter_modal_state_.avatar_url = p.avatar_url;
+
+  // The only acceptable placeholder is a 280x280 portrait for this exact URL.
+  // The 88px byline thumbnail was being scaled 3.2x into the 280 well, which is
+  // the blocky, wrong-looking face the modal opened with.
+  esphome::runtime_image::RuntimeImage *placeholder = nullptr;
+  const std::string expected_280 = sized_url(p.avatar_url, 280);
+  if (this->modal_avatar_image_ != nullptr && !expected_280.empty() &&
+      this->shown_modal_avatar_url_ == expected_280 && this->modal_avatar_image_->get_width() > 0) {
+    placeholder = this->modal_avatar_image_;
+  }
+
+  presenter_modal_show(this->presenter_modal_state_.name.c_str(),
+                       this->presenter_modal_state_.role.c_str(),
+                       this->presenter_modal_state_.tagline.c_str(),
+                       placeholder,
+                       index,
+                       this->presenter_modal_state_.presenters.size());
+
+  // A different presenter means a different URL, so any backoff applies to the
+  // old one and must not delay this face.
+  if (expected_280 != this->modal_avatar_requested_url_) {
+    this->modal_avatar_retry_ms_ = 0;
+  }
+  this->ensure_modal_avatar_();
+}
+
+void SubwaveDisplay::ensure_modal_avatar_() {
+  if (this->modal_avatar_image_ == nullptr) return;
+  const std::string expected = sized_url(this->presenter_modal_state_.avatar_url, 280);
+  if (expected.empty() || expected == this->shown_modal_avatar_url_ ||
+      expected == this->modal_avatar_requested_url_) {
+    return;
+  }
+  if (this->modal_avatar_retry_ms_ != 0 &&
+      static_cast<int32_t>(esphome::millis() - this->modal_avatar_retry_ms_) < 0) {
+    return;
+  }
+
+  WorkerCommand cmd{};
+  cmd.type = WorkerCmdType::FETCH_PNG;
+  strncpy(cmd.url_or_path, expected.c_str(), sizeof(cmd.url_or_path) - 1);
+  cmd.url_or_path[sizeof(cmd.url_or_path) - 1] = '\0';
+  cmd.target_ptr = this->modal_avatar_image_;
+  cmd.slot_index = -3;
+  // Record the URL only once the worker owns the request. If the queue was
+  // full, nothing was fetched, so nothing may look fetched.
+  if (this->enqueue_command_(cmd)) {
+    this->modal_avatar_requested_url_ = expected;
+  } else {
+    this->modal_avatar_retry_ms_ = esphome::millis() + 3000;
+  }
+}
+
+void SubwaveDisplay::close_presenter_modal() {
+  this->presenter_modal_state_.open = false;
+  presenter_modal_dismiss();
+}
+
+// ---------------------------------------------------------------------------
+// PSRAM Avatar Cache Implementation
+// ---------------------------------------------------------------------------
+
+namespace {
+// Cache buffers are allocated with heap_caps_malloc, so the shared_ptr's default
+// delete[] would be wrong.
+struct PsramFree {
+  void operator()(uint8_t *p) const {
+    if (p != nullptr)
+      heap_caps_free(p);
+  }
+};
+}  // namespace
+
+SubwaveDisplay::SubwaveDisplay() {
+  this->cache_mutex_ = xSemaphoreCreateMutex();
+}
+
+SubwaveDisplay::~SubwaveDisplay() {
+  this->clear_avatar_cache();
+  if (this->cache_mutex_ != nullptr) {
+    vSemaphoreDelete(this->cache_mutex_);
+    this->cache_mutex_ = nullptr;
+  }
+  if (this->ota_ui_mutex_ != nullptr) {
+    vSemaphoreDelete(this->ota_ui_mutex_);
+    this->ota_ui_mutex_ = nullptr;
+  }
+}
+
+size_t SubwaveDisplay::avatar_cache_count() const { return this->avatar_cache_count_.load(); }
+
+size_t SubwaveDisplay::avatar_cache_kb() const { return this->avatar_cache_bytes_.load() / 1024; }
+
+void SubwaveDisplay::clear_avatar_cache() {
+  if (this->cache_mutex_ == nullptr) {
+    this->cache_mutex_ = xSemaphoreCreateMutex();
+  }
+
+  if (this->cache_mutex_ != nullptr) {
+    if (xSemaphoreTake(this->cache_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+      // Dropping the map releases the shared_ptr handles. A buffer being decoded
+      // on the worker stays alive until that decode finishes.
+      this->avatar_cache_.clear();
+      this->avatar_cache_count_.store(0);
+      this->avatar_cache_bytes_.store(0);
+      xSemaphoreGive(this->cache_mutex_);
+    } else {
+      ESP_LOGW(TAG, "clear_avatar_cache: timeout waiting for cache_mutex_");
+      return;
+    }
+  } else {
+    this->avatar_cache_.clear();
+    this->avatar_cache_count_.store(0);
+    this->avatar_cache_bytes_.store(0);
+  }
+
+  // Clear tracking URLs to force re-fetch on demand across all avatar sizes
+  this->shown_now_avatar_url_.clear();
+  this->pending_now_avatar_url_.clear();
+  this->shown_now_avatar_2_url_.clear();
+  this->pending_now_avatar_2_url_.clear();
+  this->modal_avatar_requested_url_.clear();
+  this->shown_modal_avatar_url_.clear();
+  for (int i = 0; i < MAX_SCHEDULE_SLOTS; ++i) {
+    this->shown_row_avatar_url_[i].clear();
+    this->pending_row_avatar_url_[i].clear();
+    this->shown_row_avatar2_url_[i].clear();
+    this->pending_row_avatar2_url_[i].clear();
+  }
+
+  ESP_LOGI(TAG, "Avatar cache cleared: PSRAM buffers freed, URLs reset.");
+}
+
+bool SubwaveDisplay::fetch_png_cached_(const std::string &path, esphome::runtime_image::RuntimeImage *img) {
+  ScopedTimer timer("subwave.block", "fetch_png_cached", 100);
+  if (path.empty() || img == nullptr) return false;
+
+  const std::string url =
+      (path.rfind("http://", 0) == 0 || path.rfind("https://", 0) == 0) ? path : join(this->api_base_, path);
+
+  // 1. Check PSRAM cache under FreeRTOS Mutex
+  if (this->cache_mutex_ == nullptr) {
+    this->cache_mutex_ = xSemaphoreCreateMutex();
+  }
+
+  std::shared_ptr<uint8_t> cached_data;
+  size_t cached_len = 0;
+  uint32_t cached_age_ms = 0;
+  if (this->cache_mutex_ != nullptr && xSemaphoreTake(this->cache_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    auto it = this->avatar_cache_.find(url);
+    if (it != this->avatar_cache_.end()) {
+      uint32_t age_ms = esphome::millis() - it->second.timestamp_ms;
+      if (age_ms < AVATAR_CACHE_TTL_MS && it->second.data != nullptr && it->second.length > 0) {
+        cached_data = it->second.data;
+        cached_len = it->second.length;
+        cached_age_ms = age_ms;
+      }
+    }
+    xSemaphoreGive(this->cache_mutex_);
+  }
+
+  // Decode OUTSIDE the lock. The copied handle keeps the buffer alive even if
+  // clear_avatar_cache() drops the map entry while this decode is running.
+  if (cached_data != nullptr && cached_len > 0) {
+    img->release();
+    if (img->begin_decode(cached_len)) {
+      int consumed = img->feed_data(cached_data.get(), cached_len);
+      img->end_decode();
+      if (consumed >= 0 && img->get_width() > 0 && img->get_height() > 0) {
+        ESP_LOGI(TAG, "Served avatar %s from PSRAM cache (%u bytes -> %dx%d, age %u s).",
+                 path.c_str(), (unsigned) cached_len, img->get_width(), img->get_height(),
+                 (unsigned) (cached_age_ms / 1000U));
+        return true;
+      }
+    }
+  }
+
+  // 2. Cache Miss or Expired (>24h): Network HTTP Fetch
+  auto *client = this->http();
+  if (client == nullptr) return false;
+
+  std::vector<esphome::http_request::Header> headers;
+  if (!this->bearer_.empty()) {
+    headers.push_back({"Authorization", "Bearer " + this->bearer_});
+  }
+  headers.push_back({"Accept", "image/png,image/jpeg,*/*;q=0.8"});
+
+  auto container = client->start(url, "GET", "", headers);
+  if (container == nullptr) {
+    ESP_LOGW(TAG, "GET %s could not be started.", path.c_str());
+    return false;
+  }
+  int status = container->status_code;
+  if (status != 200) {
+    ESP_LOGW(TAG, "Avatar %s returned status %d.", path.c_str(), status);
+    container->end();
+    return false;
+  }
+
+  constexpr size_t MAX_AVATAR_BODY = 512 * 1024;  // 512 KB safety cap
+  std::vector<uint8_t> body;
+  if (container->content_length > 0 && container->content_length <= MAX_AVATAR_BODY) {
+    body.reserve(container->content_length);
+  }
+
+  uint8_t chunk[512];
+  uint32_t last_data_time = esphome::millis();
+  while (true) {
+    int n = container->read(chunk, sizeof(chunk));
+    // Non-blocking streaming read
+    auto loop_res = esphome::http_request::http_read_loop_result(
+        n, last_data_time, 12000, container->is_read_complete());
+    if (loop_res == esphome::http_request::HttpReadLoopResult::DATA) {
+      body.insert(body.end(), chunk, chunk + n);
+      if (body.size() > MAX_AVATAR_BODY) {
+        ESP_LOGW(TAG, "Avatar %s exceeded 512KB cap; discarding.", path.c_str());
+        container->end();
+        return false;
+      }
+      continue;
+    }
+    if (loop_res == esphome::http_request::HttpReadLoopResult::RETRY) {
+      continue;
+    }
+    if (loop_res == esphome::http_request::HttpReadLoopResult::TIMEOUT) {
+      ESP_LOGW(TAG, "Avatar %s timed out during download.", path.c_str());
+      container->end();
+      return false;
+    }
+    break;
+  }
+  container->end();
+
+  if (body.empty()) {
+    ESP_LOGW(TAG, "Avatar %s returned empty body.", path.c_str());
+    return false;
+  }
+
+  // 3. PSRAM Buffer Allocation
+  size_t len = body.size();
+  uint8_t *psram_buf = static_cast<uint8_t *>(heap_caps_malloc(len, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+  if (psram_buf == nullptr) {
+    ESP_LOGE(TAG, "Failed to allocate %u bytes in PSRAM for avatar %s", (unsigned) len, path.c_str());
+    // Fallback: stream and decode directly if PSRAM is exhausted
+    return this->fetch_image_to_runtime_image_(path, img);
+  }
+
+  memcpy(psram_buf, body.data(), len);
+
+  // 4. Decode into RuntimeImage
+  img->release();
+  if (!img->begin_decode(len)) {
+    ESP_LOGW(TAG, "Avatar %s begin_decode failed.", path.c_str());
+    heap_caps_free(psram_buf);
+    return false;
+  }
+
+  int consumed = img->feed_data(psram_buf, len);
+  img->end_decode();
+
+  if (consumed < 0 || img->get_width() <= 0 || img->get_height() <= 0) {
+    ESP_LOGW(TAG, "Avatar %s decode error (consumed: %d, dims: %dx%d).",
+             path.c_str(), consumed, img->get_width(), img->get_height());
+    heap_caps_free(psram_buf);
+    return false;
+  }
+
+  // 5. Store in PSRAM Cache under Mutex. Ownership moves into the shared handle
+  // immediately, so every early-out below frees the buffer exactly once.
+  std::shared_ptr<uint8_t> cached_buf(psram_buf, PsramFree{});
+  if (this->cache_mutex_ != nullptr && xSemaphoreTake(this->cache_mutex_, pdMS_TO_TICKS(100)) == pdTRUE) {
+    AvatarCacheEntry entry;
+    entry.data = cached_buf;
+    entry.length = len;
+    entry.timestamp_ms = esphome::millis();
+    entry.url = url;
+    // Assignment releases the previous entry's handle (and its buffer).
+    this->avatar_cache_[url] = entry;
+
+    uint32_t total_bytes = 0;
+    for (const auto &pair : this->avatar_cache_)
+      total_bytes += pair.second.length;
+    this->avatar_cache_bytes_.store(total_bytes);
+    this->avatar_cache_count_.store((uint32_t) this->avatar_cache_.size());
+    xSemaphoreGive(this->cache_mutex_);
+
+    ESP_LOGI(TAG, "Cached avatar %s in PSRAM (%u bytes -> %dx%d, total cache: %u KB).",
+             path.c_str(), (unsigned) len, img->get_width(), img->get_height(),
+             (unsigned) (total_bytes / 1024));
+  }
+
+  return true;
 }
 
 }  // namespace subwave_display
