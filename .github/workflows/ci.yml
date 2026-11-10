@@ -1,0 +1,45 @@
+name: CI
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+# A new push supersedes the run it interrupted; nothing here is worth queueing.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Checks and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          # The suites are TypeScript run by Node's type stripping, which needs
+          # 22.6 or newer. 24 is what this repo is developed on; the deploy host
+          # stays on 20 and opts out of the suite on purpose (deploy.sh).
+          node-version: 24
+          cache: npm
+
+      - run: npm ci
+
+      - name: Unit and firmware checks
+        run: npm run check:unit
+
+      # `npm run build` is the repo's own gate (scripts/run-checks.mjs).
+      # The suite already ran in the step above, so only the build half is run
+      # here rather than paying for it twice.
+      - name: Production build
+        run: npm run build
+        env:
+          SKIP_UNIT_CHECKS: "1"
