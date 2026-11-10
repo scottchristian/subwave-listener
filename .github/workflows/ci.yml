@@ -33,8 +33,10 @@ jobs:
 
       - run: npm ci
 
+      # `--if-present`: main is the release branch and predates the suites, so
+      # one workflow serves both branches instead of a second copy that drifts.
       - name: Unit and firmware checks
-        run: npm run check:unit
+        run: npm run --if-present check:unit
 
       # `npm run build` is the repo's own gate (scripts/run-checks.mjs).
       # The suite already ran in the step above, so only the build half is run
