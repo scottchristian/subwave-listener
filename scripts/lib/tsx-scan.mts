@@ -190,12 +190,32 @@ export function walkTsx(dir: string): string[] {
   return out;
 }
 
-/** Every `.ts` under a directory. */
-export function walkTs(dir: string): string[] {
+/**
+ * Every `.ts` under a directory.
+ *
+ * `skip` names directories to step over. It is optional and defaults to none, so
+ * adding a parameter here does not quietly change what any existing caller
+ * inspects.
+ *
+ * BROKEN SYMLINKS ARE SKIPPED, not fatal. `statSync` throws ENOENT on a dangling
+ * link, and these walks run over directories that contain other people's build
+ * trees — `device/firmware/.esphome` holds an ESP-IDF toolchain whose
+ * `penvs/5.5.4/bin/python` points at `/usr/local/bin/python`, which does not
+ * exist on every machine. A check that guards a domain invariant should not fail
+ * because someone's toolchain is installed elsewhere; that failure mode reads
+ * as "the gate is broken" and trains people to ignore it, which is worse than
+ * the dangling link that caused it.
+ */
+export function walkTs(dir: string, skip: readonly string[] = []): string[] {
   const out: string[] = [];
   for (const e of readdirSync(dir)) {
+    if (skip.includes(e)) continue;
     const p = path.join(dir, e);
-    if (statSync(p).isDirectory()) out.push(...walkTs(p));
+    // `throwIfNoEntry: false` returns undefined rather than throwing, which is
+    // the whole point: a link whose target is absent is skipped, not fatal.
+    const st = statSync(p, { throwIfNoEntry: false });
+    if (st === undefined) continue;
+    if (st.isDirectory()) out.push(...walkTs(p, skip));
     else if (p.endsWith(".ts") && !p.endsWith(".d.ts")) out.push(p);
   }
   return out;

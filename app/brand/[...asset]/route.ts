@@ -29,6 +29,7 @@ export async function GET(
   return new NextResponse(new Uint8Array(found.body), {
     headers: {
       "content-type": contentTypeFor(name),
+      "content-length": String(found.body.byteLength),
       // Branding changes when an operator uploads, and the filename never does,
       // so the browser must not hold the old artwork. Revalidate every time
       // rather than guess at a max-age the app cannot enforce.

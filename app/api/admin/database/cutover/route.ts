@@ -27,13 +27,18 @@ export const maxDuration = 600;
  * query then fails at runtime with "the URL must start with the protocol
  * file:". The env file and this file must move together.
  */
-async function setSchemaProvider(provider: string): Promise<void> {
+async function setSchemaProvider(provider: "postgresql" | "sqlite"): Promise<void> {
+  const safeProvider = provider === "postgresql" ? "postgresql" : "sqlite";
   const raw = await fs.readFile(SCHEMA, "utf8");
   const next = raw.replace(
     /(datasource\s+db\s*\{\s*provider\s*=\s*")[^"]*(")/,
-    `$1${provider}$2`
+    `$1${safeProvider}$2`
   );
-  if (next === raw && !new RegExp(`provider\\s*=\\s*"${provider}"`).test(raw)) {
+  const alreadyPresent =
+    safeProvider === "postgresql"
+      ? /provider\s*=\s*"postgresql"/.test(raw)
+      : /provider\s*=\s*"sqlite"/.test(raw);
+  if (next === raw && !alreadyPresent) {
     throw new Error(`could not find the datasource block in ${SCHEMA}`);
   }
   if (next !== raw) {

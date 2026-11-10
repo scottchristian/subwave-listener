@@ -1,0 +1,373 @@
+# The setup screen — page 1 of 2: connect to Wi-Fi.
+#
+# DESIGN: Frontend-design principles applied.
+#
+# Subject: Wall-mounted SUB/WAVE radio display. Thin client, provisioned once.
+# Audience: Anyone standing in front of the screen — cafe staff, venue staff,
+# the station owner. Not technical, not patient, not carrying a laptop.
+# Primary job: Get this screen on WiFi and claimed to the station, fast.
+#
+# Hero: The QR code. It's the fastest path — phone scans, captive portal does
+# the rest. Everything else on the screen is the fallback for when a phone
+# isn't handy.
+#
+# Layout: Single column, left-aligned. Everything fits within 800px height.
+# The bottom 72px is the chrome rail — keyboard never goes below y=700px.
+#
+# Page 1 of 2: connect to Wi-Fi. Tap "Next →" to go to the bind screen.
+#
+# The CONTENT of the setup screen — the widgets only.
+
+# ── Header: step indicator, title, and direct skip to station bind ──────
+
+- label:
+    id: setup_step_label
+    text: "STEP 1 OF 2 · WI-FI SETUP"
+    text_font: font_small
+    text_color: 0x4E9FD4
+    align: TOP_LEFT
+    x: 48px
+    y: 20px
+
+- label:
+    id: setup_title
+    text: "Connect to Wi-Fi"
+    text_font: font_title
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 48px
+    y: 44px
+
+- button:
+    id: setup_next_button
+    text: "Bind Station →"
+    align: TOP_LEFT
+    x: 1012px
+    y: 36px
+    width: 220px
+    height: 52px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x4E9FD4
+    radius: 8px
+    text_color: 0x4E9FD4
+    text_font: font_body
+    on_click:
+      - script.execute: { id: window_go, target: 4 }
+
+# ── Option 1: Phone QR captive portal ───────────────────────────────────
+
+- qrcode:
+    id: setup_qr
+    size: 210
+    align: TOP_LEFT
+    x: 48px
+    y: 112px
+    light_color: 0xE8EDF3
+    dark_color: 0x0B1A2B
+    text: "WIFI:T:WPA;S:SUBWAVE-SCREEN;P:D2P2K7FF;;"
+
+- label:
+    id: setup_instruction
+    text: "Option 1 — Scan QR code with your phone"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 288px
+    y: 116px
+    width: 700px
+
+- label:
+    id: setup_hint
+    text: "Join the screen hotspot on your phone and the setup page opens automatically."
+    text_font: font_small
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 288px
+    y: 152px
+    width: 940px
+
+- label:
+    id: setup_wifi_label
+    text: "HOTSPOT NETWORK"
+    text_font: font_small
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 288px
+    y: 204px
+    width: 260px
+
+- label:
+    id: setup_wifi_value
+    text: "SUBWAVE-SCREEN"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 288px
+    y: 232px
+    width: 280px
+
+- label:
+    id: setup_password_label
+    text: "HOTSPOT PASSWORD"
+    text_font: font_small
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 600px
+    y: 204px
+    width: 260px
+
+- label:
+    id: setup_password_value
+    text: "D2P2K7FF"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 600px
+    y: 232px
+    width: 240px
+
+- label:
+    id: setup_address_label
+    text: "DEVICE ADDRESS"
+    text_font: font_small
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 880px
+    y: 204px
+    width: 260px
+
+- label:
+    id: setup_address
+    text: "192.168.4.1"
+    text_font: font_body
+    text_color: 0x4E9FD4
+    align: TOP_LEFT
+    x: 880px
+    y: 232px
+    width: 340px
+
+# ── Hairline divider ────────────────────────────────────────────────────
+- obj:
+    id: setup_rule
+    width: 1184px
+    height: 1px
+    align: TOP_LEFT
+    x: 48px
+    y: 342px
+    bg_color: 0x1A3050
+    bg_opa: COVER
+    border_width: 0
+
+# ── Option 2: On-screen Wi-Fi setup ─────────────────────────────────────
+
+- label:
+    id: setup_home_label
+    text: "Option 2 — Choose your Wi-Fi network on this screen"
+    text_font: font_small
+    text_color: 0x4E9FD4
+    align: TOP_LEFT
+    x: 48px
+    y: 358px
+    width: 600px
+
+- button:
+    id: setup_scan_button
+    text: "Scan"
+    align: TOP_LEFT
+    x: 48px
+    y: 390px
+    width: 140px
+    height: 48px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x1A3050
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    on_click:
+      - script.execute: wifi_scan
+
+- dropdown:
+    id: wifi_network_dropdown
+    align: TOP_LEFT
+    x: 204px
+    y: 390px
+    width: 1028px
+    height: 48px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x1A3050
+    text_color: 0xDCE8F5
+    text_font: font_body
+    options:
+      - "Scanning…"
+    symbol: "›"
+
+- label:
+    id: setup_password_label2
+    text: "WIFI PASSWORD"
+    text_font: font_small
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 48px
+    y: 450px
+    width: 260px
+
+- textarea:
+    id: wifi_password
+    align: TOP_LEFT
+    x: 48px
+    y: 476px
+    width: 420px
+    height: 48px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x4E9FD4
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    one_line: true
+    password_mode: true
+    placeholder_text: "Tap to enter password"
+    on_click:
+      - lambda: |-
+          id(setup_page) = 3;
+          id(keyboard_target) = 0;
+      - script.execute: wifi_keyboard_toggle
+
+- button:
+    id: setup_connect_button
+    text: "Connect"
+    align: TOP_LEFT
+    x: 484px
+    y: 476px
+    width: 180px
+    height: 48px
+    bg_color: 0x4E9FD4
+    border_width: 0
+    radius: 8px
+    text_color: 0x06101E
+    text_font: font_body
+    on_click:
+      - script.execute: wifi_connect
+
+- label:
+    id: wifi_status
+    text: "Select a Wi-Fi network above, enter password, and tap Connect."
+    text_font: font_small
+    text_color: 0x6A8BA8
+    align: TOP_LEFT
+    x: 684px
+    y: 492px
+    width: 548px
+
+# ── The on-screen keyboard ──────────────────────────────────────────────
+# Hidden until the password field is tapped. Mode buttons sit in the password
+# field's row (y=476) to the right of the input, and the 248px keyboard sits
+# below (y=536..784).
+
+- button:
+    id: wifi_mode_lower
+    text: "abc"
+    align: TOP_LEFT
+    x: 484px
+    y: 476px
+    width: 136px
+    height: 48px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x1A3050
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 0 }
+
+- button:
+    id: wifi_mode_upper
+    text: "ABC"
+    align: TOP_LEFT
+    x: 628px
+    y: 476px
+    width: 136px
+    height: 48px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x1A3050
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 1 }
+
+- button:
+    id: wifi_mode_special
+    text: "#+="
+    align: TOP_LEFT
+    x: 772px
+    y: 476px
+    width: 136px
+    height: 48px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x1A3050
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 2 }
+
+- button:
+    id: wifi_mode_number
+    text: "123"
+    align: TOP_LEFT
+    x: 916px
+    y: 476px
+    width: 136px
+    height: 48px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x1A3050
+    radius: 8px
+    text_color: 0xDCE8F5
+    text_font: font_body
+    hidden: true
+    on_click:
+      - script.execute: { id: wifi_keyboard_mode, mode: 3 }
+
+- button:
+    id: wifi_keyboard_done
+    text: "Done"
+    align: TOP_LEFT
+    x: 1060px
+    y: 476px
+    width: 172px
+    height: 48px
+    bg_color: 0x4E9FD4
+    border_width: 0
+    radius: 8px
+    text_color: 0x06101E
+    text_font: font_body
+    hidden: true
+    on_click:
+      - lambda: id(keyboard_target) = -1;
+      - script.execute: wifi_keyboard_toggle
+
+- keyboard:
+    id: wifi_kb
+    align: TOP_LEFT
+    x: 48px
+    y: 536px
+    width: 1184px
+    height: 248px
+    bg_color: 0x0D1F35
+    border_width: 1
+    border_color: 0x1A3050
+    radius: 10px
+    textarea: wifi_password
+    mode: TEXT_LOWER
+    hidden: true

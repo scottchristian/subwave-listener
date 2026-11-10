@@ -1,0 +1,312 @@
+# Window 3 of 3 — Device Settings & Diagnostics.
+#
+# Discrete touch rows with explicit y coordinates (no overlapping at y=0)
+# and read-only network/hardware telemetry below the divider.
+
+- label:
+    id: settings_title
+    text: "DEVICE SETTINGS"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 64px
+    y: 36px
+    width: 700px
+
+- label:
+    id: settings_clock
+    text: "00:00"
+    text_font: font_body
+    text_color: 0x6A8BA8
+    align: TOP_RIGHT
+    x: -64px
+    y: 36px
+    width: 300px
+
+- obj:
+    id: settings_body
+    width: 1152px
+    height: 700px
+    align: TOP_LEFT
+    x: 64px
+    y: 88px
+    bg_opa: TRANSP
+    border_width: 0
+    pad_all: 0
+    scrollable: false
+    widgets:
+      # ---- Row 1: Brightness (10 discrete segments) ----------
+      - obj:
+          id: set_brightness
+          x: 0px
+          y: 0px
+          width: 1152px
+          height: 56px
+          radius: 8px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          widgets:
+            - label: { id: lbl_brightness, text: "Brightness", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 20px, width: 280px }
+            - obj:
+                id: brightness_segments
+                width: 640px
+                height: 36px
+                align: RIGHT_MID
+                x: -116px
+                bg_opa: TRANSP
+                border_width: 0
+                pad_all: 0
+                scrollable: false
+                widgets:
+                  - obj: { id: seg_0, width: 56px, height: 36px, radius: 4px, x: 0px,   bg_color: 0x4E9FD4, bg_opa: COVER, border_width: 0, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 10 } } }
+                  - obj: { id: seg_1, width: 56px, height: 36px, radius: 4px, x: 64px,  bg_color: 0x4E9FD4, bg_opa: COVER, border_width: 0, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 20 } } }
+                  - obj: { id: seg_2, width: 56px, height: 36px, radius: 4px, x: 128px, bg_color: 0x4E9FD4, bg_opa: COVER, border_width: 0, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 30 } } }
+                  - obj: { id: seg_3, width: 56px, height: 36px, radius: 4px, x: 192px, bg_color: 0x4E9FD4, bg_opa: COVER, border_width: 0, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 40 } } }
+                  - obj: { id: seg_4, width: 56px, height: 36px, radius: 4px, x: 256px, bg_color: 0x4E9FD4, bg_opa: COVER, border_width: 0, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 50 } } }
+                  - obj: { id: seg_5, width: 56px, height: 36px, radius: 4px, x: 320px, bg_color: 0x4E9FD4, bg_opa: COVER, border_width: 0, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 60 } } }
+                  - obj: { id: seg_6, width: 56px, height: 36px, radius: 4px, x: 384px, bg_color: 0x4E9FD4, bg_opa: COVER, border_width: 0, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 70 } } }
+                  - obj: { id: seg_7, width: 56px, height: 36px, radius: 4px, x: 448px, bg_color: 0x1A3050, bg_opa: COVER, border_width: 0, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 80 } } }
+                  - obj: { id: seg_8, width: 56px, height: 36px, radius: 4px, x: 512px, bg_color: 0x1A3050, bg_opa: COVER, border_width: 0, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 90 } } }
+                  - obj: { id: seg_9, width: 56px, height: 36px, radius: 4px, x: 576px, bg_color: 0x1A3050, bg_opa: COVER, border_width: 0, clickable: true, on_click: { script.execute: { id: set_brightness_to, value: 100 } } }
+            - label:
+                id: lbl_brightness_value
+                text: "70%"
+                text_font: font_body
+                text_color: 0x4E9FD4
+                align: RIGHT_MID
+                x: -20px
+                width: 84px
+
+      # ---- Row 2: Theme --------------------------------------
+      - obj:
+          id: set_theme
+          x: 0px
+          y: 60px
+          width: 1152px
+          height: 56px
+          radius: 8px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          clickable: true
+          on_click:
+            - script.execute: theme_cycle
+          widgets:
+            - label: { id: lbl_theme_title, text: "Theme Mode", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 20px, width: 340px }
+            - label: { id: lbl_theme, text: "Follow the sun", text_font: font_body, text_color: 0x4E9FD4, align: RIGHT_MID, x: -20px, width: 420px }
+
+      # ---- Row 3: Idle Behavior ------------------------------
+      - obj:
+          id: set_idle
+          x: 0px
+          y: 120px
+          width: 1152px
+          height: 56px
+          radius: 8px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          clickable: true
+          on_click:
+            - script.execute: idle_cycle
+          widgets:
+            - label: { id: lbl_idle_title, text: "When Idle", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 20px, width: 340px }
+            - label: { id: lbl_idle, text: "Dim, after 15 minutes", text_font: font_body, text_color: 0x4E9FD4, align: RIGHT_MID, x: -20px, width: 420px }
+
+      # ---- Row 4: Orientation --------------------------------
+      - obj:
+          id: set_orientation
+          x: 0px
+          y: 180px
+          width: 1152px
+          height: 56px
+          radius: 8px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          clickable: true
+          on_click:
+            - script.execute: orientation_cycle
+          widgets:
+            - label: { id: lbl_orientation_title, text: "Orientation", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 20px, width: 340px }
+            - label: { id: lbl_orientation, text: "Landscape", text_font: font_body, text_color: 0x4E9FD4, align: RIGHT_MID, x: -20px, width: 420px }
+
+      # ---- Row 5: Skip Button Visibility ---------------------
+      - obj:
+          id: set_skip
+          x: 0px
+          y: 240px
+          width: 1152px
+          height: 56px
+          radius: 8px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          clickable: true
+          on_click:
+            - script.execute: skip_toggle
+          widgets:
+            - label: { id: lbl_skip_title, text: "Track Skip Button", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 20px, width: 340px }
+            - label: { id: lbl_skip, text: "Allowed", text_font: font_body, text_color: 0x4E9FD4, align: RIGHT_MID, x: -20px, width: 420px }
+
+      # ---- Row 6: Firmware update -----------------------------
+      #
+      # ONE SHARED RELEASE FOR EVERY SCREEN, AND AN EXPLICIT CONFIRMED TAP.
+      # The row says what the station published and what this screen is
+      # running; it never says "updating" for something nobody asked for. The
+      # sentence and the button are painted by ui_refresh_firmware_update()
+      # from the worker's snapshot. Tapping either opens the confirmation
+      # dialog in display.yaml; nothing installs until "Install now" is
+      # pressed there.
+      - obj:
+          id: set_firmware
+          x: 0px
+          y: 300px
+          width: 1152px
+          height: 56px
+          radius: 8px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          clickable: true
+          on_click:
+            - script.execute: firmware_update_tap
+          widgets:
+            - label: { id: lbl_update_title, text: "Firmware Update", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 20px, width: 300px }
+            # 600px, not 812: the action button below owns the right-hand end of
+            # the row. The sentence never runs under it.
+            - label: { id: lbl_update_state, text: "Up to date", text_font: font_small, text_color: 0x6A8BA8, align: LEFT_MID, x: 320px, width: 600px }
+            # The button the row was missing. A sentence alone does not tell a
+            # person standing at the wall that they may act on it. Same size,
+            # fill, border and label colour as the Clear Cache button two rows
+            # below, so the two actions on this screen read as the same kind of
+            # thing instead of one of them looking like plain text. Hidden until
+            # there is something to install (or something to retry), so it can
+            # never invite a tap that does nothing, and it opens the confirmation
+            # dialog — it does not install on the first tap.
+            - button:
+                id: btn_update
+                align: RIGHT_MID
+                x: -20px
+                width: 200px
+                height: 42px
+                radius: 8px
+                bg_color: 0x1A3050
+                bg_opa: COVER
+                border_width: 1
+                border_color: 0x29527A
+                border_opa: COVER
+                pad_all: 0
+                scrollable: false
+                hidden: true
+                checkable: false
+                on_click:
+                  - script.execute: firmware_update_tap
+                widgets:
+                  - label:
+                      id: lbl_update_action
+                      clickable: false
+                      text: "Update"
+                      text_font: font_small
+                      text_color: 0x4E9FD4
+                      align: CENTER
+
+      # ---- Row 7: Image Cache --------------------------------
+      - obj:
+          id: set_cache
+          x: 0px
+          y: 360px
+          width: 1152px
+          height: 56px
+          radius: 8px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          widgets:
+            - label: { id: lbl_cache_title, text: "Image Cache", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 20px, width: 260px }
+            - label: { id: lbl_cache_stats, text: "0 images (0 KB)", text_font: font_body, text_color: 0x6A8BA8, align: LEFT_MID, x: 300px, width: 340px }
+            - button:
+                id: btn_clear_cache
+                align: RIGHT_MID
+                x: -20px
+                width: 200px
+                height: 42px
+                radius: 8px
+                bg_color: 0x1A3050
+                bg_opa: COVER
+                border_width: 1
+                border_color: 0x29527A
+                border_opa: COVER
+                pad_all: 0
+                scrollable: false
+                checkable: false
+                on_click:
+                  - script.execute: clear_image_cache
+                widgets:
+                  - label:
+                      id: lbl_clear_cache
+                      clickable: false
+                      text: "Clear Cache"
+                      text_font: font_small
+                      text_color: 0x4E9FD4
+                      align: CENTER
+
+      # ---- Row 8: Open Wi-Fi & Bind Setup --------------------
+      - obj:
+          id: set_setup
+          x: 0px
+          y: 420px
+          width: 1152px
+          height: 56px
+          radius: 8px
+          bg_color: 0x0D223A
+          bg_opa: COVER
+          border_width: 1
+          border_color: 0x29527A
+          border_opa: COVER
+          pad_all: 0
+          scrollable: false
+          clickable: true
+          on_click:
+            - script.execute: { id: window_go, target: 3 }
+          widgets:
+            - label: { id: lbl_setup_title, text: "Wi-Fi & Station Setup", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 20px, width: 360px }
+            - label: { id: lbl_setup, text: "Configure Network or Bind →", text_font: font_body, text_color: 0x4E9FD4, align: RIGHT_MID, x: -20px, width: 460px }
+
+      # ---- Divider Rule --------------------------------------
+      - obj:
+          id: settings_rule
+          x: 0px
+          y: 492px
+          width: 1152px
+          height: 1px
+          bg_color: 0x1A3050
+          bg_opa: COVER
+          border_width: 0
+
+      # ---- Read-Only Device Telemetry ------------------------
+      - label: { id: lbl_wifi,   text: "Wi-Fi Network", text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT,  x: 20px,  y: 510px, width: 300px }
+      - label: { id: val_wifi,   text: "Not connected", text_font: font_small, text_color: 0xDCE8F5, align: TOP_RIGHT, x: -20px, y: 510px, width: 700px }
+      - label: { id: lbl_addr,   text: "IP Address",    text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT,  x: 20px,  y: 548px, width: 300px }
+      - label: { id: val_addr,   text: "—",             text_font: font_small, text_color: 0xDCE8F5, align: TOP_RIGHT, x: -20px, y: 548px, width: 700px }
+      - label: { id: lbl_model,  text: "Hardware",      text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT,  x: 20px,  y: 586px, width: 300px }
+      - label: { id: val_model,  text: "JC8012P4A1",    text_font: font_small, text_color: 0xDCE8F5, align: TOP_RIGHT, x: -20px, y: 586px, width: 700px }
+      - label: { id: lbl_ver,    text: "Firmware",      text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT,  x: 20px,  y: 624px, width: 300px }
+      - label: { id: val_ver,    text: "1.11.0",        text_font: font_small, text_color: 0xDCE8F5, align: TOP_RIGHT, x: -20px, y: 624px, width: 700px }
+      - label: { id: lbl_up,     text: "Uptime",        text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT,  x: 20px,  y: 662px, width: 300px }
+      - label: { id: val_up,     text: "0 minutes",     text_font: font_small, text_color: 0xDCE8F5, align: TOP_RIGHT, x: -20px, y: 662px, width: 700px }

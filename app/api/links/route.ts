@@ -88,7 +88,23 @@ export async function GET(req: NextRequest) {
   }
 }
 
-const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]/g, " ").replace(/\s+/g, " ").trim();
+function norm(s: string): string {
+  const lower = s.slice(0, 512).toLowerCase();
+  let out = "";
+  let inSpace = true;
+  for (let i = 0; i < lower.length; i++) {
+    const code = lower.charCodeAt(i);
+    const isAlphaNum = (code >= 97 && code <= 122) || (code >= 48 && code <= 57);
+    if (isAlphaNum) {
+      out += lower[i];
+      inSpace = false;
+    } else if (!inSpace) {
+      out += " ";
+      inSpace = true;
+    }
+  }
+  return out.trim();
+}
 const matches = (haystack: unknown, needle: string) =>
   typeof haystack === "string" && needle !== "" && norm(haystack).includes(norm(needle));
 

@@ -1,0 +1,334 @@
+# The palette, and the two rules that keep it from drifting.
+#
+# NIGHT IS THE APP'S TOKENS, VERBATIM. #06101e, #0d1f35, #dce8f5, #6a8ba8,
+# #1a3050, #4e9fd4 — taken straight from app/globals.css with no modification,
+# because the whole design premise is that the screen is the same product as the
+# browser tab at a different scale. Inventing a second palette here would break
+# the one thing this component is for.
+#
+# DAY IS THE SAME FAMILY INVERTED IN LUMINANCE ONLY. The paper is COOL-tinted,
+# #E8EDF3, and that is the whole ballgame: it is unmistakably the daylight twin
+# of #06101e. A cream would be a different product wearing a costume, and cream
+# is also the single most recognisable tell of a generated page.
+#
+# DAY CAPS BRIGHTNESS BELOW NIGHT, deliberately. A sunlit room needs less output
+# and a dark room needs more — and the safe direction matters: a screen that dims
+# too far is obvious and fixable from the app, while one that blazes at 3am is
+# neither. See device/design.md.
+
+globals:
+  # ---- night: the app's own tokens -------------------------------------
+  - id: night_bg
+    type: int
+    initial_value: '0x06101E'
+  - id: night_surface
+    type: int
+    initial_value: '0x0D1F35'
+  - id: night_text
+    type: int
+    initial_value: '0xDCE8F5'
+  - id: night_muted
+    type: int
+    initial_value: '0x6A8BA8'
+  - id: night_rule
+    type: int
+    initial_value: '0x1A3050'
+  - id: night_accent
+    type: int
+    initial_value: '0x4E9FD4'
+
+  # ---- day: same family, other end -------------------------------------
+  - id: day_bg
+    type: int
+    initial_value: '0xE8EDF3'
+  - id: day_surface
+    type: int
+    initial_value: '0xD7DFE8'
+  - id: day_text
+    type: int
+    initial_value: '0x0B1A2B'
+  - id: day_muted
+    type: int
+    initial_value: '0x4A6B85'
+  - id: day_rule
+    type: int
+    initial_value: '0xC3CEDA'
+  - id: day_accent
+    type: int
+    initial_value: '0x2F6F9E'
+
+  # The theme currently painted, and whether a swap is in flight. Both live with
+  # the palette rather than in a second block: ESPHome rejects a duplicate
+  # top-level key in an !include'd package, so a file may have exactly one
+  # `globals:` — and splitting the palette from the state that indexes it would
+  # put the two halves of one idea in two places for no gain.
+
+  - id: theme_is_day
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+  - id: art_queued
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+  # Resolved at runtime by apply_theme(). Everything else reads these, so there
+  # is exactly one place a colour is chosen.
+  - id: c_bg
+    type: int
+    initial_value: '0x06101E'
+  - id: c_surface
+    type: int
+    initial_value: '0x0D1F35'
+  - id: c_text
+    type: int
+    initial_value: '0xDCE8F5'
+  - id: c_muted
+    type: int
+    initial_value: '0x6A8BA8'
+  - id: c_rule
+    type: int
+    initial_value: '0x1A3050'
+  - id: c_accent
+    type: int
+    initial_value: '0x4E9FD4'
+
+# ---------------------------------------------------------------------------
+# The rail.
+#
+# Three segments, filled means "you are here". It is the same object as the
+# setup wizard's rail on the phone: one meaning across the product for "position
+# in a sequence".
+#
+# Defined here rather than in window.yaml because it needs the accent token,
+# which is theme-dependent, and because a function used by the slide script must
+# exist before any window file is read.
+# ---------------------------------------------------------------------------
+script:
+  - id: window_draw_rail
+    mode: restart
+    then:
+      - lambda: |-
+          // Setup screens (slots 3 and 4) own the full 1280x800 canvas and hide
+          // the station navigation dock.
+          if (id(window_index) >= 3) {
+            lv_obj_add_flag(id(chrome), LV_OBJ_FLAG_HIDDEN);
+            return;
+          }
+          lv_obj_clear_flag(id(chrome), LV_OBJ_FLAG_HIDDEN);
+          lv_obj_set_style_bg_color(id(chrome), lv_color_hex(id(c_bg)), LV_PART_MAIN);
+          lv_obj_set_style_bg_color(id(chrome_rule), lv_color_hex(id(c_rule)), LV_PART_MAIN);
+
+          lv_obj_t *tabs[3]  = {id(nav_tab_0), id(nav_tab_1), id(nav_tab_2)};
+          lv_obj_t *lbls[3]  = {id(nav_lbl_0), id(nav_lbl_1), id(nav_lbl_2)};
+          lv_obj_t *rails[3] = {id(rail_0),    id(rail_1),    id(rail_2)};
+          for (int i = 0; i < 3; i++) {
+            bool active = (id(window_index) == i);
+            lv_obj_set_style_bg_color(tabs[i], lv_color_hex(active ? id(c_surface) : id(c_bg)), LV_PART_MAIN);
+            lv_obj_set_style_border_color(tabs[i], lv_color_hex(active ? id(c_accent) : id(c_rule)), LV_PART_MAIN);
+            lv_obj_set_style_text_color(lbls[i], lv_color_hex(active ? id(c_text) : id(c_muted)), LV_PART_MAIN);
+            lv_obj_set_style_bg_color(rails[i], lv_color_hex(active ? id(c_accent) : id(c_rule)), LV_PART_MAIN);
+          }
+
+          // NO WRAP. At either end of the 3 station screens (0..2) the arrow dims
+          // to 40% and stops responding.
+          bool at_start = id(window_index) <= 0;
+          bool at_end   = id(window_index) >= 2;
+          lv_obj_set_style_opa(id(glyph_prev), at_start ? LV_OPA_40 : LV_OPA_COVER, LV_PART_MAIN);
+          lv_obj_set_style_opa(id(glyph_next), at_end   ? LV_OPA_40 : LV_OPA_COVER, LV_PART_MAIN);
+          lv_obj_set_style_bg_color(id(btn_prev), lv_color_hex(id(c_surface)), LV_PART_MAIN);
+          lv_obj_set_style_bg_color(id(btn_next), lv_color_hex(id(c_surface)), LV_PART_MAIN);
+          lv_obj_set_style_border_color(id(btn_prev), lv_color_hex(id(c_rule)), LV_PART_MAIN);
+          lv_obj_set_style_border_color(id(btn_next), lv_color_hex(id(c_rule)), LV_PART_MAIN);
+          lv_obj_clear_state(id(btn_prev), LV_STATE_DISABLED);
+          lv_obj_clear_state(id(btn_next), LV_STATE_DISABLED);
+          if (at_start) lv_obj_add_state(id(btn_prev), LV_STATE_DISABLED);
+          if (at_end)   lv_obj_add_state(id(btn_next), LV_STATE_DISABLED);
+          lv_obj_set_style_text_color(id(glyph_prev), lv_color_hex(at_start ? id(c_muted) : id(c_text)), LV_PART_MAIN);
+          lv_obj_set_style_text_color(id(glyph_next), lv_color_hex(at_end   ? id(c_muted) : id(c_text)), LV_PART_MAIN);
+
+# ---------------------------------------------------------------------------
+# Day and night.
+#
+# A 20-SECOND CROSSFADE, not a switch. Long enough never to register as a flash,
+# short enough to feel deliberate — and it reuses the same single blend primitive
+# as the artwork crossfade, because there is exactly one crossfade in this
+# firmware and having two would be two chances to get it subtly wrong.
+#
+# The settings screen follows the theme. A white flash at midnight when somebody
+# presses the right arrow would be genuinely awful.
+# ---------------------------------------------------------------------------
+  - id: apply_theme
+    mode: restart
+    parameters:
+      to_day: bool
+    then:
+      - lambda: |-
+          static int32_t theme_from[6];
+          static int32_t theme_to[6];
+          theme_from[0] = id(c_bg);
+          theme_from[1] = id(c_text);
+          theme_from[2] = id(c_muted);
+          theme_from[3] = id(c_accent);
+          theme_from[4] = id(c_surface);
+          theme_from[5] = id(c_rule);
+          theme_to[0] = to_day ? id(day_bg) : id(night_bg);
+          theme_to[1] = to_day ? id(day_text) : id(night_text);
+          theme_to[2] = to_day ? id(day_muted) : id(night_muted);
+          theme_to[3] = to_day ? id(day_accent) : id(night_accent);
+          theme_to[4] = to_day ? id(day_surface) : id(night_surface);
+          theme_to[5] = to_day ? id(day_rule) : id(night_rule);
+
+          // BACK TO THE PALETTE FORMAT.
+          //
+          // The globals are `type: int` holding 0xRRGGBB — the same shape as
+          // the literals at the top of this file — because that is what
+          // lv_color_hex() takes and what every other reader expects. LVGL's
+          // lv_color_t is a {blue, green, red} struct and lv_color32_t gained an
+          // alpha byte in 9.5, so neither converts to an int implicitly; the
+          // packing is spelled out rather than cast.
+          //
+          // ANIMATED ON THE RENDER THREAD, NOT BY SLEEPING HERE. The old loop
+          // slept ~21ms per step with lv_timer_handler() in between. That block
+          // serviced LVGL's input timer while the press flag was not yet latched,
+          // which is how a tap during a fade loses its click.
+          auto frame = [](void *, int32_t k) {
+            auto pack = [](lv_color_t c) -> int32_t {
+              return ((int32_t) c.red << 16) | ((int32_t) c.green << 8) | (int32_t) c.blue;
+            };
+            id(c_bg)      = pack(lv_color_mix(lv_color_hex(theme_from[0]), lv_color_hex(theme_to[0]), k));
+            id(c_text)    = pack(lv_color_mix(lv_color_hex(theme_from[1]), lv_color_hex(theme_to[1]), k));
+            id(c_muted)   = pack(lv_color_mix(lv_color_hex(theme_from[2]), lv_color_hex(theme_to[2]), k));
+            id(c_accent)  = pack(lv_color_mix(lv_color_hex(theme_from[3]), lv_color_hex(theme_to[3]), k));
+            id(c_surface) = pack(lv_color_mix(lv_color_hex(theme_from[4]), lv_color_hex(theme_to[4]), k));
+            id(c_rule)    = pack(lv_color_mix(lv_color_hex(theme_from[5]), lv_color_hex(theme_to[5]), k));
+            subwave_display::theme_paint_all();
+          };
+
+          lv_anim_delete(theme_from, frame);
+
+          lv_anim_t a;
+          lv_anim_init(&a);
+          lv_anim_set_var(&a, theme_from);
+          lv_anim_set_values(&a, 0, 255);
+          lv_anim_set_duration(&a, 130);
+          lv_anim_set_path_cb(&a, lv_anim_path_linear);
+          lv_anim_set_exec_cb(&a, frame);
+          lv_anim_set_completed_cb(&a, [](lv_anim_t *) {
+            id(c_bg)      = theme_to[0];
+            id(c_text)    = theme_to[1];
+            id(c_muted)   = theme_to[2];
+            id(c_accent)  = theme_to[3];
+            id(c_surface) = theme_to[4];
+            id(c_rule)    = theme_to[5];
+            subwave_display::theme_paint_all();
+            window_draw_rail->execute();
+          });
+          lv_anim_start(&a);
+
+  - id: theme_sync
+    mode: single
+    then:
+      - if:
+          condition:
+            lambda: return id(theme_is_day) == id(display_client)->is_night();
+          then:
+            # A leading `!` in an unquoted YAML value is read as a TAG, not as text
+            # — so `to_day: !id(x)` fails to parse with "could not determine a
+            # constructor for the tag". !lambda is a tag ESPHome does know, and
+            # wrapping the expression in `return` makes it a bool rather than a
+            # string of source code, which is what the typed param expects.
+            - script.execute:
+                id: apply_theme
+                to_day: !lambda "return !id(theme_is_day);"
+      - lambda: id(theme_is_day) = !id(display_client)->is_night();
+
+  # ---- the artwork crossfade --------------------------------------------
+  #
+  # THIS IS THE IDENTITY OF THE DEVICE. On the web, app/page.tsx holds the
+  # outgoing cover at full opacity until the incoming one has actually decoded;
+  # fading the old one first gives a flash of empty glass on a cold cache.
+  #
+  # And prefetching is NOT available here. The web player warms upcoming covers,
+  # but `upcoming` is empty most of the time, so there is nothing to warm and the
+  # decode lands after the track change EVERY time. That makes "decode first,
+  # then ramp" the whole game rather than an optimisation, and a cold-cache flash
+  # of empty glass is the expected case rather than an edge case.
+  #
+  # 650ms, matching the web exactly. Single alpha blend, no wipe, no slide.
+  - id: art_swap
+    mode: single
+    then:
+      - lambda: |-
+          // Wait for the incoming cover to finish decoding. art_primed is set by
+          // the decoder callback and never before — the ramp does not start on
+          // "a request went out", it starts on "there are pixels to show".
+          if (!id(art_primed)) { id(art_queued) = true; return; }
+          id(art_primed) = false;
+          id(art_queued) = false;
+          id(art_fading) = true;
+
+          // Capture the outgoing and incoming widgets BEFORE swapping their roles
+          // for the next track, so we fade `in` up on top of `out` and then hide
+          // `out` rather than hiding the newly-decoded cover.
+          lv_obj_t* out = id(art_out);
+          lv_obj_t* in  = id(art_in);
+          id(art_out) = in;
+          id(art_in)  = out;
+          id(art_slot) = !id(art_slot);
+
+          // The outgoing cover sits underneath at full opacity. Fading it first
+          // is precisely the bug this exists to avoid.
+          lv_obj_set_style_opa(in, LV_OPA_TRANSP, LV_PART_MAIN);
+          lv_obj_clear_flag(in, LV_OBJ_FLAG_HIDDEN);
+          lv_obj_move_foreground(in);
+
+          // One frame per render tick. Never call lv_timer_handler() from a
+          // script: that services the input timer mid-block, which can consume
+          // a tap's pressed sample before it is latched.
+          lv_anim_t a;
+          lv_anim_init(&a);
+          lv_anim_set_var(&a, in);
+          lv_anim_set_user_data(&a, out);
+          lv_anim_set_values(&a, 0, 255);
+          lv_anim_set_duration(&a, 150);
+          lv_anim_set_path_cb(&a, lv_anim_path_linear);
+          lv_anim_set_exec_cb(&a, [](void *var, int32_t v) {
+            lv_obj_set_style_opa(static_cast<lv_obj_t *>(var), v, LV_PART_MAIN);
+          });
+          lv_anim_set_completed_cb(&a, [](lv_anim_t *anim) {
+            auto *in_obj  = static_cast<lv_obj_t *>(anim->var);
+            auto *out_obj = static_cast<lv_obj_t *>(lv_anim_get_user_data(anim));
+            lv_obj_set_style_opa(in_obj, LV_OPA_COVER, LV_PART_MAIN);
+            lv_obj_add_flag(out_obj, LV_OBJ_FLAG_HIDDEN);
+            id(art_fading) = false;
+            if (id(art_queued)) {
+              id(art_queued) = false;
+              art_swap->execute();
+            }
+            if (id(window_queued) >= 0) {
+              int q = id(window_queued);
+              id(window_queued) = -1;
+              window_go->execute(q);
+            }
+          });
+          lv_anim_start(&a);
+
+  # A swap deferred behind a slide or another fade. Motion never overlaps:
+  # two competing animations at once read as a glitch, and the incoming artwork
+  # is cached by the time the window settles, so waiting costs nothing.
+  - id: art_tick
+    mode: restart
+    then:
+      - if:
+          condition:
+            lambda: return id(art_queued) && !id(art_fading);
+          then:
+            - script.execute: art_swap
+
+  # Painted after every theme step so one colour change reaches every window
+  # without each window needing its own copy of the palette.
+  - id: theme_paint
+    mode: restart
+    then:
+      - lambda: subwave_display::theme_paint_all();

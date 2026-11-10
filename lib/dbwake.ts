@@ -8,6 +8,26 @@ const KNOCK_EVERY_MS = 10 * 1000; // 10 seconds between knocks
 let backgroundLoop: Promise<boolean> | null = null;
 
 /**
+ * Test seam only — production never sets this.
+ *
+ * A sleeping database is simulated by making the shared client's reads refuse.
+ * The wake path must then knock through that same connection: a fresh client
+ * still reaches a real file and "wakes" a database that is, for the caller,
+ * still refusing. The override is also where a simulated asleep database says
+ * "no" cheaply, so a test does not sit through the full retry budget.
+ *
+ * `timeoutMs` is part of the same override: real backoff starts at ten seconds,
+ * which a check script cannot wait for.
+ */
+let knockOverride: (() => Promise<boolean>) | null = null;
+let timeoutOverrideMs: number | null = null;
+
+export function setWakeKnockForTests(knock: (() => Promise<boolean>) | null, timeoutMs?: number): void {
+  knockOverride = knock;
+  timeoutOverrideMs = timeoutMs ?? null;
+}
+
+/**
  * Create a fresh Prisma client for wake attempts.
  * Using a fresh client ensures we don't use stale connection pools.
  * Uses extended connection timeout for hibernated databases.
@@ -33,16 +53,20 @@ async function knock(client: PrismaClient): Promise<boolean> {
 }
 
 export async function wakeDb(opts?: { timeoutMs?: number; onAttempt?: (n: number) => void }): Promise<boolean> {
-  const timeoutMs = opts?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const timeoutMs = opts?.timeoutMs ?? timeoutOverrideMs ?? DEFAULT_TIMEOUT_MS;
   const started = Date.now();
   let n = 0;
   for (;;) {
     n++;
-    const client = createWakeClient();
-    try {
-      if (await knock(client)) return true;
-    } finally {
-      await client.$disconnect().catch(() => {});
+    if (knockOverride) {
+      if (await knockOverride().catch(() => false)) return true;
+    } else {
+      const client = createWakeClient();
+      try {
+        if (await knock(client)) return true;
+      } finally {
+        await client.$disconnect().catch(() => {});
+      }
     }
     opts?.onAttempt?.(n);
     if (Date.now() - started >= timeoutMs) return false;

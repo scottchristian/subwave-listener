@@ -43,26 +43,38 @@ export const toLivePerson = (u: {
 });
 
 const presence = new Map<string, { lastSeen: number; person: LivePerson }>();
-const streaming = new Map<string, { since: number; person: LivePerson }>();
+
+// `started` is the moment the stream opened — it is what the admin panel
+// shows as "streaming for 16m". `lastSeen` is the liveness signal, and it is
+// refreshed on every presence heartbeat for as long as the tab is still here.
+// Sweeping on `started` was the bug: a listener playing for twenty minutes is
+// not an orphan, and vanishing them mid-session read exactly like "I am
+// listening but I am not listed".
+const streaming = new Map<string, { started: number; lastSeen: number; person: LivePerson }>();
 
 function sweep(now: number): void {
   for (const [id, e] of presence) {
     if (now - e.lastSeen >= PRESENCE_WINDOW_MS) presence.delete(id);
   }
   for (const [id, e] of streaming) {
-    if (now - e.since >= STREAMING_WINDOW_MS) streaming.delete(id);
+    if (now - e.lastSeen >= STREAMING_WINDOW_MS) streaming.delete(id);
   }
 }
 
 /** A heartbeat arrived: this user has the app open as of `now`. */
 export function notePresence(person: LivePerson, now: number = Date.now()): void {
   presence.set(person.userId, { lastSeen: now, person });
+  // A tab that is still heartbeating is still listening. Refresh the streaming
+  // entry's liveness without moving `started`, so the duration on the panel
+  // keeps counting from the moment the track began.
+  const live = streaming.get(person.userId);
+  if (live) streaming.set(person.userId, { ...live, lastSeen: now, person });
   sweep(now);
 }
 
 /** A stream started. Keyed by user — one Safari Play press opens ~2 rows. */
 export function noteStreamStart(person: LivePerson, now: number = Date.now()): void {
-  streaming.set(person.userId, { since: now, person });
+  streaming.set(person.userId, { started: now, lastSeen: now, person });
 }
 
 /** A stream ended (or its socket died — same thing to everyone else). */
@@ -78,10 +90,10 @@ export function freshPresence(now: number = Date.now()): { userId: string; lastS
     .map((e) => ({ userId: e.person.userId, lastSeen: new Date(e.lastSeen), person: e.person }));
 }
 
-/** Streams believed live, oldest first. */
+/** Streams believed live, oldest first. `since` is the start time for display. */
 export function liveStreams(now: number = Date.now()): { userId: string; since: Date; person: LivePerson }[] {
   sweep(now);
   return [...streaming.values()]
-    .sort((a, b) => a.since - b.since)
-    .map((e) => ({ userId: e.person.userId, since: new Date(e.since), person: e.person }));
+    .sort((a, b) => a.started - b.started)
+    .map((e) => ({ userId: e.person.userId, since: new Date(e.started), person: e.person }));
 }

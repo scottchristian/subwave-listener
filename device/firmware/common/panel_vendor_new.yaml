@@ -1,0 +1,72 @@
+# The panel, as the NEW revision.
+#
+# Same reasoning as panel_vendor.yaml, and it is functionally the vendor's own
+# jd9365 driver rather than an approximation of it (esp_lcd_jd9365.c line 123
+# saves the generic esp_lcd_new_panel_dpi() panel's own init and calls it again
+# at line 493).
+#
+# WHAT MAKES THIS FILE DIFFERENT FROM panel_vendor.yaml IS TWO THINGS, and both
+# are load-bearing:
+#
+#   - the command list: jc8012p4a1_init_new.yaml, 204 commands, diverging from the
+#     old revision at index 7 and never resyncing
+#   - the pixel clock and vertical porch: 70 MHz, vsync back 10, front 30
+#
+# The vendor ships two panels under nearly the same name and they are different
+# drivers, not different tunings of one. ESPHome's model encodes the old one. If
+# this unit is the new revision — and its label (JC8012P4A1C_I_W_Y) matches the
+# vendor demo tree named JC8012P4A1C_I_W_Y_New_Panel — then `model: JC8012P4A1`
+# hands it the wrong sequence and the wrong clock, and no amount of layout work
+# would ever have fixed it.
+#
+# WORTH KNOWING, AND THE REASON THIS IS THE LEAD: 185 of the 198 register writes
+# differ between the two revisions — 93%. This is not a tuning delta. It is a
+# different driver, configured almost from scratch. `model: JC8012P4A1` on a
+# new-revision panel would send a configuration that is wrong in the large
+# majority of its commands, plus miss the 6 that only exist here
+# (0xE6/0xE7, SLPOUT, DISPON and their settles).
+#
+# AND YET EVERY ONE OF THOSE COMMANDS WOULD STILL BE ACKNOWLEDGED. DBI
+# acknowledgements are generic to the link, not a claim that the register was
+# understood. That is precisely why the failure mode is so unhelpful: a panel
+# given 185 wrong register writes reports not one error, lights its backlight,
+# and shows nothing. It looks exactly like a layout problem.
+#
+# Also worth knowing: diffing the two vendor board files shows the revisions
+# differ in NOTHING ELSE. Same reset pin, same LDO channel and voltage, same
+# rgb_ele_order, same bits_per_pixel, same num_fbs. So the difference is purely
+# driver configuration, and there is no wiring or power-rail variant to go
+# looking for. That narrows this to one unknown bit — which of these two files
+# this unit is — and the way to settle it is to flash each and look, because
+# ESPHome's mipi_dsi exposes no way to read the panel back.
+#
+# Select with:  panel_include: panel_vendor_new.yaml
+#
+# Both revisions are kept because guessing wrong in either direction produces the
+# same blank screen, and the failure gives no hint which way you guessed.
+
+- platform: mipi_dsi
+  model: CUSTOM
+  id: tft_display
+
+  reset_pin: GPIO27
+  auto_clear_enabled: false
+  color_order: RGB
+
+  dimensions:
+    width: 800
+    height: 1280
+
+  lanes: 2
+  lane_bit_rate: 1000Mbps
+  pclk_frequency: 70MHz
+
+  hsync_pulse_width: 20
+  hsync_back_porch: 20
+  hsync_front_porch: 40
+  vsync_pulse_width: 4
+  vsync_back_porch: 10
+  vsync_front_porch: 30
+
+  # Required: CUSTOM has no default sequence, so this must be the whole thing.
+  init_sequence: !include jc8012p4a1_init_new.yaml

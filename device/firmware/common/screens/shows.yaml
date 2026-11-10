@@ -1,0 +1,291 @@
+# Window 2 of 3 — Broadcast Schedule ("Now & Next").
+#
+# Tabular broadcast schedule with explicit row coordinates so all five rows
+# stack cleanly without overlapping at y=0.
+
+- obj:
+    id: live_lamp_shows
+    width: 14px
+    height: 14px
+    radius: 7px
+    align: TOP_LEFT
+    x: 64px
+    y: 46px
+    bg_color: 0x4E9FD4
+    bg_opa: COVER
+    border_width: 0
+
+- label:
+    id: shows_station
+    text: "SUB/WAVE SCHEDULE"
+    text_font: font_body
+    text_color: 0xDCE8F5
+    align: TOP_LEFT
+    x: 90px
+    y: 38px
+    width: 620px
+
+- label:
+    id: shows_day
+    text: "ON AIR & UP NEXT"
+    text_font: font_body
+    text_color: 0x6A8BA8
+    align: TOP_RIGHT
+    x: -64px
+    y: 38px
+    width: 420px
+
+- obj:
+    id: shows_list
+    width: 1152px
+    height: 576px
+    align: TOP_LEFT
+    x: 64px
+    y: 104px
+    bg_opa: TRANSP
+    border_width: 0
+    pad_all: 0
+    scrollable: false
+    widgets:
+      - obj:
+          id: row_0
+          x: 0px
+          y: 0px
+          width: 1152px
+          height: 100px
+          radius: 10px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          clickable: true
+          on_click:
+            - lambda: |-
+                id(display_client)->open_presenter_modal_for_slot(0);
+          widgets:
+            - label:
+                id: row_0_time
+                text: "NOW ON AIR"
+                text_font: font_body
+                text_color: 0x4E9FD4
+                align: TOP_LEFT
+                x: 24px
+                y: 20px
+                width: 240px
+            - label:
+                id: row_0_name
+                text: "Live Broadcast"
+                text_font: font_body
+                text_color: 0xDCE8F5
+                align: TOP_LEFT
+                x: 280px
+                y: 18px
+                width: 720px
+            - label:
+                id: row_0_host
+                text: "Continuous station stream"
+                text_font: font_small
+                text_color: 0x6A8BA8
+                align: TOP_LEFT
+                x: 280px
+                y: 56px
+                width: 720px
+            - image:
+                id: row_0_avatar
+                src: row_0_avatar_image
+                width: 56px
+                height: 56px
+                align: RIGHT_MID
+                x: -24px
+                hidden: true
+            - image:
+                id: row_0_avatar2
+                src: row_0_avatar2_image
+                width: 56px
+                height: 56px
+                align: RIGHT_MID
+                x: -88px
+                hidden: true
+                clickable: true
+                on_click:
+                  - lambda: |-
+                      id(display_client)->open_presenter_modal_for_slot_at(0, 1);
+            - obj:
+                id: row_0_rule
+                width: 1152px
+                height: 1px
+                align: BOTTOM_MID
+                bg_color: 0x1A3050
+                bg_opa: COVER
+                border_width: 0
+
+      - obj:
+          id: row_1
+          x: 0px
+          y: 112px
+          width: 1152px
+          height: 100px
+          radius: 10px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          clickable: true
+          on_click:
+            - lambda: |-
+                id(display_client)->open_presenter_modal_for_slot(1);
+          widgets:
+            - label: { id: row_1_time, text: "UP NEXT", text_font: font_body, text_color: 0x4E9FD4, align: TOP_LEFT, x: 24px, y: 20px, width: 240px }
+            - label: { id: row_1_name, text: "Station Rotation", text_font: font_body, text_color: 0xDCE8F5, align: TOP_LEFT, x: 280px, y: 18px, width: 720px }
+            - label: { id: row_1_host, text: "Subwave Auto DJ", text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, x: 280px, y: 56px, width: 720px }
+            - image: { id: row_1_avatar, src: row_1_avatar_image, width: 56px, height: 56px, align: RIGHT_MID, x: -24px, hidden: true }
+            - image:
+                id: row_1_avatar2
+                src: row_1_avatar2_image
+                width: 56px
+                height: 56px
+                align: RIGHT_MID
+                x: -88px
+                hidden: true
+                clickable: true
+                on_click:
+                  - lambda: |-
+                      id(display_client)->open_presenter_modal_for_slot_at(1, 1);
+            - obj:   { id: row_1_rule, width: 1152px, height: 1px, align: BOTTOM_MID, bg_color: 0x1A3050, bg_opa: COVER, border_width: 0 }
+
+      - obj:
+          id: row_2
+          x: 0px
+          y: 224px
+          width: 1152px
+          height: 100px
+          radius: 10px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          clickable: true
+          on_click:
+            - lambda: |-
+                id(display_client)->open_presenter_modal_for_slot(2);
+          widgets:
+            - label: { id: row_2_time, text: "LATER", text_font: font_body, text_color: 0x4E9FD4, align: TOP_LEFT, x: 24px, y: 20px, width: 240px }
+            - label: { id: row_2_name, text: "Scheduled Programming", text_font: font_body, text_color: 0xDCE8F5, align: TOP_LEFT, x: 280px, y: 18px, width: 720px }
+            - label: { id: row_2_host, text: "Updates automatically from station schedule", text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, x: 280px, y: 56px, width: 720px }
+            - image: { id: row_2_avatar, src: row_2_avatar_image, width: 56px, height: 56px, align: RIGHT_MID, x: -24px, hidden: true }
+            - image:
+                id: row_2_avatar2
+                src: row_2_avatar2_image
+                width: 56px
+                height: 56px
+                align: RIGHT_MID
+                x: -88px
+                hidden: true
+                clickable: true
+                on_click:
+                  - lambda: |-
+                      id(display_client)->open_presenter_modal_for_slot_at(2, 1);
+            - obj:   { id: row_2_rule, width: 1152px, height: 1px, align: BOTTOM_MID, bg_color: 0x1A3050, bg_opa: COVER, border_width: 0 }
+
+      - obj:
+          id: row_3
+          x: 0px
+          y: 336px
+          width: 1152px
+          height: 100px
+          radius: 10px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          clickable: true
+          on_click:
+            - lambda: |-
+                id(display_client)->open_presenter_modal_for_slot(3);
+          widgets:
+            - label: { id: row_3_time, text: "—", text_font: font_body, text_color: 0x4E9FD4, align: TOP_LEFT, x: 24px, y: 20px, width: 240px }
+            - label: { id: row_3_name, text: "", text_font: font_body, text_color: 0xDCE8F5, align: TOP_LEFT, x: 280px, y: 18px, width: 720px }
+            - label: { id: row_3_host, text: "", text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, x: 280px, y: 56px, width: 720px }
+            - image: { id: row_3_avatar, src: row_3_avatar_image, width: 56px, height: 56px, align: RIGHT_MID, x: -24px, hidden: true }
+            - image:
+                id: row_3_avatar2
+                src: row_3_avatar2_image
+                width: 56px
+                height: 56px
+                align: RIGHT_MID
+                x: -88px
+                hidden: true
+                clickable: true
+                on_click:
+                  - lambda: |-
+                      id(display_client)->open_presenter_modal_for_slot_at(3, 1);
+            - obj:   { id: row_3_rule, width: 1152px, height: 1px, align: BOTTOM_MID, bg_color: 0x1A3050, bg_opa: COVER, border_width: 0 }
+
+      - obj:
+          id: row_4
+          x: 0px
+          y: 448px
+          width: 1152px
+          height: 100px
+          radius: 10px
+          bg_color: 0x0A182B
+          bg_opa: COVER
+          border_width: 0
+          pad_all: 0
+          scrollable: false
+          clickable: true
+          on_click:
+            - lambda: |-
+                id(display_client)->open_presenter_modal_for_slot(4);
+          widgets:
+            - label: { id: row_4_time, text: "—", text_font: font_body, text_color: 0x4E9FD4, align: TOP_LEFT, x: 24px, y: 20px, width: 240px }
+            - label: { id: row_4_name, text: "", text_font: font_body, text_color: 0xDCE8F5, align: TOP_LEFT, x: 280px, y: 18px, width: 720px }
+            - label: { id: row_4_host, text: "", text_font: font_small, text_color: 0x6A8BA8, align: TOP_LEFT, x: 280px, y: 56px, width: 720px }
+            - image: { id: row_4_avatar, src: row_4_avatar_image, width: 56px, height: 56px, align: RIGHT_MID, x: -24px, hidden: true }
+            - image:
+                id: row_4_avatar2
+                src: row_4_avatar2_image
+                width: 56px
+                height: 56px
+                align: RIGHT_MID
+                x: -88px
+                hidden: true
+                clickable: true
+                on_click:
+                  - lambda: |-
+                      id(display_client)->open_presenter_modal_for_slot_at(4, 1);
+            - obj:   { id: row_4_rule, width: 1152px, height: 1px, align: BOTTOM_MID, bg_color: 0x1A3050, bg_opa: COVER, border_width: 0 }
+
+- obj:
+    id: shows_expanded
+    width: 1152px
+    height: 200px
+    align: BOTTOM_LEFT
+    x: 64px
+    y: -88px
+    bg_color: 0x0D1F35
+    bg_opa: COVER
+    border_width: 0
+    hidden: true
+    widgets:
+      - label:
+          id: expanded_host
+          text: ""
+          text_font: font_small
+          text_color: 0xDCE8F5
+          align: LEFT_MID
+          x: 24px
+          width: 700px
+      - label:
+          id: expanded_tagline
+          text: ""
+          text_font: font_small
+          text_color: 0x6A8BA8
+          align: LEFT_MID
+          x: 24px
+          y: 46px
+          width: 900px

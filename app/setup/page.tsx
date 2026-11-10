@@ -53,13 +53,20 @@ type Status = {
 const STEP_ORDER = ["secrets", "google", "database", "subwave", "station"] as const;
 type StepId = (typeof STEP_ORDER)[number];
 
-const STEP_TITLES: Record<StepId, string> = {
-  secrets: "Security keys",
-  google: "Sign-in",
-  database: "Database",
-  subwave: "Your station host",
-  station: "Your player",
-};
+function stepTitle(id: StepId): string {
+  switch (id) {
+    case "secrets":
+      return "Security keys";
+    case "google":
+      return "Sign-in";
+    case "database":
+      return "Database";
+    case "subwave":
+      return "Your station host";
+    case "station":
+      return "Your player";
+  }
+}
 
 export default function SetupPage() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -256,7 +263,7 @@ function Progress({ current, steps }: { current: StepId; steps: Steps }) {
         return (
           <li key={id} className={state}>
             <span className="dot" aria-hidden="true" />
-            {STEP_TITLES[id]}
+            {stepTitle(id)}
           </li>
         );
       })}

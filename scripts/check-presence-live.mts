@@ -53,8 +53,32 @@ ok(live.length === 2 && live[0].userId === "u1", "deduped by user, oldest first"
 noteStreamEnd("u1");
 live = liveStreams(T0 + 11000);
 ok(live.length === 1 && live[0].userId === "u2", "ended stream leaves the map");
-// Ancient opens do not linger forever.
+// Ancient opens do not linger forever — but only when nobody is still here.
+// A stream whose socket died stops heartbeating, so its liveness stops being
+// refreshed, and the sweep catches it after the window.
 ok(liveStreams(T0 + 11 * 60 * 1000).length === 0, "10-minute stream cap sweeps orphans");
+
+// The bug this fixes: a listener playing for twenty minutes is not an orphan.
+// Their presence heartbeat (every 15s while playing) refreshes liveness without
+// moving `since`, so the duration keeps counting from the moment the track began.
+noteStreamStart(sam, T0 + 20 * 60 * 1000);
+notePresence(sam, T0 + 20 * 60 * 1000);
+ok(
+  liveStreams(T0 + 25 * 60 * 1000).some((s) => s.userId === "u1"),
+  "a stream that keeps heartbeating stays listed past the window"
+);
+// ...and its displayed start time is still the original one, not the refresh.
+const samLive = liveStreams(T0 + 25 * 60 * 1000).find((s) => s.userId === "u1");
+ok(
+  samLive !== undefined && samLive.since.getTime() === T0 + 20 * 60 * 1000,
+  "while the displayed duration keeps counting from the original start"
+);
+// A stream that stops heartbeating is swept — that is the orphan case.
+noteStreamStart(rita, T0 + 20 * 60 * 1000);
+ok(
+  !liveStreams(T0 + 31 * 60 * 1000).some((s) => s.userId === "u2"),
+  "a stream that stops heartbeating is swept as an orphan"
+);
 
 console.log(`  ${passed}/${passed + failed} presence-live assertions passed`);
 if (failed > 0) process.exit(1);

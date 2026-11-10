@@ -98,6 +98,7 @@ function publicEntryFor(routePath: string) {
 const OPEN_BY_DESIGN: Record<string, string> = {
   "/api/links": "returns track metadata for a signed-in listener; the proxy is the only check, which is correct because a signed-out visitor must not see the track at all",
   "/brand": "public brand artwork with nothing behind it; it reads no session and exposes no station state, so there is nothing for a check to protect",
+  "/firmware": "serves a compiled binary behind an HMAC-signed URL expiring in ten minutes rather than a session, because the browser flasher fetches the manifest part itself and does not send cookies. The path is unguessable and short-lived, the manifest that mints it is admin-gated, and revoking a screen deletes the file — so the only thing it exposes is the exact bytes that operator was already about to flash",
 };
 
 const SELF_CHECKS: { name: string; re: RegExp }[] = [
@@ -108,6 +109,12 @@ const SELF_CHECKS: { name: string; re: RegExp }[] = [
   { name: "adminFetch", re: /await\s+adminFetch\s*\(/ },
   { name: "verifyHmac", re: /verifyHmac\s*\(/ },
   { name: "isSetupComplete", re: /isSetupComplete\s*\(\s*\)/ },
+  // Wall screens authenticate with a bearer token, not a session. Without this
+  // the gate check would read every device route as unauthenticated and demand
+  // it be added to OPEN_BY_DESIGN — which is capped at five and already holds
+  // two entries, and which would be exactly the wrong place for a route that
+  // really does refuse every caller it cannot authenticate.
+  { name: "deviceAuth", re: /await\s+deviceAuth\s*\(/ },
 ];
 
 // -------------------------------------------------------- the routes
@@ -172,6 +179,62 @@ ok(
   Object.keys(OPEN_BY_DESIGN).length <= 5,
   `routes with no check of their own stay rare (${Object.keys(OPEN_BY_DESIGN).length})`
 );
+
+// -------------------------------------------------------- shared firmware
+
+/**
+ * The shared-firmware routes are the newest way to put bytes on a wall, so their
+ * gate needs to be asserted here rather than assumed from the generic pass:
+ * the admin half must establish an admin session and refuse it with 403, the
+ * device half must authenticate the screen's bearer token, neither may appear on
+ * the PUBLIC list, and neither response may be cacheable.
+ */
+{
+  const adminSrc = readFileSync(path.join(REPO, "app/api/admin/firmware/ota/route.ts"), "utf8");
+  const adminCode = scrub(adminSrc);
+  const deviceCode = scrub(readFileSync(path.join(REPO, "app/api/devices/ota/route.ts"), "utf8"));
+
+  const adminAuth = scrub(readFileSync(path.join(REPO, "lib/admin-auth.ts"), "utf8"));
+
+  ok(
+    /requireAdmin/.test(adminCode) && /getServerSession\s*\(/.test(adminAuth) && /isAdmin/.test(adminAuth),
+    "the shared-firmware admin route authenticates through the shared admin gate"
+  );
+  ok(
+    /prisma\.user\.findUnique/.test(adminAuth),
+    "...which re-reads the account, so a demoted operator loses access without signing out"
+  );
+  ok(
+    !/function\s+requireAdmin/.test(adminCode),
+    "...and the route does not keep a second, weaker copy of that check"
+  );
+  ok(
+    (adminCode.match(/status:\s*403/g) ?? []).length >= 3,
+    "each admin handler (read, upload, publish/withdraw) refuses a non-admin with 403"
+  );
+  ok(/no-store/.test(adminSrc), "and every answer from it is uncacheable");
+  ok(/MAX_FIRMWARE_BYTES/.test(adminCode), "the upload is bounded by the shared firmware ceiling");
+
+  ok(/await\s+deviceAuth\s*\(/.test(deviceCode), "the device artifact stream authenticates the screen");
+  ok(/no-store/.test(readFileSync(path.join(REPO, "app/api/devices/ota/route.ts"), "utf8")), "...and its bytes are not cached");
+
+  ok(!isPublicPath("/api/admin/firmware/ota"), "the admin shared-firmware route is not on the PUBLIC list");
+  // Screens have no session, so /api/devices is deliberately open at the proxy
+  // and each route authenticates itself. The artifact stream must ride that
+  // existing entry rather than adding one of its own.
+  ok(
+    publicEntryFor("/api/devices/ota")?.path === "/api/devices",
+    "the device artifact stream is covered by the existing self-authenticating /api/devices entry"
+  );
+  ok(
+    GATED_PREFIXES.some((p) => "/api/admin/firmware/ota".startsWith(p + "/")),
+    "...and both sit under a gated prefix, so the proxy cannot skip them"
+  );
+  ok(
+    !PUBLIC_ENTRIES.some((p) => /firmware|ota/i.test(p.path)),
+    "no firmware/OTA path was added to the PUBLIC allowlist"
+  );
+}
 
 // -------------------------------------------------------- the checker checks itself
 

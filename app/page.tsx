@@ -48,6 +48,17 @@ import {
 // where the two would otherwise get confused.
 const APP_NAME = "Subwave Listener";
 
+// Multiple artists arrive from the backend joined with a semicolon
+// ("Ninajirachi;Porter Robinson"). Show them as separate people, not as a
+// single string with punctuation. Used at display sites only; the raw value is
+// what we store and search with.
+const formatArtists = (artist: string | null | undefined): string =>
+  (artist || "")
+    .split(";")
+    .map((a) => a.trim())
+    .filter(Boolean)
+    .join(" & ");
+
 function playReminderChime(): void {
   try {
     const Ctx = window.AudioContext || (window as any).webkitAudioContext;
@@ -912,6 +923,7 @@ export default function Home() {
   // polls that change nothing apply silently instead of snapshotting.
   const lastCommitSigRef = useRef<string | null>(null);
   const lastLineupRef = useRef<string | null>(null);
+  const lastLinksFetchedRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (status === "authenticated" && (session?.user as any)?.isApproved) {
@@ -1035,9 +1047,30 @@ export default function Home() {
             const leadMs = Math.min(Math.max(bufSec, 0), 60) * 1000;
             const cur = newState?.current;
             let serverStart = NaN;
-            if (np?.title && cur && cur.title === np.title && cur.startedAt) {
+            // Match on the stable identity (subsonic_id) first; fall back to an
+            // exact title match for feeds that don't carry an id. The exact-title
+            // match alone was the failure mode: a curly apostrophe, a "feat.",
+            // a live-set title, or any re-render difference left serverStart at
+            // NaN, which made audibleAt "now" and promoted the art ~bufferSeconds
+            // early. That is the "changes over a few seconds early" symptom.
+            const sameTrack = np?.subsonic_id && cur?.subsonic_id
+              ? np.subsonic_id === cur.subsonic_id
+              : Boolean(np?.title && cur?.title && cur.title === np.title);
+            if (sameTrack && cur?.startedAt) {
               const t = Date.parse(cur.startedAt);
               if (Number.isFinite(t) && t <= Date.now()) serverStart = t;
+            }
+            // cur.startedAt can be missing (state not yet loaded) or the two
+            // feeds can disagree on identity — but now-playing carries its own
+            // start time (unix seconds), so use it rather than snapping to "now".
+            if (!Number.isFinite(serverStart) && np?.timestamp) {
+              const t = Number(np.timestamp) * 1000;
+              if (Number.isFinite(t) && t <= Date.now()) serverStart = t;
+            }
+            if (!Number.isFinite(serverStart)) {
+              plog.warn("promote: no usable start time, committing immediately", {
+                np: np?.subsonic_id, cur: cur?.subsonic_id, titleMatch: cur?.title === np?.title,
+              });
             }
             const audibleAt = Number.isFinite(serverStart) ? serverStart + leadMs : Date.now();
             wait = audibleAt - Date.now();
@@ -1261,6 +1294,18 @@ export default function Home() {
     // Session-gated independently of the feed: even a populated lineup must
     // not reach for links signed out.
     if (status !== "authenticated" || !(session?.user as any)?.isApproved) return;
+
+    const np = stationData?.nowPlaying;
+    if (!np?.subsonic_id) return;
+
+    // De-dupe: the effect can re-fire when `status` or `session` change identity
+    // between polls (next-auth hands back a fresh object on some renders), and a
+    // re-fetch for a track we already have links for is pure waste — the server
+    // has the answer cached in SongLinkCache and would just echo it. Track the
+    // last id we asked about and skip when nothing has moved.
+    const id = np.subsonic_id;
+    if (lastLinksFetchedRef.current === id) return;
+    lastLinksFetchedRef.current = id;
     fetchDirectLinks();
   }, [stationData?.nowPlaying?.subsonic_id, status, session]);
 
@@ -1700,7 +1745,7 @@ export default function Home() {
         if (trackExplicit) plog.info("lock screen explicit tag", { title, suffix: explicitSuffix });
         navigator.mediaSession.metadata = new MediaMetadata({
           title: suffixed,
-          artist: np.artist || stationName,
+          artist: formatArtists(np.artist) || stationName,
           album: np.album || stationName,
           artwork: [
             { src: artworkUrl, sizes: '512x512', type: 'image/jpeg' },
@@ -1762,7 +1807,7 @@ export default function Home() {
       const data = await res.json().catch(() => ({}));
       plog.info("block response", { status: res.status, data });
       if (res.ok) {
-        const what = type === "track" ? `"${np.title}"` : type === "album" ? `album "${np.album}"` : np.artist;
+        const what = type === "track" ? `"${np.title}"` : type === "album" ? `album "${np.album}"` : formatArtists(np.artist);
         flashAdminAck(`${what} will never air${data.purged ? ` · ${data.purged} dropped from queue` : ""}. Current play finishes unless skipped.`);
       } else {
         flashAdminAck(data.error || "Block failed.");
@@ -2574,7 +2619,7 @@ export default function Home() {
             <div id="now-playing-info" ref={el => { stepRefs.current[2] = el; }} style={{ position: tourStep === 2 ? "relative" : "static", zIndex: tourStep === 2 ? 1000 : 1 }}>
               <h2 id="now-playing-title" className="track-title" style={{ viewTransitionName: 'now-playing-title', width: 'fit-content' } as any}>{stationData?.nowPlaying?.title || "Ready to Broadcast"}</h2>
               <div id="now-playing-artist" className="track-artist" style={{ viewTransitionName: 'now-playing-artist', width: 'fit-content' } as any}>
-                {stationData?.nowPlaying?.artist || `${stationName} Live`}
+                {formatArtists(stationData?.nowPlaying?.artist) || `${stationName} Live`}
                 {stationData?.nowPlaying?.album ? <span id="now-playing-album" style={{ opacity: 0.85 }}> &middot; {stationData.nowPlaying.album}</span> : null}
                 {stationData?.nowPlaying?.year ? <span style={{ opacity: 0.7 }}> &bull; {stationData.nowPlaying.year}</span> : null}
               </div>
@@ -2594,7 +2639,7 @@ export default function Home() {
                 <div id="now-playing-links-container" style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
                   <a 
                     id="now-playing-link-spotify"
-                    href={directLinks.spotify || `https://open.spotify.com/search/${encodeURIComponent(`track:"${stationData.nowPlaying.title}" artist:"${stationData.nowPlaying.artist}"${stationData.nowPlaying.album ? ` album:"${stationData.nowPlaying.album}"` : ''}${stationData.nowPlaying.year ? ` year:${stationData.nowPlaying.year}` : ''}`)}`}
+                    href={directLinks.spotify || `https://open.spotify.com/search/${encodeURIComponent(`track:"${stationData.nowPlaying.title}" artist:"${stationData.nowPlaying.artist.split(";")[0].trim()}"${stationData.nowPlaying.album ? ` album:"${stationData.nowPlaying.album}"` : ''}${stationData.nowPlaying.year ? ` year:${stationData.nowPlaying.year}` : ''}`)}`}
                     target="_blank" 
                     rel="noreferrer"
                     className="music-link"
@@ -2604,7 +2649,7 @@ export default function Home() {
                   </a>
                   <a 
                     id="now-playing-link-apple"
-                    href={directLinks.apple || `https://music.apple.com/search?term=${encodeURIComponent(`${stationData.nowPlaying.title} ${stationData.nowPlaying.artist}${stationData.nowPlaying.album ? ` ${stationData.nowPlaying.album}` : ''}`)}`}
+                    href={directLinks.apple || `https://music.apple.com/search?term=${encodeURIComponent(`${stationData.nowPlaying.title} ${stationData.nowPlaying.artist.split(";")[0].trim()}${stationData.nowPlaying.album ? ` ${stationData.nowPlaying.album}` : ''}`)}`}
                     target="_blank" 
                     rel="noreferrer"
                     className="music-link"
@@ -2647,7 +2692,7 @@ export default function Home() {
                       {getNextSong().title}
                     </div>
                     <div id="up-next-artist" style={{ viewTransitionName: 'up-next-artist', width: 'fit-content', maxWidth: '100%',fontSize: "0.85rem", color: "var(--color-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: "0.15rem" } as any}>
-                      <span style={{ color: "var(--color-text)" }}>{getNextSong().artist}</span>
+                      <span style={{ color: "var(--color-text)" }}>{formatArtists(getNextSong().artist)}</span>
                       {getNextSong().album && <span> &middot; {getNextSong().album}</span>}
                       {getNextSong().year && <span> &middot; {getNextSong().year}</span>}
                     </div>
@@ -2749,7 +2794,7 @@ export default function Home() {
                         {track.title}
                       </div>
                       <div id={`next-playing-artist-${i}`} style={{ viewTransitionName: `coming-up-artist-${i}`, width: 'fit-content', maxWidth: '100%',fontSize: "0.85rem", color: "var(--color-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: "0.25rem" } as any}>
-                        <span style={{ color: "var(--color-text)" }}>{track.artist}</span>
+                        <span style={{ color: "var(--color-text)" }}>{formatArtists(track.artist)}</span>
                         {track.album && <span> &middot; {track.album}</span>}
                       </div>
                     </div>
