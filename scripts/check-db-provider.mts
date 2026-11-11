@@ -69,6 +69,13 @@ ok(maskOf(null) === "", "null masks to empty");
 ok(maskOf(undefined) === "", "undefined masks to empty");
 
 // ---- provider detection: explicit setting wins, URL scheme is the fallback ----
+// The update pipeline builds with the station's own env, which carries
+// DB_PROVIDER and DATABASE_URL. Default parameters would read those when a
+// case passes undefined, so clear them for the duration of these assertions.
+const savedProvider = process.env.DB_PROVIDER;
+const savedUrl = process.env.DATABASE_URL;
+delete process.env.DB_PROVIDER;
+delete process.env.DATABASE_URL;
 ok(dbp.providerFromEnv("postgresql", "file:/x.db") === "postgresql", "explicit postgres beats a sqlite url");
 ok(dbp.providerFromEnv("sqlite", "postgresql://u:p@h/db") === "sqlite", "explicit sqlite beats a postgres url");
 ok(dbp.providerFromEnv("postgres", undefined) === "postgresql", "the postgres alias is accepted");
@@ -79,6 +86,10 @@ ok(dbp.providerFromEnv(undefined, "file:/x.db") === "sqlite", "file url means sq
 ok(dbp.providerFromEnv(undefined, undefined) === "sqlite", "nothing set means sqlite (pre-migration env files)");
 ok(dbp.providerFromEnv(undefined, "") === "sqlite", "an empty url means sqlite");
 ok(dbp.providerFromEnv(undefined, "nonsense") === "sqlite", "an unrecognised url falls back to sqlite");
+if (savedProvider === undefined) delete process.env.DB_PROVIDER;
+else process.env.DB_PROVIDER = savedProvider;
+if (savedUrl === undefined) delete process.env.DATABASE_URL;
+else process.env.DATABASE_URL = savedUrl;
 
 // ---- otherProvider is the cutover direction and must be exact ----
 ok(dbp.otherProvider("sqlite") === "postgresql", "sqlite cuts over to postgres");
