@@ -1,0 +1,392 @@
+import prisma from "@/lib/prisma";
+import { getSubwaveConfig } from "@/lib/subwave";
+import {
+  readJob,
+  writeJob,
+  jobRunning,
+  readSource,
+  isSameSource,
+  shouldNotifyForRef,
+  notifiedRefFor,
+  UPDATE_NOTIFIED_KEY,
+  type UpdateJob,
+  type UpdateChannel,
+} from "@/lib/update";
+import { parseTimeOfDay, isInWindow, minutesInZone, toMinutes } from "./update-time";
+import { pushUpdateToOptedIn } from "@/lib/push";
+import { getUpdateStatus } from "@/lib/update-check";
+import { fetchRelease, fetchBranchHead, listenerCount, runUpdatePipeline, type UpdatePlan } from "@/lib/update-run";
+import { APP_VERSION } from "@/lib/version";
+
+/**
+ * Automatic updates inside a nightly quiet window.
+ *
+ * The operator picks a time window (station time) and the station updates
+ * itself the first minute it finds three things true at once: the window is
+ * open, an update is available on their channel, and nobody is listening.
+ * There is no "update anyway" override here — unlike the manual button, there
+ * is no human watching, so a non-empty or unreadable room means skip the tick
+ * and try again in a minute.
+ */
+
+export const AUTO_UPDATE_KEYS = {
+  enabled: "autoUpdateEnabled",
+  start: "autoUpdateStart",
+  end: "autoUpdateEnd",
+} as const;
+
+export type AutoUpdateSettings = {
+  enabled: boolean;
+  /** "HH:MM" 24-hour, station time. */
+  start: string;
+  end: string;
+};
+
+export type AutoTickInput = {
+  settings: AutoUpdateSettings;
+  /** Station IANA zone; null when the backend could not be reached. */
+  timeZone: string | null;
+  serverNow: Date;
+  updateAvailable: boolean;
+  latestLabel: string | null;
+  channel: UpdateChannel;
+  listeners: number | null;
+  job: UpdateJob | null;
+  /** A failed job this fresh suppresses retries — something is wrong, and
+   * hammering GitHub and the build every minute will not fix it. */
+  failedCooldownMs?: number;
+};
+
+export type AutoTickDecision =
+  | { start: false; reason: string }
+  | { start: true; reason: string };
+
+const FAILED_COOLDOWN_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Should this tick start an update? Pure — the route, the scheduler and the
+ * tests all get the same answer for the same inputs.
+ */
+export function decideAutoTick(input: AutoTickInput): AutoTickDecision {
+  if (!input.settings.enabled) return { start: false, reason: "automatic updates off" };
+  const start = parseTimeOfDay(input.settings.start);
+  const end = parseTimeOfDay(input.settings.end);
+  if (!start || !end) return { start: false, reason: "update window incomplete" };
+  if (start === end) return { start: false, reason: "update window is zero-length" };
+
+  const nowMin =
+    input.timeZone === null
+      ? input.serverNow.getHours() * 60 + input.serverNow.getMinutes()
+      : minutesInZone(input.serverNow, input.timeZone);
+  if (nowMin === null) return { start: false, reason: "station timezone unreadable" };
+  if (!isInWindow(nowMin, toMinutes(start), toMinutes(end))) {
+    return { start: false, reason: "outside the update window" };
+  }
+  if (jobRunning(input.job)) return { start: false, reason: "an update is already running" };
+  if (
+    input.job?.status === "failed" &&
+    Date.now() - Date.parse(input.job.updatedAt) < (input.failedCooldownMs ?? FAILED_COOLDOWN_MS)
+  ) {
+    return { start: false, reason: "last automatic update failed recently" };
+  }
+  if (!input.updateAvailable) return { start: false, reason: "nothing new on this channel" };
+  // Fail closed twice: an unreadable room and an occupied room both wait.
+  // There is no confirm checkbox here — nobody is watching to tick it.
+  if (input.listeners === null) return { start: false, reason: "listener count unreadable" };
+  if (input.listeners > 0) return { start: false, reason: `${input.listeners} listener(s) on air` };
+  return { start: true, reason: `quiet in window, ${input.latestLabel || "update"} available` };
+}
+
+// Station timezone, cached hourly. Anonymous endpoint — no credentials needed,
+// which matters because this runs pre-auth at boot and on every tick.
+const TZ_CACHE_MS = 60 * 60 * 1000;
+let tzCache: { at: number; tz: string | null } | null = null;
+
+export async function resolveStationTimezone(): Promise<string | null> {
+  if (tzCache && Date.now() - tzCache.at < TZ_CACHE_MS) return tzCache.tz;
+  let tz: string | null = null;
+  try {
+    const cfg = await getSubwaveConfig();
+    if (cfg.apiUrl) {
+      const res = await fetch(`${cfg.apiUrl}/state`, { signal: AbortSignal.timeout(10000) });
+      if (res.ok) {
+        const d = (await res.json()) as any;
+        if (typeof d?.timezone === "string" && d.timezone) {
+          // Validate by using it — an unknown zone throws here, not later.
+          minutesInZone(new Date(), d.timezone);
+          tz = d.timezone;
+        }
+      }
+    }
+  } catch {
+    // backend unreachable — caller falls back
+  }
+  tzCache = { at: Date.now(), tz };
+  return tz;
+}
+
+/**
+ * The saved settings, and whether they were actually readable.
+ *
+ * `ok: false` means the database did not answer — a sleeping or suspended
+ * instance, most often. That is NOT the same answer as "the operator switched
+ * automatic updates off", and returning the same shape for both is how the
+ * feature used to switch itself off: a transient read failure produced
+ * `enabled: false`, which the tick then remembered, after which an idle station
+ * never re-read the setting and the update stopped happening for good.
+ *
+ * The defaults are still returned so a caller can render something, but `ok` is
+ * what tells a caller not to believe them.
+ */
+export async function readAutoUpdateSettings(): Promise<{ settings: AutoUpdateSettings; ok: boolean }> {
+  const defaults: AutoUpdateSettings = { enabled: false, start: "", end: "" };
+  try {
+    const rows = await prisma.setting.findMany({
+      where: { key: { in: [AUTO_UPDATE_KEYS.enabled, AUTO_UPDATE_KEYS.start, AUTO_UPDATE_KEYS.end] } },
+    });
+    const get = (k: string) => rows.find((r) => r.key === k)?.value || "";
+    const start = parseTimeOfDay(get(AUTO_UPDATE_KEYS.start)) || "";
+    const end = parseTimeOfDay(get(AUTO_UPDATE_KEYS.end)) || "";
+    return {
+      ok: true,
+      settings: { enabled: get(AUTO_UPDATE_KEYS.enabled) === "true", start, end },
+    };
+  } catch {
+    return { ok: false, settings: defaults };
+  }
+}
+
+/**
+ * One scheduler tick, callable on its own (which is how it is tested against a
+ * scratch station). Returns what it decided; starts the pipeline without
+ * awaiting when the answer is yes.
+ */
+// Last seen auto-update switch, so an idle station with the feature off costs
+// zero queries instead of one settings read per tick. Only the admin panel
+// flips the switch, and opening it is activity — so by the time anyone could
+// have changed it, the fast cadence is already reading fresh again.
+let lastKnownAutoEnabled: boolean | null = null;
+
+export async function runAutoUpdateTick(appDir: string): Promise<AutoTickDecision> {
+  const { anyoneActive } = await import("./activity");
+  const active = anyoneActive();
+  if (!active && lastKnownAutoEnabled === false) {
+    // Off and nobody here: ask nothing, and hang up the pool — lingering
+    // sockets count as "in use" and hold the database awake on their own.
+    // Never under a running job (manual update/rollback mid-pipeline).
+    const { readJob } = await import("./update");
+    const job = await readJob(appDir).catch(() => null);
+    if (job?.status !== "running") {
+      const { disconnectDb } = await import("./prisma");
+      await disconnectDb();
+    }
+    return { start: false, reason: "idle and auto-update off" };
+  }
+  let read = await readAutoUpdateSettings();
+  if (!read.ok) {
+    // The database did not answer — almost always because it is asleep.
+    //
+    // Waking it and returning was the obvious fix and is not enough: the next
+    // tick is twenty minutes away, and by then the database has gone back to
+    // sleep, so the wake would buy nothing and the update would never run. The
+    // wake and the read have to happen in the same tick, which means waiting —
+    // up to three minutes, on a background timer, which is exactly what "wake
+    // the database to do the update" costs.
+    //
+    // Nothing else would have woken it: the wake loop is reachable only from an
+    // incoming request, so with nobody visiting, this is the sole caller that
+    // has to start one. Joining the shared loop means it shares rather than
+    // doubles up if a visitor has already knocked.
+    const { wakeDbInBackground } = await import("./dbwake");
+    const woke = await wakeDbInBackground().catch(() => false);
+    if (!woke) {
+      return { start: false, reason: "database would not wake" };
+    }
+    console.log("[auto-update] database was asleep — woke it and carrying on");
+    read = await readAutoUpdateSettings();
+    if (!read.ok) {
+      return { start: false, reason: "database awake but settings still unreadable" };
+    }
+  }
+  // Only now, with a real answer in hand, is it safe to remember the value.
+  // Latching the default on a failed read is what used to stop automatic
+  // updates permanently: remembered as off, an idle station took the early
+  // return above and never re-read the setting again.
+  const settings = read.settings;
+  lastKnownAutoEnabled = settings.enabled;
+  const [tz, status, listeners, job] = await Promise.all([
+    resolveStationTimezone(),
+    getUpdateStatus().catch(() => null),
+    listenerCount(),
+    readJob(appDir),
+  ]);
+
+  const channel = status?.channel || "release";
+  const decision = decideAutoTick({
+    settings,
+    timeZone: tz,
+    serverNow: new Date(),
+    updateAvailable: status?.updateAvailable === true,
+    latestLabel: status?.latest || null,
+    channel,
+    listeners,
+    job,
+  });
+
+  // A detected update is announced once per ref — but never before its tarball
+  // is downloaded and verified. A notification is a promise that the update is
+  // installable; without the file on disk it would be a guess. This runs even
+  // when the room is occupied (no quiet room needed to TELL someone), and the
+  // staged file is what the pipeline itself installs from.
+  if (status?.updateAvailable && status.latest) {
+    try {
+      await notifyOnce(appDir, channel, status.latest);
+    } catch (e) {
+      console.warn("[auto-update] notify failed:", e instanceof Error ? e.message.slice(0, 150) : String(e).slice(0, 150));
+    }
+  }
+
+  if (!decision.start) return decision;
+
+  let plan: UpdatePlan;
+  try {
+    if (channel === "release") {
+      if (!status?.latest) return { start: false, reason: "release label missing" };
+      const info = await fetchRelease(status.latest);
+      plan = { channel, version: info.version, tag: info.tag, tarballUrl: info.tarballUrl, sha: null, notes: info.notes };
+    } else {
+      const head = await fetchBranchHead(channel);
+      const source = await readSource(appDir);
+      if (isSameSource(source, channel, head.sha)) {
+        return { start: false, reason: "already on this tip" };
+      }
+      plan = {
+        channel,
+        version: `${channel}@${head.sha.slice(0, 7)}`,
+        tag: channel,
+        tarballUrl: head.tarballUrl,
+        sha: head.sha,
+        notes: null,
+      };
+    }
+  } catch (e) {
+    return { start: false, reason: `could not resolve target: ${(e as Error)?.message || "unknown"}` };
+  }
+
+  const newJob: UpdateJob = {
+    status: "running",
+    from: status?.current || "unknown",
+    to: plan.version,
+    backupId: null,
+    startedAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+    log: [`automatic update to ${channel === "release" ? `v${plan.version}` : plan.version} started`],
+    trigger: "auto",
+  };
+  await writeJob(appDir, newJob);
+
+  runUpdatePipeline(appDir, plan).catch(async (e) => {
+    const j = (await readJob(appDir)) || newJob;
+    j.status = "failed";
+    j.error = (e as Error)?.message || "update crashed";
+    await writeJob(appDir, j);
+  });
+
+  return { start: true, reason: decision.reason };
+}
+
+/**
+ * Tell the admins about a ref once — after its tarball is downloaded and
+ * verified, never before. Returns silently when there is nothing new to say.
+ * Staging failures mean "cannot prove it installs": no notification, and the
+ * caller (the tick) treats the update as not actionable this minute.
+ */
+export async function notifyOnce(appDir: string, channel: UpdateChannel, label: string): Promise<void> {
+  // The label is display text ("0.0.3" or "develop@abc1234"); the ref behind it
+  // is what identifies the update exactly.
+  let ref: string;
+  if (channel === "release") {
+    ref = label;
+  } else {
+    const { fetchBranchHead } = await import("@/lib/update-run");
+    ref = (await fetchBranchHead(channel)).sha;
+  }
+  const row = await prisma.setting
+    .findUnique({ where: { key: UPDATE_NOTIFIED_KEY } })
+    .catch(() => null);
+  if (!shouldNotifyForRef(row?.value || null, channel, ref)) return;
+
+  const { ensureStagedTarball } = await import("@/lib/update-run");
+  const { releaseTarballUrl, channelTarballUrl } = await import("@/lib/update");
+  const url = channel === "release" ? releaseTarballUrl(ref) : channelTarballUrl(channel);
+  await ensureStagedTarball(appDir, channel, ref, url);
+
+  const title =
+    channel === "release" ? `Update available: v${ref}` : `Developer update available (${channel}@${ref.slice(0, 7)})`;
+  await pushUpdateToOptedIn(title, "Downloaded and verified — tap to review and install in Admin → System → Software.", "/admin");
+  await prisma.setting.upsert({
+    where: { key: UPDATE_NOTIFIED_KEY },
+    update: { value: notifiedRefFor(channel, ref) },
+    create: { key: UPDATE_NOTIFIED_KEY, value: notifiedRefFor(channel, ref) },
+  });
+}
+
+let timer: ReturnType<typeof setTimeout> | null = null;
+
+/** Someone with the app open: check every minute, as always. */
+const ACTIVE_TICK_MS = 60 * 1000;
+
+/**
+ * Nobody here: check every 20 minutes. The database sleeps after 15 quiet
+ * minutes, so a 60s tick would hold it awake around the clock — which is
+ * exactly what the free plan forbids. 20 minutes clears the sleep window with
+ * margin, so an idle station dozes between ticks; an install starting up to
+ * 20 minutes into its window is the price, and windows are hours long.
+ */
+const IDLE_TICK_MS = 20 * 60 * 1000;
+
+/** Ticking forever, at whatever cadence the station's activity earns. Defensive
+ * throughout: a tick must never throw, or the chain dies with it and the
+ * station silently stops checking. */
+export function startAutoUpdateScheduler(): void {
+  if (timer) return;
+  const tick = () => {
+    runAutoUpdateTick(process.cwd())
+      .then(async (decision) => {
+        // The tick just queried: hang up unless someone is here. Without
+        // this the pool's idle sockets alone hold the database awake.
+        // Two hands-off cases: a pipeline just launched (it is using the
+        // pool right now — disconnecting under it would fail its backup),
+        // and a job already running (a manual update/rollback whose operator
+        // may have closed the tab mid-flight).
+        if (decision.start) return;
+        try {
+          const [{ anyoneActive }, { readJob }, { disconnectDb }] = await Promise.all([
+            import("./activity"),
+            import("./update"),
+            import("./prisma"),
+          ]);
+          if (anyoneActive()) return;
+          const job = await readJob(process.cwd()).catch(() => null);
+          if (job?.status === "running") return;
+          await disconnectDb();
+        } catch {
+          // Housekeeping must never break the chain below.
+        }
+      })
+      .catch((e) => {
+        console.warn("[auto-update] tick failed:", e instanceof Error ? e.message.slice(0, 200) : String(e).slice(0, 200));
+      });
+    // Cadence for the NEXT tick, read live: an admin saving a window is
+    // active, so the faster cadence is already in force when it matters.
+    import("./activity").then(
+      ({ anyoneActive }) => {
+        timer = setTimeout(tick, anyoneActive() ? ACTIVE_TICK_MS : IDLE_TICK_MS);
+      },
+      () => {
+        timer = setTimeout(tick, ACTIVE_TICK_MS);
+      }
+    );
+  };
+  timer = setTimeout(tick, ACTIVE_TICK_MS);
+}

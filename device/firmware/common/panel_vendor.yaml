@@ -1,0 +1,95 @@
+# The panel, defined by the vendor's own init sequence rather than ESPHome's.
+#
+# WHY THIS EXISTS
+# ---------------
+# `model: CUSTOM` tells ESPHome "this panel has no default sequence, the config
+# supplies one", so `init_sequence` becomes the WHOLE thing instead of being
+# appended to a built-in one. That is the only way to send the vendor's 198
+# commands, because appending them to the stock model sends all 391 and stalls
+# on an ACK timeout (see panel.yaml for that story, and for why it matters).
+#
+# The six commands this restores are:
+#
+#   {0x4A, 0x35, 1, 0}      mid driver-IC block, vendor index 32
+#   {0xE0, 0x00, 1, 0}      back to page 0
+#   {0x11, 0x00, 1, 0}      DCS SLPOUT
+#   {0x29, 0x00, 1, 5}      DCS DISPON
+#   {0x11, 0x00, 1, 120}    DCS SLPOUT again
+#   {0x35, 0x00, 1, 0}      DCS TEON
+#
+# Five of those are already appended by ESPHome itself, so the one that actually
+# cannot be obtained any other way is {0x4A, 0x35}.
+#
+# EVERY OPTION IS EXPLICIT because CUSTOM has no defaults to fall back on. The
+# values are the vendor BSP's, cross-checked against what ESPHome's own
+# JC8012P4A1 model reports at boot:
+#
+#   BSP_LCD_H_RES 800, BSP_LCD_V_RES 1280, 2 data lanes, 1 Gbps lane rate,
+#   dpi_clock_freq_mhz 60, RGB565, LCD_RGB_ELEMENT_ORDER_RGB,
+#   hsync 20/20/40, vsync 4/8/20.
+#
+# SELECT IT WITH:  panel_include: panel_vendor.yaml  (edit that line in the build
+# YAML — `-s` on the command line does NOT work here, see the comment there)
+#
+# THIS IS NOT A HOPEFUL APPROXIMATION OF THE VENDOR DRIVER. It IS THE VENDOR
+# DRIVER, more or less. In esp_lcd_jd9365.c, line 123:
+#
+#     jd9365->init = panel_handle->init;     // captured BEFORE being wrapped
+#
+# That is the generic esp_lcd_new_panel_dpi() panel's own init, saved and called
+# again at line 493 ("init MIPI DPI panel failed"). So esp_lcd_jd9365 is the
+# generic DPI panel plus a vendor command list plus a wrapper supplying
+# disp_on_off, invert_color, del and read. Everything ESPHome already has.
+#
+# WHICH MEANS: if this configuration still shows a blank panel, then porting
+# jd9365 is NOT the answer and should not be attempted. The remaining differences
+# between this file and the vendor are:
+#
+#   - num_fbs: vendor 2, ESPHome hardcodes 1. Double buffering avoids stalling on
+#     scanout. It causes tearing at worst, not a blank panel.
+#   - reset pulse: vendor asserts, waits 5ms, releases, waits 10ms, re-asserts,
+#     settles 120ms. ESPHome pulses for 5ms and then waits out the remaining 120ms
+#     before SLPOUT. Comparable, and the settle is not skipped.
+#   - MADCTL/PIXFMT: the driver sets both itself after the commands and warns if
+#     the init sequence set them. ESPHome appends both too.
+#
+# A negative result here therefore points at the hardware or at the panel variant
+# (this unit's label reads JC8012P4A1C; ESPHome's model is JC8012P4A1), not at
+# missing driver support. That is worth knowing before spending days porting
+# something that would not have fixed it.
+#
+# Do not make this the default until it has been seen to work. The honest state
+# of play is that nobody yet knows whether this panel displays under ESPHome at
+# all — which is what the reference project's own firmware is being flashed to
+# find out.
+#
+# A BARE LIST, not a `display:` mapping. display.yaml reads this as
+# `display: !include ${panel_include}`, so anything but the list itself
+# nests one level too deep and validation fails with a list that looks
+# correct and a complaint that 'display' has no 'platform' key. The same
+# trap the screen widget files are written around.
+- platform: mipi_dsi
+  model: CUSTOM
+  id: tft_display
+
+  reset_pin: GPIO27
+  auto_clear_enabled: false
+  color_order: RGB
+
+  dimensions:
+    width: 800
+    height: 1280
+
+  lanes: 2
+  lane_bit_rate: 1000Mbps
+  pclk_frequency: 60MHz
+
+  hsync_pulse_width: 20
+  hsync_back_porch: 20
+  hsync_front_porch: 40
+  vsync_pulse_width: 4
+  vsync_back_porch: 8
+  vsync_front_porch: 20
+
+  # Required: CUSTOM has no default sequence, so this must be the whole thing.
+  init_sequence: !include jc8012p4a1_init.yaml

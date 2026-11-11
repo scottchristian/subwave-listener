@@ -23,6 +23,14 @@ export const REPO = "scottchristian/subwave-listener";
 export const REPO_URL = `https://github.com/${REPO}`;
 
 /**
+ * The upstream project this app is an unofficial companion to. Kept as a
+ * constant (not inline in JSX) so the footer cannot drift from it.
+ */
+export const SUBWAVE_REPO = "perminder-klair/subwave";
+
+export const SUBWAVE_URL = `https://github.com/${SUBWAVE_REPO}`;
+
+/**
  * Is `candidate` newer than `current`?
  *
  * Compares numerically rather than alphabetically, because that is the whole

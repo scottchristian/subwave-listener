@@ -4,6 +4,14 @@ import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
 import { getSubwaveConfig } from "@/lib/subwave";
 import { displayName } from "@/lib/pii";
+import {
+  liteEnabled,
+  liteTrackLikes,
+  litePutLike,
+  liteDeleteLike,
+  invalidateTrackCache,
+  type LikeUser,
+} from "@/lib/lite-cache";
 
 // Mirror a like to the Sub/Wave host's listener likes (POST /like) so the
 // DJ's topLiked/recent signal sees it. Listener endpoint, never the operator
@@ -53,18 +61,28 @@ export async function GET(request: Request) {
     }
     
     try {
-        const likes = await prisma.songLike.findMany({
+        // Limited-communication mode serves the merged answer from a short
+        // memory cache (invalidated on every tap) — the 15s poll behind the
+        // LikeButton must not cost Postgres per tab.
+        const direct = () => prisma.songLike.findMany({
             where: { trackId },
             include: { user: { select: { id: true, name: true, nickname: true, image: true, hideLikeName: true } } },
             orderBy: { createdAt: 'desc' }
         });
+        const likes = await liteTrackLikes(
+            trackId,
+            direct,
+            (row, user: LikeUser) => ({ ...row, user }),
+            (r: { id: string }) => r.id,
+        );
         // Name-hiders appear as Anonymous; nicknames win over sign-in names.
-        // userId stays so counts and own-like detection keep working.
+        // userId stays so counts and own-like detection keep working. A null
+        // user (unresolvable unflushed liker) renders nameless, never crashes.
         const masked = likes.map(l => ({
             ...l,
             user: l.user?.hideLikeName
                 ? { id: l.user.id, name: null, image: null }
-                : { id: l.user.id, name: displayName(l.user), image: l.user.image },
+                : { id: l.user?.id ?? l.userId, name: displayName(l.user), image: l.user?.image ?? null },
         }));
         return NextResponse.json({ likes: masked });
     } catch (error) {
@@ -93,7 +111,11 @@ export async function POST(request: Request) {
     
     try {
         if (action === "like") {
-            const like = await prisma.songLike.upsert({
+            // Buffer the tap when caching; fall back to direct on a broken
+            // cache — a tap must never fail because the mirror is down.
+            const buffered = (await liteEnabled()) ? await litePutLike({ userId, trackId, ...meta }) : null;
+            invalidateTrackCache(trackId);
+            const like = buffered ?? await prisma.songLike.upsert({
                 where: { userId_trackId: { userId, trackId } },
                 update: { ...meta },
                 create: { userId, trackId, ...meta }
@@ -104,6 +126,22 @@ export async function POST(request: Request) {
             await forwardHostLike(trackId, fwd);
             return NextResponse.json({ success: true, like });
         } else if (action === "unlike") {
+            if (await liteEnabled()) {
+                // Deletes apply everywhere at once: a delete that waited for
+                // the flush could resurrect from the Postgres copy.
+                await liteDeleteLike(userId, trackId);
+                try {
+                    await prisma.songLike.delete({
+                        where: { userId_trackId: { userId, trackId } }
+                    });
+                } catch (e: any) {
+                    // Never flushed — nothing to delete upstream.
+                    const code = (e as any)?.code || "";
+                    if (code !== "P2025" && !/P2025/.test((e as Error)?.message || "")) throw e;
+                }
+                invalidateTrackCache(trackId);
+                return NextResponse.json({ success: true });
+            }
             await prisma.songLike.delete({
                 where: { userId_trackId: { userId, trackId } }
             });

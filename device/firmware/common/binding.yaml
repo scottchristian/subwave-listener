@@ -1,0 +1,277 @@
+# ---------------------------------------------------------------------------
+# Handing the generated objects to the C++.
+#
+# EVERY id ESPHome generates is `static` in its own main.cpp, which is internal
+# linkage — so no other translation unit can name it, and there is no header to
+# include. `extern int c_bg;` in a component's own .cpp compiles perfectly and
+# then fails at LINK time with a page of undefined references, which is a long way
+# from the mistake.
+#
+# So the objects are passed across explicitly, once, here. Everything in
+# subwave_display/ui.cpp looks them up by name.
+#
+# WHY BY NAME RATHER THAN BY POSITION. A positional table would still compile if
+# this list and the C++ drifted apart, and would then paint one label's text into
+# another widget with nothing in the log. A name that fails to resolve is reported
+# by name at the moment it is used.
+#
+# This is the ONE place the widget list exists twice — a widget added to a screen
+# must be added here too, and the boot log says so if you forget.
+# ---------------------------------------------------------------------------
+script:
+  - id: bind_widgets
+    mode: single
+    then:
+      # Wait for LVGL's on_boot hook to mark the widget tree ready (with a 2s
+      # safety ceiling), plus a brief settle before binding pointers.
+      - wait_until:
+          condition:
+            lambda: return id(lvgl_ready);
+          timeout: 2s
+      - delay: 200ms
+      # A short, harmless splash so a screen that is mid-boot does not look
+      # dead: one and a half seconds of SUB/WAVE branding while the first state
+      # poll is still in flight. Previously this slot held a magenta-page
+      # diagnostic that existed only to prove the panel could be switched on.
+      - lambda: |-
+          ESP_LOGI("subwave.ui", "panel awake; binding widgets");
+          // The only thing on the glass until the ladder finishes. Said BEFORE the
+          // check rather than only after it fails, so a screen that is working
+          // shows it and watches it clear away, rather than never showing anything.
+          lv_label_set_text(id(status_line), "Checking your network...");
+      - lambda: |-
+          using subwave_display::bind_object;
+          using subwave_display::bind_int;
+          using subwave_display::bind_bool;
+          using subwave_display::bind_uint32;
+          using subwave_display::bind_backlight;
+
+          // ---- -------------------------------------------- the now-playing window
+          bind_object("now_avatar_well", id(now_avatar_well));
+          bind_object("now_avatar", id(now_avatar));
+          bind_object("now_avatar_2_well", id(now_avatar_2_well));
+          bind_object("now_avatar_2", id(now_avatar_2));
+          bind_object("station_logo", id(station_logo));
+          bind_object("live_lamp", id(live_lamp));
+          bind_object("byline_presenter", id(byline_presenter));
+          bind_object("byline_show", id(byline_show));
+          bind_object("byline_runway", id(byline_runway));
+          bind_object("art_layers", id(art_layers));
+          bind_object("art_out", id(art_out));
+          bind_object("art_in", id(art_in));
+          bind_object("track_title", id(track_title));
+          bind_object("track_artist", id(track_artist));
+          bind_object("now_rule", id(now_rule));
+          bind_object("count_signed_in", id(count_signed_in));
+          bind_object("count_signed_label", id(count_signed_label));
+          bind_object("count_listening", id(count_listening));
+          bind_object("count_listening_label", id(count_listening_label));
+          bind_object("btn_skip", id(btn_skip));
+          bind_object("btn_skip_label", id(btn_skip_label));
+          bind_object("status_line", id(status_line));
+
+          // The backlight is not a widget, so it does not go in the widget table —
+          // and the idle controller in ui.cpp cannot reach it with id(backlight)
+          // either, because that helper only exists inside a lambda.
+          bind_backlight(id(backlight));
+
+          // ---- ----------------------------------------------------- the show list
+          bind_object("live_lamp_shows", id(live_lamp_shows));
+          bind_object("shows_station", id(shows_station));
+          bind_object("shows_day", id(shows_day));
+          bind_object("shows_expanded", id(shows_expanded));
+          bind_object("expanded_host", id(expanded_host));
+          bind_object("expanded_tagline", id(expanded_tagline));
+          bind_object("row_0_time", id(row_0_time));
+          bind_object("row_0_name", id(row_0_name));
+          bind_object("row_0_host", id(row_0_host));
+          bind_object("row_0_avatar", id(row_0_avatar));
+          bind_object("row_0_avatar2", id(row_0_avatar2));
+          bind_object("row_0_rule", id(row_0_rule));
+          bind_object("row_1_time", id(row_1_time));
+          bind_object("row_1_name", id(row_1_name));
+          bind_object("row_1_host", id(row_1_host));
+          bind_object("row_1_avatar", id(row_1_avatar));
+          bind_object("row_1_avatar2", id(row_1_avatar2));
+          bind_object("row_1_rule", id(row_1_rule));
+          bind_object("row_2_time", id(row_2_time));
+          bind_object("row_2_name", id(row_2_name));
+          bind_object("row_2_host", id(row_2_host));
+          bind_object("row_2_avatar", id(row_2_avatar));
+          bind_object("row_2_avatar2", id(row_2_avatar2));
+          bind_object("row_2_rule", id(row_2_rule));
+          bind_object("row_3_time", id(row_3_time));
+          bind_object("row_3_name", id(row_3_name));
+          bind_object("row_3_host", id(row_3_host));
+          bind_object("row_3_avatar", id(row_3_avatar));
+          bind_object("row_3_avatar2", id(row_3_avatar2));
+          bind_object("row_3_rule", id(row_3_rule));
+          bind_object("row_4_time", id(row_4_time));
+          bind_object("row_4_name", id(row_4_name));
+          bind_object("row_4_host", id(row_4_host));
+          bind_object("row_4_avatar", id(row_4_avatar));
+          bind_object("row_4_avatar2", id(row_4_avatar2));
+          bind_object("row_4_rule", id(row_4_rule));
+
+          // ---- ----------------------------------------------- the settings window
+          bind_object("settings_title", id(settings_title));
+          bind_object("settings_clock", id(settings_clock));
+          bind_object("settings_rule", id(settings_rule));
+          bind_object("lbl_brightness", id(lbl_brightness));
+          bind_object("lbl_brightness_value", id(lbl_brightness_value));
+          bind_object("lbl_theme", id(lbl_theme));
+          bind_object("lbl_idle", id(lbl_idle));
+          bind_object("lbl_orientation", id(lbl_orientation));
+          bind_object("lbl_skip", id(lbl_skip));
+          bind_object("lbl_cache_stats", id(lbl_cache_stats));
+          bind_object("lbl_clear_cache", id(lbl_clear_cache));
+          // The firmware row's sentence is painted from the OTA snapshot by
+          // ui_refresh_firmware_update(); the title is static YAML and needs no
+          // binding. Binding nothing that is never looked up is deliberate: the
+          // bindings gate fails on a name ui.cpp never reads.
+          bind_object("lbl_update_state", id(lbl_update_state));
+          bind_object("btn_update", id(btn_update));
+          bind_object("lbl_update_action", id(lbl_update_action));
+          bind_object("val_wifi", id(val_wifi));
+          bind_object("val_addr", id(val_addr));
+          bind_object("val_model", id(val_model));
+          bind_object("val_ver", id(val_ver));
+          bind_object("val_up", id(val_up));
+          bind_object("seg_0", id(seg_0));
+          bind_object("seg_1", id(seg_1));
+          bind_object("seg_2", id(seg_2));
+          bind_object("seg_3", id(seg_3));
+          bind_object("seg_4", id(seg_4));
+          bind_object("seg_5", id(seg_5));
+          bind_object("seg_6", id(seg_6));
+          bind_object("seg_7", id(seg_7));
+          bind_object("seg_8", id(seg_8));
+          bind_object("seg_9", id(seg_9));
+
+          // ---- ----------------------------------- the chrome and the setup screen
+          bind_object("window_0", id(window_0));
+          bind_object("window_1", id(window_1));
+          bind_object("window_2", id(window_2));
+          bind_object("setup_wifi_screen", id(setup_wifi_screen));
+          bind_object("setup_qr", id(setup_qr));
+          bind_object("setup_wifi_value", id(setup_wifi_value));
+          bind_object("setup_password_value", id(setup_password_value));
+          bind_object("sleep_hint", id(sleep_hint));
+
+          // ---- ----------------------------------- firmware update dialog
+          // Shown only by ui_show_firmware_prompt(); it never appears because a
+          // release was published, only because somebody asked to install it.
+          bind_object("ota_modal", id(ota_modal));
+          bind_object("ota_modal_title", id(ota_modal_title));
+          bind_object("ota_modal_message", id(ota_modal_message));
+          bind_object("ota_progress_track", id(ota_progress_track));
+          bind_object("ota_progress_fill", id(ota_progress_fill));
+          bind_object("ota_progress_pct", id(ota_progress_pct));
+          bind_object("btn_ota_yes", id(btn_ota_yes));
+          bind_object("ota_yes_label", id(ota_yes_label));
+          bind_object("btn_ota_no", id(btn_ota_no));
+          bind_object("ota_no_label", id(ota_no_label));
+
+          // ---- ----------------------------------- the When Idle dialog
+          // Painted by ui_refresh_idle_dialog() from the same settings the idle
+          // controller reads, so the dialog cannot display a number the screen
+          // is not using. Only the widgets that painter touches are bound; the
+          // static titles and the stepper buttons reach their scripts through
+          // YAML and are never named from C++.
+          bind_object("idle_modal", id(idle_modal));
+          bind_object("btn_idle_stay", id(btn_idle_stay));
+          bind_object("idle_stay_label", id(idle_stay_label));
+          bind_object("btn_idle_dim", id(btn_idle_dim));
+          bind_object("idle_dim_label", id(idle_dim_label));
+          bind_object("btn_idle_off", id(btn_idle_off));
+          bind_object("idle_off_label", id(idle_off_label));
+          bind_object("idle_min_value", id(idle_min_value));
+          bind_object("idle_pct_value", id(idle_pct_value));
+          bind_object("idle_off_value", id(idle_off_value));
+          bind_object("row_idle_min", id(row_idle_min));
+          bind_object("row_idle_pct", id(row_idle_pct));
+          bind_object("row_idle_off", id(row_idle_off));
+          bind_object("idle_modal_note", id(idle_modal_note));
+
+          // Shown exactly while the backlight is off, and kept up through the
+          // gesture that wakes it: the first touch on a dark screen must not
+          // also press the widget it landed on.
+          bind_object("wake_shield", id(wake_shield));
+
+          // ---- ----------------------------------- presenter modal overlay
+          bind_object("presenter_modal", id(presenter_modal));
+          bind_object("presenter_card", id(presenter_card));
+          bind_object("presenter_name", id(presenter_name));
+          bind_object("btn_presenter_close", id(btn_presenter_close));
+          bind_object("presenter_close_label", id(presenter_close_label));
+          bind_object("presenter_rule", id(presenter_rule));
+          bind_object("presenter_avatar_well", id(presenter_avatar_well));
+          bind_object("presenter_avatar", id(presenter_avatar));
+          bind_object("presenter_role", id(presenter_role));
+          bind_object("presenter_tagline", id(presenter_tagline));
+          bind_object("presenter_nav_panel", id(presenter_nav_panel));
+          bind_object("presenter_count_lbl", id(presenter_count_lbl));
+          bind_object("btn_presenter_prev", id(btn_presenter_prev));
+          bind_object("btn_presenter_next", id(btn_presenter_next));
+          bind_object("presenter_prev_label", id(presenter_prev_label));
+          bind_object("presenter_next_label", id(presenter_next_label));
+
+          // ---- the palette and the window state -------------------------
+          #
+          // These are `globals:`, not objects. ESPHome's own id() overload for
+          // a GlobalsComponent already returns T&, so `&id(c_bg)` is an int* that
+          // stays valid for the life of the program — which is what the C++ needs,
+          // because the asleep flag changes underneath it.
+          //
+          // ONLY THE ONES ui.cpp actually reads. window_index, window_queued,
+          // art_fading, theme_is_day and device_claimed are read by YAML lambdas,
+          // which reach them through id() directly and never come through here —
+          // binding them looked like coverage without being any.
+          bind_int("c_bg", &id(c_bg));
+          bind_int("c_surface", &id(c_surface));
+          bind_int("c_text", &id(c_text));
+          bind_int("c_muted", &id(c_muted));
+          bind_int("c_rule", &id(c_rule));
+          bind_int("c_accent", &id(c_accent));
+          bind_bool("screen_asleep", &id(screen_asleep));
+
+          subwave_display::bind_client(id(display_client));
+          id(display_client)->bind_runtime_images(
+              id(station_logo_image),
+              id(now_avatar_image),
+              id(row_0_avatar_image),
+              id(row_1_avatar_image),
+              id(row_2_avatar_image),
+              id(row_3_avatar_image),
+              id(row_4_avatar_image)
+          );
+          id(display_client)->bind_modal_avatar_image(id(presenter_avatar_image));
+          id(display_client)->bind_secondary_avatar_images(
+              id(now_avatar_2_image),
+              id(row_0_avatar2_image),
+              id(row_1_avatar2_image),
+              id(row_2_avatar2_image),
+              id(row_3_avatar2_image),
+              id(row_4_avatar2_image)
+          );
+          id(display_client)->bind_art_controls(
+              id(art_in_image),
+              id(art_out_image),
+              &id(art_slot),
+              &id(art_primed),
+              &id(art_queued),
+              &id(art_fading),
+              id(art_swap)
+          );
+          id(display_client)->set_connectivity_reported_script(id(connectivity_reported));
+      - delay: 500ms
+      - lambda: subwave_display::bindings_report_missing();
+      # LAST. Until this runs, every lookup is null and every painter is a crash.
+      # The first state poll can land inside bind_widgets' one-second delay on a
+      # fast network, so this is not a theoretical ordering.
+      - lambda: subwave_display::ui_mark_ready();
+      # Start the idle controller LAST, after every binding exists. Calling it
+      # earlier — directly from on_boot, which is where it used to live — would
+      # dereference screen_asleep and the backlight before bind_widgets has
+      # populated them, which is a store access fault and a reboot loop.
+      - script.execute: idle_boot

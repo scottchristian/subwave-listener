@@ -1,16 +1,40 @@
 "use client";
 
 import { useSession, signIn, signOut } from "next-auth/react";
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useMemo, useState, useRef, useCallback } from "react";
 import Image from "next/image";
 import LoadingDots from "@/app/components/LoadingDots";
 import LikeButton from "@/app/components/LikeButton";
 import LikedSongsPanel from "@/app/components/LikedSongsPanel";
 import SkillsPanel from "@/app/components/SkillsPanel";
+import SchedulePanel from "@/app/components/SchedulePanel";
 import { STATION } from "@/lib/station";
 import { plog, setVerbose } from "@/lib/log";
 import { canSkipAsListener, parseSkipVisibility, type SkipVisibility } from "@/lib/skipvisibility";
-import { APP_VERSION, REPO_URL } from "@/lib/version";
+import { shouldHeartbeat } from "@/lib/heartbeat";
+import {
+  parseStillListening,
+  onPlaybackChange,
+  onStillListeningTick,
+  onStillListeningConfirm,
+  onStillListeningStopNow,
+  shouldStopStream,
+  initialStillListeningState,
+  STILL_LISTENING_DEFAULTS,
+  type StillListeningConfig,
+  type StillListeningState,
+  type StillListeningPopup,
+} from "@/lib/still-listening";
+import { APP_VERSION, REPO_URL, SUBWAVE_URL } from "@/lib/version";
+import { computeShowRunway } from "@/lib/show-runway";
+import {
+  shouldWriteRememberCookie,
+  rememberCookieHeader,
+  forgetRememberCookieHeader,
+  hasRememberCookie,
+  SIGNIN_ATTEMPT_KEY,
+} from "@/lib/remember-login";
+import { defaultHour12 } from "@/lib/update-time";
 import { resolveTrackDuration, isDurationDiscredited } from "@/lib/trackduration";
 // The request ladder: what we tell a listener while the booth has not answered.
 import {
@@ -23,6 +47,42 @@ import {
 // renaming their station should not rename the project, and the version footer is
 // where the two would otherwise get confused.
 const APP_NAME = "Subwave Listener";
+
+// Multiple artists arrive from the backend joined with a semicolon
+// ("Ninajirachi;Porter Robinson"). Show them as separate people, not as a
+// single string with punctuation. Used at display sites only; the raw value is
+// what we store and search with.
+const formatArtists = (artist: string | null | undefined): string =>
+  (artist || "")
+    .split(";")
+    .map((a) => a.trim())
+    .filter(Boolean)
+    .join(" & ");
+
+function playReminderChime(): void {
+  try {
+    const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx: AudioContext = new Ctx();
+    const t0 = ctx.currentTime;
+    [523.25, 523.25, 659.25].forEach((freq, i) => {
+      const t = t0 + i * 0.35;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.25, t + 0.05);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.3);
+      osc.start(t);
+      osc.stop(t + 0.32);
+    });
+    setTimeout(() => ctx.close().catch(() => {}), 1500);
+  } catch {
+    // Silence is acceptable — the popup carries the message either way.
+  }
+}
 
 // Minimal icons
 const PlayIcon = () => (
@@ -143,9 +203,62 @@ const SongCountdown = ({ nowPlaying, bufferSeconds, duration }: { nowPlaying: an
   );
 };
 
+// How far ahead to warm album art. The station keeps a handful of tracks
+// queued, and one or two is enough to cover the gap between a track entering
+// the queue and its cover being needed; the rest is headroom for the queue
+// changing shape faster than a track airs.
+const UPCOMING_ART_PREFETCH = 3;
+
 export default function Home() {
   const { data: session, status } = useSession();
   const [isPlaying, setIsPlaying] = useState(false);
+
+  // Set the "remember me" cookie on an authenticated session.
+  //
+  // It is deliberately NOT cleared when status goes "unauthenticated". That
+  // status does not mean "signed out": next-auth's SessionProvider swallows a
+  // failed /api/auth/session (a sleeping database, a dropped connection) and
+  // resolves to unauthenticated with no error, so clearing here deleted the
+  // cookie on precisely the arrival the cookie exists for — the listener coming
+  // back after the database had gone to sleep. One auto sign-in, then never
+  // again, and the button was back for good with nothing to explain why.
+  //
+  // Signing out is an explicit act, so that is the only thing that clears it
+  // (signOutAndForget, below).
+  useEffect(() => {
+    if (!shouldWriteRememberCookie(status, hasRememberCookie(document.cookie))) return;
+    document.cookie = rememberCookieHeader();
+  }, [status, session]);
+
+  // Sign out, and forget that this browser has ever been here. Order matters
+  // only in that the cookie must be gone before we navigate, so the next
+  // /signin does not read it and start an OAuth round-trip nobody asked for.
+  const signOutAndForget = () => {
+    if (typeof document !== "undefined") {
+      document.cookie = forgetRememberCookieHeader();
+      try {
+        // Signing out should not inherit a spent budget: clear the claim so a
+        // later, deliberate sign-in gets the automatic courtesy try again.
+        window.localStorage.removeItem(SIGNIN_ATTEMPT_KEY);
+      } catch {
+        // Private browsing can refuse storage; the cookie is what matters.
+      }
+    }
+    return signOut({ callbackUrl: "/" });
+  };
+  // "Are you still listening?" Armed when play starts: the stop lands one
+  // window out, the reminder one offset before it. Confirming pushes the stop
+  // out by a whole window (never restarts the clock from the press).
+  const [slCfg, setSlCfg] = useState<StillListeningConfig>(STILL_LISTENING_DEFAULTS);
+  // The whole cutoff lives in one ref as a pure state machine (see
+  // lib/still-listening.ts). A ref rather than several useStates because the
+  // one-second tick reads and writes it thousands of times without re-rendering,
+  // and because a split across refs is how it came to disagree with itself.
+  const slState = useRef<StillListeningState>(initialStillListeningState);
+  const prevSlPopup = useRef<StillListeningPopup>(null);
+  // Mirrored into React because the popup is rendered. Written only when the
+  // machine's popup actually changes.
+  const [slPopup, setSlPopup] = useState<StillListeningPopup>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [stationData, setStationData] = useState<any>(null);
   const [appStateData, setAppStateData] = useState<any>(null);
@@ -244,12 +357,35 @@ export default function Home() {
   // Likes open as an overlay so the <audio> element stays mounted and the
   // stream keeps playing. (Navigating to /likes unmounts the player.)
   const [showLikes, setShowLikes] = useState(false);
+  // Schedule popup from the account menu. Mounts fresh each open, so the
+  // day always starts on today.
+  const [showSchedule, setShowSchedule] = useState(false);
+  // Clock face for every time in the app. Account-wide (saved to the server),
+  // falling back to the device locale until the user chooses.
+  const [hour12, setHour12] = useState<boolean>(() => defaultHour12());
+  const saveHour12 = async (v: boolean) => {
+    setHour12(v);
+    try {
+      await fetch("/api/profile/clock", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hour12: v }),
+      });
+    } catch {
+      // Display-only: the face changes regardless; the server catches up.
+    }
+  };
   // Header account menu + self nickname.
   const [userMenuOpen, setUserMenuOpen] = useState(false);
 
   // Skills open as an overlay for the same reason likes do — a route change
   // unmounts the <audio> element and the stream stops.
   const [showSkills, setShowSkills] = useState(false);
+  // Host/guest profile popup. Same overlay treatment as likes, for the same
+  // reason: the stream must keep playing. One popup, whoever is tapped — the
+  // data only ever carries one host plus guests, so "multiple hosts" means
+  // every face on air opens its own card.
+  const [showHost, setShowHost] = useState<{ name: string; avatar: string; role: string; tagline?: string; context?: string } | null>(null);
   // Fixed viewport position for the menu, clamped on-screen at open time.
   const [userMenuPos, setUserMenuPos] = useState<{ top: number; left: number } | null>(null);
   const userMenuBtnRef = useRef<HTMLButtonElement | null>(null);
@@ -501,6 +637,8 @@ export default function Home() {
        if (typeof d.verboseLogging === "boolean") setVerbose(d.verboseLogging);
        if (typeof d.explicitSuffix === "boolean") setExplicitSuffix(d.explicitSuffix);
          if (d.skipVisibility) setSkipVisibility(parseSkipVisibility(d.skipVisibility));
+         if (typeof d.clockHour12 === "boolean") setHour12(d.clockHour12);
+         if (d.stillListening) setSlCfg(parseStillListening(d.stillListening));
          if (typeof d.headerListeners === "boolean") setHeaderListeners(d.headerListeners);
          if (typeof d.headerWeather === "boolean") setHeaderWeather(d.headerWeather);
          if (typeof d.headerVibe === "boolean") setHeaderVibe(d.headerVibe);
@@ -520,6 +658,10 @@ export default function Home() {
   useEffect(() => {
     if (status !== "authenticated") return;
     const load = () => {
+      // No heartbeat from a buried, silent, untouched tab — that write every
+      // 15s is what keeps the database awake all night. Playing audio always
+      // counts, even hidden: listening from a pocket is using.
+      if (!shouldHeartbeat(isPlaying)) return;
       fetch("/api/presence")
         .then(r => r.json())
         .then(d => { if (typeof d.signedIn === "number") setSignedInCount(d.signedIn); })
@@ -528,8 +670,74 @@ export default function Home() {
     load();
     const id = setInterval(load, 15000);
     return () => clearInterval(id);
-  }, [status]);
-  
+  }, [status, isPlaying]);
+
+  // Arm the idle cutoff on play, disarm on a manual stop. An automatic stop
+  // marks itself in the state machine so this does not sweep the "stopped"
+  // popup away — the listener is owed the explanation. This effect also runs
+  // when the config arrives, which is how a fast Play still gets a cutoff.
+  const slPrevPlaying = useRef(false);
+  useEffect(() => {
+    const wasPlaying = slPrevPlaying.current;
+    slPrevPlaying.current = isPlaying;
+    const next = onPlaybackChange(slState.current, {
+      isPlaying,
+      wasPlaying,
+      enabled: slCfg.enabled,
+      minutes: slCfg.minutes,
+      nowMs: Date.now(),
+    });
+    if (next !== slState.current) slState.current = next;
+    // Only a real transition updates the popup; a no-op returns the same object.
+    if (next.popup !== prevSlPopup.current) {
+      prevSlPopup.current = next.popup;
+      setSlPopup(next.popup);
+    }
+  }, [isPlaying, slCfg.enabled, slCfg.minutes]);
+
+  // One-second watch while playing: chime + popup at the reminder, stop at
+  // the end. Wall-clock on purpose — a stream left running in a buried tab is
+  // exactly what this is for.
+  useEffect(() => {
+    if (!isPlaying || !slCfg.enabled || slState.current.stopAtMs === null) return;
+    const id = setInterval(() => {
+      const before = slState.current;
+      const { state, action } = onStillListeningTick(before, {
+        nowMs: Date.now(),
+        reminderMs: slCfg.reminderMinutes * 60 * 1000,
+        enabled: slCfg.enabled,
+      });
+      if (state === before) return;
+      slState.current = state;
+      if (state.popup !== prevSlPopup.current) {
+        prevSlPopup.current = state.popup;
+        setSlPopup(state.popup);
+      }
+      if (action === "remind") playReminderChime();
+      // Pausing is what aborts the stream request, which is what ends the
+      // server-side session — so this call IS the stop, not just the UI.
+      if (action === "stop" && shouldStopStream(state, intendedPlayRef.current)) togglePlay();
+    }, 1000);
+    return () => clearInterval(id);
+  }, [isPlaying, slCfg.enabled, slCfg.minutes, slCfg.reminderMinutes]);
+
+  const slConfirm = () => {
+    const next = onStillListeningConfirm(slState.current, slCfg.minutes);
+    if (next === slState.current) return;
+    slState.current = next;
+    prevSlPopup.current = next.popup;
+    setSlPopup(next.popup);
+  };
+
+  const slStopNow = () => {
+    const next = onStillListeningStopNow(slState.current);
+    if (next === slState.current) return;
+    slState.current = next;
+    prevSlPopup.current = next.popup;
+    setSlPopup(next.popup);
+    if (shouldStopStream(next, intendedPlayRef.current)) togglePlay();
+  };
+
   const [tourStep, setTourStep] = useState(-1);
   const [tooltipStyle, setTooltipStyle] = useState<{ top?: string; bottom?: string; left?: string; right?: string; width?: string; transform?: string; opacity: number }>({ top: '50%', left: '50%', transform: 'translate(-50%, -50%)', opacity: 0 });
   // Spotlight frame geometry around the tour target. One fixed frame glides
@@ -547,6 +755,12 @@ export default function Home() {
     status === "authenticated" && !!(session?.user as any)?.isApproved;
   const stepRefs = useRef<(HTMLElement | null)[]>([]);
   const STATION_API = STATION.backendUrl;
+  // Covers already requested. The poll replaces appStateData every 5s, so
+  // without this the same three requests would be re-issued on every tick.
+  const warmedArtRef = useRef<string[]>([]);
+  // One registration per page load. The poll replaces state every 5s, and
+  // register() is idempotent but not free.
+  const swRegisteredRef = useRef(false);
 
   // The station's name belongs to the SUB/WAVE host, and /state already carries it
   // in every poll the player was making anyway — it was being fetched and ignored.
@@ -557,6 +771,130 @@ export default function Home() {
   // first poll lands, and the build-time metadata that cannot wait for a fetch.
   const hostStationName: string | null = appStateData?.station?.name || null;
   const stationName = hostStationName || STATION.name;
+
+  // Album art, fetched before it is needed.
+  //
+  // /api/cover/{subsonic_id} is served `immutable, max-age=86400`, so an image
+  // the browser has already seen is free forever — including the second listen
+  // of the same album, which costs no network at all. That is the whole trick
+  // here: this is not a cache we have to build or invalidate, it is the
+  // browser's own, already keyed by a URL that is stable per track.
+  //
+  // The Up Next card was already warming it, incidentally, by rendering that
+  // same URL. Relying on that left three gaps: the card only renders while
+  // playing, `upcoming` may hold a single entry, and nothing guaranteed the
+  // request had been made before the swap. So the fetch is now explicit and
+  // unconditional — every cover in the upcoming window is requested as soon as
+  // the poll reveals it, which is minutes before it can become now-playing, so
+  // the swap at the audible moment finds the bytes already local.
+  //
+  // Bounded on purpose. `upcoming` is untrusted in length, and a window of
+  // hundreds would quietly become a bandwidth bill aimed at the host.
+  useEffect(() => {
+    const upcoming = Array.isArray(appStateData?.upcoming) ? appStateData.upcoming : [];
+    const warmed = warmedArtRef.current;
+    for (const track of upcoming.slice(0, UPCOMING_ART_PREFETCH)) {
+      const id = track?.subsonic_id;
+      if (typeof id !== "string" || !id || warmed.includes(id)) continue;
+      // Detached from the document on purpose: this is for the HTTP cache, which
+      // is what the swap reads from. An <img> in the tree would be laid out and
+      // painted for artwork nobody may be looking at.
+      //
+      // `window.Image`, not `Image`: this module imports next/image as `Image`,
+      // and that shadow would otherwise make this a component constructor.
+      const img = new window.Image();
+      img.decoding = "async";
+      img.src = `${STATION_API}/api/cover/${id}`;
+      warmed.push(id);
+    }
+    // Remember only the recent window. The station plays for ever, so an
+    // unbounded list of warmed ids would be a slow leak of the same kind.
+    if (warmed.length > UPCOMING_ART_PREFETCH * 4) {
+      warmed.splice(0, warmed.length - UPCOMING_ART_PREFETCH * 4);
+    }
+  }, [appStateData]);
+
+  // --- album art, crossfaded -------------------------------------------------
+  //
+  // Two layers, because a single <img> cannot fade between pictures: swapping
+  // its src replaces the pixels outright, and React's `key` remount means the
+  // new element has no prior opacity to transition from. So the outgoing cover
+  // stays mounted underneath while the incoming one decodes on top of it.
+  //
+  // The ORDER is the part that matters. The outgoing layer is held at full
+  // opacity until the incoming one has actually loaded, and only then do both
+  // transition together. Fading the old cover out as soon as the new track is
+  // announced would fade to an empty box and then fade back in whenever the
+  // fetch was slow — a visible flash, which is worse than no transition at all.
+  //
+  // Pure CSS opacity, deliberately. This is the same transition the removed
+  // commit animation was, and that one used flushSync and a hand-rolled
+  // document.startViewTransition from a promise callback — re-entering React's
+  // renderer from outside its own scheduling. Two declarative layers with a
+  // transition cannot do that. check-commit-path.mts keeps it that way.
+  const ART_FADE_MS = 650;
+
+  const artSrc: string | null = stationData?.nowPlaying?.subsonic_id
+    ? `${STATION_API}/api/cover/${stationData.nowPlaying.subsonic_id}`
+    : null;
+  const [art, setArt] = useState<{ incoming: string; outgoing: string | null; ready: boolean } | null>(null);
+  // The src currently displayed, so a re-render with identical data is a no-op.
+  const artCurrentRef = useRef<string | null>(null);
+  const artFadeFrameRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!artSrc) {
+      artCurrentRef.current = null;
+      setArt(null);
+      return;
+    }
+    if (artCurrentRef.current === artSrc) return;
+    const outgoing = artCurrentRef.current;
+    artCurrentRef.current = artSrc;
+    setArt({ incoming: artSrc, outgoing, ready: false });
+  }, [artSrc]);
+
+  const handleArtLoaded = useCallback(() => {
+    // One frame's grace before revealing the incoming layer. Album art is
+    // normally already decoded — that is the entire point of the prefetch and
+    // the worker cache — so without deferring past the mount, the load and the
+    // state flip often land in the same frame and the browser skips the
+    // transition entirely. The fade then happens consistently, cached or not.
+    if (artFadeFrameRef.current !== null) cancelAnimationFrame(artFadeFrameRef.current);
+    artFadeFrameRef.current = requestAnimationFrame(() => {
+      artFadeFrameRef.current = null;
+      setArt((a) => (a ? { ...a, ready: true } : a));
+    });
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (artFadeFrameRef.current !== null) cancelAnimationFrame(artFadeFrameRef.current);
+    },
+    []
+  );
+
+  // The service worker is what makes a cover permanent rather than a 24-hour
+  // loan — but it was only ever registered on the push path, which is
+  // admin-only and gated on notification permission. Every ordinary listener
+  // was therefore running with no worker at all, so the album art cache the
+  // worker now holds could never be filled for them. Registration moves here,
+  // once, for anyone actually listening.
+  //
+  // The effect runs on the signed-out path too (it is above the early returns,
+  // so React registers it either way), hence the guard: a visitor who is not
+  // listening gets no worker and no storage spent on their behalf.
+  useEffect(() => {
+    if (!isApprovedPlayer) return;
+    if (swRegisteredRef.current) return;
+    if (!("serviceWorker" in navigator)) return;
+    swRegisteredRef.current = true;
+    void navigator.serviceWorker.register("/sw.js").catch(() => {
+      // A worker we cannot install is not an error worth surfacing — the
+      // artwork falls back to the HTTP cache, which still covers a session.
+      swRegisteredRef.current = false;
+    });
+  }, [isApprovedPlayer]);
 
   // The track length, for the countdown, the skip lock and the lock screen.
   // now-playing.duration is null whenever the host does not know it (untracked
@@ -585,12 +923,25 @@ export default function Home() {
   // polls that change nothing apply silently instead of snapshotting.
   const lastCommitSigRef = useRef<string | null>(null);
   const lastLineupRef = useRef<string | null>(null);
+  const lastLinksFetchedRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (status === "authenticated" && (session?.user as any)?.isApproved) {
       if (localStorage.getItem("hasSeenTour") !== "true") {
         setTourStep(0);
       }
+    }
+
+    // Listeners only. The backend answers strangers too, but our page must
+    // not learn track metadata it has no right to act on: every downstream
+    // effect (links, likes) would fire it at session-gated routes, 401, and
+    // leave title/artist/album sitting in server logs. Clearing on logout
+    // matters as much as gating on load — a dead session must not keep
+    // polling with a stale lineup.
+    if (status !== "authenticated" || !(session?.user as any)?.isApproved) {
+      setStationData(null);
+      lastSubsonicRef.current = null;
+      return;
     }
 
     let isCancelled = false;
@@ -624,23 +975,46 @@ export default function Home() {
               if (t.newState) setAppStateData(t.newState);
             };
 
-            // Snapshotting identical DOM flashes white for nothing — only
-            // animate when something visible actually changed. Hidden tabs
-            // can't transition (InvalidStateError) — apply directly.
-            if (animate && !document.hidden && typeof window !== "undefined" && typeof (document as any).startViewTransition === "function") {
-              import("react-dom").then((ReactDOM) => {
-                try {
-                  const t = (document as any).startViewTransition(() => {
-                    ReactDOM.flushSync(doApply);
-                  });
-                  if (t && typeof t.catch === "function") t.catch(() => doApply());
-                } catch {
-                  doApply();
-                }
-              });
-            } else {
-              doApply();
-            }
+            // Commits are applied directly. No View Transition, no flushSync,
+            // no dynamic import — and that is a decision, not an omission.
+            //
+            // The player used to animate this commit:
+            //
+            //   import("react-dom").then(() =>
+            //     document.startViewTransition(() => flushSync(doApply)))
+            //
+            // It is decoration. The lineup updates perfectly well without it, and
+            // a smooth transition is not worth a page that will not draw.
+            //
+            // On the blame, because the wrong version of this comment was here
+            // for a while and cost hours: this pattern was suspected of causing
+            // the React #310 outage ("Rendered more hooks than during the previous
+            // render", thrown on this component's first hook, useSession, naming
+            // nothing near the cause). It was not the cause. The cause was a
+            // useMemo added below this component's two early returns, which made
+            // signed-out and signed-in visitors run paths of different lengths —
+            // scripts/check-hooks-after-return.mts guards that, and named the real
+            // one on its first run.
+            //
+            // The suspicion was understandable rather than foolish: this code sits
+            // on a poll that runs only for an authenticated, approved session, so
+            // a pure rendering fault looked exactly like an account fault — every
+            // affected visitor had a session, every unaffected one did not, and
+            // incognito "worked" because incognito was signed out. That asymmetry
+            // is the expensive part, and it is worth avoiding the next time too.
+            //
+            // So the bans stand on their own merits rather than on that theory.
+            // flushSync renders synchronously from a promise callback React did
+            // not schedule, and calling document.startViewTransition by hand puts
+            // a commit at a moment React did not choose. Neither earns its keep
+            // for a fade.
+            //
+            // If the transition ever comes back, it goes through ONE transition
+            // React itself schedules — startTransition, or a view transition React
+            // owns — with no flushSync and no dynamic react-dom import. That is
+            // the shape check-commit-path.mts would have to be widened to allow,
+            // and it is a deliberate edit rather than an accident.
+            doApply();
           };
 
           // Content signature for change-gating: fresh objects every poll
@@ -673,9 +1047,30 @@ export default function Home() {
             const leadMs = Math.min(Math.max(bufSec, 0), 60) * 1000;
             const cur = newState?.current;
             let serverStart = NaN;
-            if (np?.title && cur && cur.title === np.title && cur.startedAt) {
+            // Match on the stable identity (subsonic_id) first; fall back to an
+            // exact title match for feeds that don't carry an id. The exact-title
+            // match alone was the failure mode: a curly apostrophe, a "feat.",
+            // a live-set title, or any re-render difference left serverStart at
+            // NaN, which made audibleAt "now" and promoted the art ~bufferSeconds
+            // early. That is the "changes over a few seconds early" symptom.
+            const sameTrack = np?.subsonic_id && cur?.subsonic_id
+              ? np.subsonic_id === cur.subsonic_id
+              : Boolean(np?.title && cur?.title && cur.title === np.title);
+            if (sameTrack && cur?.startedAt) {
               const t = Date.parse(cur.startedAt);
               if (Number.isFinite(t) && t <= Date.now()) serverStart = t;
+            }
+            // cur.startedAt can be missing (state not yet loaded) or the two
+            // feeds can disagree on identity — but now-playing carries its own
+            // start time (unix seconds), so use it rather than snapping to "now".
+            if (!Number.isFinite(serverStart) && np?.timestamp) {
+              const t = Number(np.timestamp) * 1000;
+              if (Number.isFinite(t) && t <= Date.now()) serverStart = t;
+            }
+            if (!Number.isFinite(serverStart)) {
+              plog.warn("promote: no usable start time, committing immediately", {
+                np: np?.subsonic_id, cur: cur?.subsonic_id, titleMatch: cur?.title === np?.title,
+              });
             }
             const audibleAt = Number.isFinite(serverStart) ? serverStart + leadMs : Date.now();
             wait = audibleAt - Date.now();
@@ -896,8 +1291,23 @@ export default function Home() {
       }
     };
     
+    // Session-gated independently of the feed: even a populated lineup must
+    // not reach for links signed out.
+    if (status !== "authenticated" || !(session?.user as any)?.isApproved) return;
+
+    const np = stationData?.nowPlaying;
+    if (!np?.subsonic_id) return;
+
+    // De-dupe: the effect can re-fire when `status` or `session` change identity
+    // between polls (next-auth hands back a fresh object on some renders), and a
+    // re-fetch for a track we already have links for is pure waste — the server
+    // has the answer cached in SongLinkCache and would just echo it. Track the
+    // last id we asked about and skip when nothing has moved.
+    const id = np.subsonic_id;
+    if (lastLinksFetchedRef.current === id) return;
+    lastLinksFetchedRef.current = id;
     fetchDirectLinks();
-  }, [stationData?.nowPlaying?.subsonic_id]);
+  }, [stationData?.nowPlaying?.subsonic_id, status, session]);
 
   useEffect(() => {
     const first = audioRef.current;
@@ -1335,7 +1745,7 @@ export default function Home() {
         if (trackExplicit) plog.info("lock screen explicit tag", { title, suffix: explicitSuffix });
         navigator.mediaSession.metadata = new MediaMetadata({
           title: suffixed,
-          artist: np.artist || stationName,
+          artist: formatArtists(np.artist) || stationName,
           album: np.album || stationName,
           artwork: [
             { src: artworkUrl, sizes: '512x512', type: 'image/jpeg' },
@@ -1397,7 +1807,7 @@ export default function Home() {
       const data = await res.json().catch(() => ({}));
       plog.info("block response", { status: res.status, data });
       if (res.ok) {
-        const what = type === "track" ? `"${np.title}"` : type === "album" ? `album "${np.album}"` : np.artist;
+        const what = type === "track" ? `"${np.title}"` : type === "album" ? `album "${np.album}"` : formatArtists(np.artist);
         flashAdminAck(`${what} will never air${data.purged ? ` · ${data.purged} dropped from queue` : ""}. Current play finishes unless skipped.`);
       } else {
         flashAdminAck(data.error || "Block failed.");
@@ -1713,6 +2123,41 @@ export default function Home() {
     }
   };
 
+  // ---------------------------------------------------------------------------
+  // Everything above this line is a hook, and that is load-bearing.
+  //
+  // The two early returns below mean a signed-out visitor and a signed-in one
+  // run DIFFERENT LENGTHS of this component: the visitor returns before reaching
+  // anything below. A hook placed under those guards is therefore called only
+  // once a session exists, and React answers the difference with #310, "Rendered
+  // more hooks than during the previous render" — thrown on this component's
+  // FIRST hook, which names useSession() and nothing near the cause. That is
+  // exactly how a useMemo for the persona index took the player down for every
+  // signed-in listener while /admin and every signed-out visitor were fine.
+  //
+  // So: no hooks below the guards. Deriving values and defining functions is
+  // fine, because those run unconditionally — only hook CALLS change the count.
+  // scripts/check-hooks-after-return.mts enforces all of this.
+  // ---------------------------------------------------------------------------
+
+  // The listener-facing now-playing feed reshapes activeShow.persona and its
+  // guests down to {id, name, avatar} — no tagline, because a listener needs a
+  // name and a face, not a biography. The host overlay card is exactly where the
+  // tagline belongs, so it was always rendering a nameless biography: the
+  // overlay opened on any show with an empty tagline line and a bare role.
+  //
+  // /api/schedule carries the same personas WITH taglines, keyed by the same id,
+  // and it is already being polled — so the fix is to resolve through it rather
+  // than to ask the station for more. Guests get the same treatment, and a
+  // persona who has been deleted since the show was saved simply has none.
+  const personaIndex = useMemo(() => {
+    const byId = new Map<string, any>();
+    for (const p of (scheduleData?.personas as any[]) || []) {
+      if (p && typeof p.id === "string") byId.set(p.id, p);
+    }
+    return byId;
+  }, [scheduleData]);
+
   if (status === "loading") {
     return <div className="container centered-column" style={{ justifyContent: "center" }}>Loading...</div>;
   }
@@ -1783,7 +2228,7 @@ export default function Home() {
                 <strong>Access denied.</strong><br/><br/>
                 This account no longer has access to the station.
               </p>
-              <button id="btn-signout-denied" className="primary-btn" onClick={() => signOut({ callbackUrl: "/" })}>Sign out</button>
+              <button id="btn-signout-denied" className="primary-btn" onClick={signOutAndForget}>Sign out</button>
             </>
           ) : (
             <>
@@ -1791,7 +2236,7 @@ export default function Home() {
                 <strong>Your account is pending approval.</strong><br/><br/>
                 The station owner will review your request shortly. This screen lets you in automatically once approved.
               </p>
-              <button id="btn-signout-pending" className="primary-btn" onClick={() => signOut({ callbackUrl: "/" })}>Sign out</button>
+              <button id="btn-signout-pending" className="primary-btn" onClick={signOutAndForget}>Sign out</button>
             </>
           )}
         </div>
@@ -1799,32 +2244,56 @@ export default function Home() {
     );
   }
 
+  // Resolve avatars via the /api proxy on the station's NextJS frontend
+  const getAvatarSrc = (avatarPath: string) => {
+    if (!avatarPath) return "";
+    if (avatarPath.startsWith("http")) return avatarPath;
+    // Ensure the path has /api prefix
+    const normalizedPath = avatarPath.startsWith("/api/")
+      ? avatarPath
+      : `/api${avatarPath.startsWith("/") ? "" : "/"}${avatarPath}`;
+    return `${STATION_API}${normalizedPath}`;
+  };
+
+
+  // Merge a now-playing persona/guest with its schedule twin. Never trust the
+  // enriched shape alone: this also feeds the avatars, which must keep working
+  // before /api/schedule has landed (or if it fails).
+  const withPersonaDetail = (person: any) => {
+    if (!person) return null;
+    const full = typeof person.id === "string" ? personaIndex.get(person.id) : null;
+    return {
+      ...person,
+      name: person.name || full?.name || "",
+      avatar: getAvatarSrc(person.avatar || full?.avatar),
+      tagline: person.tagline || full?.tagline || "",
+    };
+  };
+
   // Helper for rendering avatars
   const renderAvatars = () => {
-    const p = stationData?.activeShow?.persona || stationData?.dj;
-    const guests = stationData?.activeShow?.guests || [];
-    
-    // Resolve avatars via the /api proxy on the station's NextJS frontend
-    const getAvatarSrc = (avatarPath: string) => {
-      if (!avatarPath) return "";
-      if (avatarPath.startsWith("http")) return avatarPath;
-      // Ensure the path has /api prefix
-      const normalizedPath = avatarPath.startsWith("/api/") 
-        ? avatarPath 
-        : `/api${avatarPath.startsWith("/") ? "" : "/"}${avatarPath}`;
-      return `${STATION_API}${normalizedPath}`;
-    };
+    // The on-air persona when a show owns the air, else whoever the station has
+    // selected (which does carry a tagline already).
+    const p = withPersonaDetail(stationData?.activeShow?.persona) || withPersonaDetail(stationData?.dj);
+    const guests = (stationData?.activeShow?.guests || []).map(withPersonaDetail).filter(Boolean);
 
     return (
       <div id="avatars-container" ref={el => { stepRefs.current[5] = el; }} className="avatars" style={{ marginTop: "1rem", display: "flex", gap: "1rem", alignItems: "center", position: tourStep === 5 ? "relative" : "static", zIndex: tourStep === 5 ? 1000 : 1 }}>
         {p ? (
-          <div id="avatar-host-container" style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-            <img id="avatar-host-img" src={getAvatarSrc(p.avatar)} alt={p.name} className="avatar" title={p.name} style={{ width: "64px", height: "64px" }} />
+          <button
+            id="avatar-host-container"
+            type="button"
+            onClick={() => setShowHost({ name: p.name, avatar: p.avatar, role: "Host", tagline: p.tagline })}
+            aria-label={`About ${p.name}`}
+            title={`About ${p.name}`}
+            style={{ display: "flex", alignItems: "center", gap: "1rem", background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", textAlign: "left" }}
+          >
+            <img id="avatar-host-img" src={p.avatar} alt={p.name} className="avatar" title={p.name} style={{ width: "64px", height: "64px" }} />
             <div id="avatar-host-text-container">
               <strong id="avatar-host-name">{p.name}</strong>
               <div id="avatar-host-role" style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>Host</div>
             </div>
-          </div>
+          </button>
         ) : (
           <div id="avatar-autodj-container" style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
             <Image id="avatar-autodj-img" src={STATION.logo} alt="Auto DJ" className="avatar" title="Auto DJ" style={{ width: "64px", height: "64px", objectFit: "contain", background: "rgba(0,0,0,0.2)" }} width={64} height={64} />
@@ -1835,13 +2304,21 @@ export default function Home() {
           </div>
         )}
         {guests.map((g: any, index: number) => (
-          <div id={`avatar-guest-container-${index}`} key={g.id} style={{ display: "flex", alignItems: "center", gap: "1rem" }}>
-            <img id={`avatar-guest-img-${index}`} src={getAvatarSrc(g.avatar)} alt={g.name} className="avatar" title={g.name} style={{ width: "64px", height: "64px" }} />
+          <button
+            id={`avatar-guest-container-${index}`}
+            key={g.id || `${g.name}-${index}`}
+            type="button"
+            onClick={() => setShowHost({ name: g.name, avatar: g.avatar, role: "Guest", tagline: g.tagline })}
+            aria-label={`About ${g.name}`}
+            title={`About ${g.name}`}
+            style={{ display: "flex", alignItems: "center", gap: "1rem", background: "none", border: "none", padding: 0, cursor: "pointer", color: "inherit", font: "inherit", textAlign: "left" }}
+          >
+            <img id={`avatar-guest-img-${index}`} src={g.avatar} alt={g.name} className="avatar" title={g.name} style={{ width: "64px", height: "64px" }} />
             <div id={`avatar-guest-text-container-${index}`}>
               <strong id={`avatar-guest-name-${index}`}>{g.name}</strong>
               <div id={`avatar-guest-role-${index}`} style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>Guest</div>
             </div>
-          </div>
+          </button>
         ))}
       </div>
     );
@@ -1859,55 +2336,24 @@ export default function Home() {
   const nextShow = stationData?.context?.showHandover?.nextShow;
   const nextShowText = nextShow ? `Until ${nextShow.startsAt}` : null;
 
-  // Show runway from the weekly grid: when the current show ends + what
-  // follows. Grid keys are station-zone JS weekdays ('0' = Sunday) of hourly
-  // show ids; show/host names resolve off the schedules lists. All arithmetic
-  // runs in station wall-clock minutes, converted to an epoch only at the end.
-  const showRunway = (() => {
-    try {
-      const grid = scheduleData?.schedule;
-      const shows = scheduleData?.shows;
-      const personas = scheduleData?.personas;
-      const tz = scheduleData?.timezone;
-      if (!grid || !shows || !tz) return null;
-      const parts: Record<string, string> = {};
-      for (const p of new Intl.DateTimeFormat("en-AU", {
-        timeZone: tz, weekday: "short", hour: "numeric", minute: "numeric", hour12: false,
-      }).formatToParts(new Date())) parts[p.type] = p.value;
-      const dayKeys = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-      const day = dayKeys.indexOf(parts.weekday);
-      const hour = parseInt(parts.hour, 10) % 24;
-      const minute = parseInt(parts.minute, 10) % 60;
-      if (day < 0 || !Number.isFinite(hour) || !Number.isFinite(minute)) return null;
-      const idAt = (d: number, h: number) => {
-        const row = grid[String(((d % 7) + 7) % 7)];
-        return Array.isArray(row) ? row[((h % 24) + 24) % 24] : null;
-      };
-      const curId = idAt(day, hour);
-      if (!curId) return null;
-      let d = day, h = hour, guard = 0;
-      do { h++; if (h >= 24) { h = 0; d++; } guard++; }
-      while (guard < 72 && idAt(d, h) === curId);
-      if (guard >= 72) return null;
-      const nowMin = (day * 24 + hour) * 60 + minute;
-      const endMin = (d * 24 + h) * 60;
-      const leftMin = Math.max(endMin - nowMin, 1);
-      const showById = (id: string) => (shows as any[]).find((s: any) => s.id === id);
-      const nextShowObj = idAt(d, h) ? showById(idAt(d, h)) : null;
-      const nextHost = nextShowObj
-        ? (personas as any[])?.find((p: any) => p.id === nextShowObj.personaId)?.name || null
-        : null;
-      return {
-        endMs: Date.now() + leftMin * 60000,
-        leftMin,
-        nextName: nextShowObj?.name || null,
-        nextHost,
-        tz,
-      };
-    } catch {
-      return null;
-    }
-  })();
+  // Show runway: when the current show ends + what follows. The weekly grid is
+  // the default answer, but an operator can pin a different show to the air for
+  // a bounded window, and the station itself resolves who is on air by takeover
+  // first — so the runway answers from the same precedence, in lib/show-runway.ts
+  // (pure, so the precedence is tested rather than eyeballed).
+  const showRunway = computeShowRunway({
+    grid: scheduleData?.schedule,
+    shows: scheduleData?.shows,
+    personas: scheduleData?.personas,
+    timezone: scheduleData?.timezone,
+    override: scheduleData?.override,
+    now: Date.now(),
+  });
+  // Hoisted out of the JSX: the null checks below are on the persona, and a
+  // property path is not narrowed across a callback boundary.
+  const runwayNext = showRunway?.nextPersona || null;
+  const runwayNextName = showRunway?.nextName || null;
+  const runwayNextHost = showRunway?.nextHost || null;
 
   const fmtDurLeft = (mins: number) => {
     const h = Math.floor(mins / 60);
@@ -1916,7 +2362,7 @@ export default function Home() {
   };
   const fmtClock = (ms: number, tz: string) => {
     try {
-      return new Intl.DateTimeFormat("en-AU", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: false }).format(new Date(ms));
+      return new Intl.DateTimeFormat("en-AU", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12 }).format(new Date(ms));
     } catch {
       return "";
     }
@@ -1973,6 +2419,9 @@ export default function Home() {
           >
             <UserIcon />
             Account
+            <svg aria-hidden="true" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" style={{ transition: "transform 0.2s ease", transform: userMenuOpen ? "rotate(180deg)" : "none" }}>
+              <path d="M6 9l6 6 6-6" />
+            </svg>
           </button>
           {userMenuOpen && (
             <>
@@ -1996,6 +2445,32 @@ export default function Home() {
                   <button id="btn-save-my-nickname" onClick={saveMyNickname} className="primary-btn" style={{ width: "auto", padding: "0.5rem 0.75rem", fontSize: "0.8rem" }}>Save</button>
                 </div>
                 <button id="btn-liked-songs" ref={el => { stepRefs.current[8] = el; }} onClick={() => { setUserMenuOpen(false); setShowLikes(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer", position: tourStep === 8 ? "relative" : "static", zIndex: tourStep === 8 ? 1000 : 1 }}>Liked Songs</button>
+                <button id="btn-shows" onClick={() => { setUserMenuOpen(false); setShowSchedule(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>Shows</button>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.75rem", padding: "0.6rem 0.75rem" }}>
+                  <span style={{ fontSize: "0.95rem", color: "var(--color-text)" }}>Time format</span>
+                  <span role="group" aria-label="Time format" style={{ display: "inline-flex", borderRadius: "8px", overflow: "hidden", border: "1px solid var(--color-border)" }}>
+                    {([["12-hour", true], ["24-hour", false]] as const).map(([label, v]) => (
+                      <button
+                        key={label}
+                        id={`btn-clock-${v ? "12" : "24"}`}
+                        type="button"
+                        aria-pressed={hour12 === v}
+                        onClick={() => saveHour12(v)}
+                        style={{
+                          padding: "0.4rem 0.7rem",
+                          fontSize: "0.8rem",
+                          fontWeight: 700,
+                          border: "none",
+                          cursor: "pointer",
+                          background: hour12 === v ? "var(--color-accent)" : "transparent",
+                          color: hour12 === v ? "#fff" : "var(--color-muted)",
+                        }}
+                      >
+                        {label}
+                      </button>
+                    ))}
+                  </span>
+                </div>
                 {/* Only rendered when the grant exists. Without it the entry is
                     absent from the DOM entirely — a hidden control rather than a
                     disabled one, so the feature is unknown to other listeners.
@@ -2025,7 +2500,7 @@ export default function Home() {
                 {(session.user as any)?.isAdmin && (
                   <a id="btn-admin" href="/admin" style={{ display: "block", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)" }}>Admin</a>
                 )}
-                <button id="btn-signout" onClick={() => signOut({ callbackUrl: "/" })} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>Sign out</button>
+                <button id="btn-signout" onClick={signOutAndForget} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>Sign out</button>
               </div>
             </>
           )}
@@ -2055,15 +2530,34 @@ export default function Home() {
           <div id="section-now-playing" className="card" style={{ position: "static" }}>
             <div id="now-playing-art-frame" style={{ position: "relative" }}>
               <div id="now-playing-art-container" className="album-art-container" style={{ viewTransitionName: 'now-playing-art-container', position: "relative" } as any}>
-              {stationData?.nowPlaying?.subsonic_id ? (
-                <img
-                  id="now-playing-art"
-                  key={stationData.nowPlaying.subsonic_id}
-                  src={`${STATION_API}/api/cover/${stationData.nowPlaying.subsonic_id}`}
-                  alt="Cover"
-                  className="album-art"
-                  style={{ viewTransitionName: 'now-playing-art', filter: (!isPlaying && !isLoading) ? "grayscale(1)" : "none", transition: "filter 0.4s ease" } as any}
-                />
+              {art ? (
+                <>
+                  {/* The outgoing cover, underneath. aria-hidden because it is
+                      decoration by the time anyone can perceive it. */}
+                  {art.outgoing && (
+                    <img
+                      key={`out-${art.outgoing}`}
+                      src={art.outgoing}
+                      alt=""
+                      aria-hidden="true"
+                      className="album-art album-art-layer"
+                      style={{ opacity: art.ready ? 0 : 1, transition: `opacity ${ART_FADE_MS}ms ease` }}
+                    />
+                  )}
+                  <img
+                    id="now-playing-art"
+                    key={`in-${art.incoming}`}
+                    src={art.incoming}
+                    alt="Cover"
+                    className="album-art album-art-layer"
+                    onLoad={handleArtLoaded}
+                    style={{
+                      opacity: art.ready ? 1 : 0,
+                      transition: `opacity ${ART_FADE_MS}ms ease`,
+                      filter: (!isPlaying && !isLoading) ? "grayscale(1)" : "none",
+                    }}
+                  />
+                </>
               ) : (
                 <div id="now-playing-art-fallback" style={{width:"100%", height:"100%", background:"#1a3050", borderRadius: "var(--radius)", viewTransitionName: 'now-playing-art', filter: (!isPlaying && !isLoading) ? "grayscale(1)" : "none", transition: "filter 0.4s ease"} as any} />
               )}
@@ -2125,7 +2619,7 @@ export default function Home() {
             <div id="now-playing-info" ref={el => { stepRefs.current[2] = el; }} style={{ position: tourStep === 2 ? "relative" : "static", zIndex: tourStep === 2 ? 1000 : 1 }}>
               <h2 id="now-playing-title" className="track-title" style={{ viewTransitionName: 'now-playing-title', width: 'fit-content' } as any}>{stationData?.nowPlaying?.title || "Ready to Broadcast"}</h2>
               <div id="now-playing-artist" className="track-artist" style={{ viewTransitionName: 'now-playing-artist', width: 'fit-content' } as any}>
-                {stationData?.nowPlaying?.artist || `${stationName} Live`}
+                {formatArtists(stationData?.nowPlaying?.artist) || `${stationName} Live`}
                 {stationData?.nowPlaying?.album ? <span id="now-playing-album" style={{ opacity: 0.85 }}> &middot; {stationData.nowPlaying.album}</span> : null}
                 {stationData?.nowPlaying?.year ? <span style={{ opacity: 0.7 }}> &bull; {stationData.nowPlaying.year}</span> : null}
               </div>
@@ -2145,7 +2639,7 @@ export default function Home() {
                 <div id="now-playing-links-container" style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
                   <a 
                     id="now-playing-link-spotify"
-                    href={directLinks.spotify || `https://open.spotify.com/search/${encodeURIComponent(`track:"${stationData.nowPlaying.title}" artist:"${stationData.nowPlaying.artist}"${stationData.nowPlaying.album ? ` album:"${stationData.nowPlaying.album}"` : ''}${stationData.nowPlaying.year ? ` year:${stationData.nowPlaying.year}` : ''}`)}`}
+                    href={directLinks.spotify || `https://open.spotify.com/search/${encodeURIComponent(`track:"${stationData.nowPlaying.title}" artist:"${stationData.nowPlaying.artist.split(";")[0].trim()}"${stationData.nowPlaying.album ? ` album:"${stationData.nowPlaying.album}"` : ''}${stationData.nowPlaying.year ? ` year:${stationData.nowPlaying.year}` : ''}`)}`}
                     target="_blank" 
                     rel="noreferrer"
                     className="music-link"
@@ -2155,7 +2649,7 @@ export default function Home() {
                   </a>
                   <a 
                     id="now-playing-link-apple"
-                    href={directLinks.apple || `https://music.apple.com/search?term=${encodeURIComponent(`${stationData.nowPlaying.title} ${stationData.nowPlaying.artist}${stationData.nowPlaying.album ? ` ${stationData.nowPlaying.album}` : ''}`)}`}
+                    href={directLinks.apple || `https://music.apple.com/search?term=${encodeURIComponent(`${stationData.nowPlaying.title} ${stationData.nowPlaying.artist.split(";")[0].trim()}${stationData.nowPlaying.album ? ` ${stationData.nowPlaying.album}` : ''}`)}`}
                     target="_blank" 
                     rel="noreferrer"
                     className="music-link"
@@ -2164,7 +2658,7 @@ export default function Home() {
                     <AppleMusicIcon /> Apple Music
                   </a>
                 </div>
-                <LikeButton trackId={stationData?.nowPlaying?.subsonic_id || (stationData?.nowPlaying ? `${stationData.nowPlaying.artist} - ${stationData.nowPlaying.title}` : "")} currentUserId={(session.user as any)?.id} title={stationData?.nowPlaying?.title} artist={stationData?.nowPlaying?.artist} album={stationData?.nowPlaying?.album} />
+                <LikeButton trackId={stationData?.nowPlaying?.subsonic_id || (stationData?.nowPlaying ? `${stationData.nowPlaying.artist} - ${stationData.nowPlaying.title}` : "")} currentUserId={(session.user as any)?.id} title={stationData?.nowPlaying?.title} artist={stationData?.nowPlaying?.artist} album={stationData?.nowPlaying?.album} playing={isPlaying} />
                 </div>
               )}
             </div>
@@ -2198,7 +2692,7 @@ export default function Home() {
                       {getNextSong().title}
                     </div>
                     <div id="up-next-artist" style={{ viewTransitionName: 'up-next-artist', width: 'fit-content', maxWidth: '100%',fontSize: "0.85rem", color: "var(--color-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: "0.15rem" } as any}>
-                      <span style={{ color: "var(--color-text)" }}>{getNextSong().artist}</span>
+                      <span style={{ color: "var(--color-text)" }}>{formatArtists(getNextSong().artist)}</span>
                       {getNextSong().album && <span> &middot; {getNextSong().album}</span>}
                       {getNextSong().year && <span> &middot; {getNextSong().year}</span>}
                     </div>
@@ -2228,14 +2722,46 @@ export default function Home() {
 
             {showRunway && (
               <div id="on-air-ends" style={{ marginTop: "1rem", color: "var(--color-text)", fontSize: "0.9rem", fontWeight: 600, background: "rgba(255,255,255,0.05)", padding: "8px 12px", borderRadius: "6px" }}>
-                On air until {fmtClock(showRunway.endMs, showRunway.tz)} · {fmtDurLeft(showRunway.leftMin)}
+                On air until {fmtClock(showRunway.endMs, showRunway.timezone)} · {fmtDurLeft(showRunway.leftMin)}
+                {showRunway.mode !== "grid" ? (
+                  <span id="on-air-takeover-note" style={{ marginLeft: "0.4rem", fontWeight: 500, color: "var(--color-muted)" }}>
+                    {showRunway.mode === "takeover" ? "manual takeover" : "default programming"}
+                  </span>
+                ) : null}
               </div>
             )}
-            {showRunway?.nextName && (
+            {runwayNextName && (
               <div id="on-air-next-up" style={{ marginTop: "0.5rem", color: "var(--color-muted)", fontSize: "0.9rem", background: "rgba(255,255,255,0.05)", padding: "8px 12px", borderRadius: "6px" }}>
-                Next: <span style={{ color: "var(--color-text)", fontWeight: 600 }}>{showRunway.nextName}</span>
-                {showRunway.nextHost && <span> with <span style={{ color: "#ff4d4d" }}>{showRunway.nextHost}</span></span>}
-                <span> at {fmtClock(showRunway.endMs, showRunway.tz)}</span>
+                {showRunway?.nextIsResume ? "After this takeover: " : "Next: "}
+                <span style={{ color: "var(--color-text)", fontWeight: 600 }}>{runwayNextName}</span>
+                {runwayNextHost && (
+                  <span>
+                    {" "}with{" "}
+                    {runwayNext ? (
+                      <button
+                        id="btn-next-host"
+                        type="button"
+                        onClick={() => setShowHost({
+                          name: runwayNext.name || runwayNextHost,
+                          avatar: getAvatarSrc(runwayNext.avatar || ""),
+                          role: "Host",
+                          tagline: runwayNext.tagline || undefined,
+                          context: runwayNextName
+                            ? `${showRunway?.nextIsResume ? "back on" : "up next on"} ${runwayNextName}`
+                            : undefined,
+                        })}
+                        aria-label={`About ${runwayNextHost}`}
+                        title={`About ${runwayNextHost}`}
+                        style={{ background: "none", border: "none", padding: 0, cursor: "pointer", font: "inherit", color: "#ff4d4d" }}
+                      >
+                        {runwayNextHost}
+                      </button>
+                    ) : (
+                      <span style={{ color: "#ff4d4d" }}>{runwayNextHost}</span>
+                    )}
+                  </span>
+                )}
+                <span> at {fmtClock(showRunway!.endMs, showRunway!.timezone)}</span>
               </div>
             )}
             
@@ -2268,7 +2794,7 @@ export default function Home() {
                         {track.title}
                       </div>
                       <div id={`next-playing-artist-${i}`} style={{ viewTransitionName: `coming-up-artist-${i}`, width: 'fit-content', maxWidth: '100%',fontSize: "0.85rem", color: "var(--color-muted)", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", marginTop: "0.25rem" } as any}>
-                        <span style={{ color: "var(--color-text)" }}>{track.artist}</span>
+                        <span style={{ color: "var(--color-text)" }}>{formatArtists(track.artist)}</span>
                         {track.album && <span> &middot; {track.album}</span>}
                       </div>
                     </div>
@@ -2584,6 +3110,79 @@ export default function Home() {
           </div>
         </div>
       )}
+      {showHost && (
+        <div id="host-overlay-bg" onClick={() => setShowHost(null)} className="overlay-bg-enter" style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 2000, overflowY: "auto", padding: "2rem 1rem" }}>
+          <div id="host-overlay-card" onClick={(e) => e.stopPropagation()} className="overlay-card-enter" style={{ maxWidth: "480px", width: "100%", margin: "0 auto", minHeight: "auto", padding: "0 0.5rem", position: "relative", zIndex: 2001 }}>
+            <div className="card">
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
+                <h2 style={{ fontSize: "1.3rem", margin: 0 }}>{showHost.name}</h2>
+                <button id="btn-close-host" onClick={() => setShowHost(null)} className="primary-btn" style={{ padding: "0.5rem 1rem", fontSize: "0.875rem", background: "rgba(255,255,255,0.1)", color: "#fff", width: "auto" }}>Close</button>
+              </div>
+              <div style={{ display: "flex", gap: "1rem", alignItems: "flex-start" }}>
+                {showHost.avatar ? (
+                  <img id="host-profile-img" src={showHost.avatar} alt={showHost.name} style={{ width: "160px", height: "160px", borderRadius: "12px", objectFit: "cover", flexShrink: 0 }} />
+                ) : null}
+                <div>
+                  <div id="host-profile-role" style={{ fontSize: "0.875rem", color: "var(--color-muted)" }}>{showHost.role}{showHost.context ? ` ${showHost.context}` : showName ? ` on ${showName}` : ""}</div>
+                  {showHost.tagline ? (
+                    <p id="host-profile-tagline" style={{ marginTop: "0.5rem", marginBottom: 0 }}>{showHost.tagline}</p>
+                  ) : null}
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+      {slPopup && (
+        <div id="still-listening-overlay-bg" className="overlay-bg-enter" style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 2000, overflowY: "auto", padding: "2rem 1rem" }}>
+          <div id="still-listening-overlay-card" className="overlay-card-enter" style={{ maxWidth: "480px", width: "100%", margin: "0 auto", minHeight: "auto", padding: "0 0.5rem", position: "relative", zIndex: 2001 }}>
+            <div className="card">
+              {slPopup === "remind" ? (
+                <>
+                  <h2 style={{ fontSize: "1.3rem", margin: "0 0 0.75rem" }}>Still listening?</h2>
+                  <p style={{ fontSize: "0.95rem", marginBottom: "1rem" }}>
+                    The stream stops in about {slCfg.reminderMinutes} minute{slCfg.reminderMinutes === 1 ? "" : "s"}. One tap keeps it going for another {slCfg.minutes} minutes.
+                  </p>
+                  <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+                    <button id="btn-still-listening-yes" className="primary-btn" style={{ width: "auto", padding: "0.55rem 1.25rem" }} onClick={slConfirm}>
+                      Yes, I&apos;m still listening
+                    </button>
+                    <button
+                      className="primary-btn"
+                      style={{ width: "auto", padding: "0.55rem 1.25rem", background: "rgba(255,255,255,0.1)", color: "#fff" }}
+                      id="btn-still-listening-stop"
+                      onClick={slStopNow}
+                    >
+                      Stop now
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <h2 style={{ fontSize: "1.3rem", margin: "0 0 0.75rem" }}>Stream stopped</h2>
+                  <p style={{ fontSize: "0.95rem", marginBottom: "1rem" }}>
+                    You were away, so the stream stopped to save the station bandwidth. Press play whenever you&apos;re back.
+                  </p>
+                  <button id="btn-still-listening-replay" className="primary-btn" style={{ width: "auto", padding: "0.55rem 1.25rem" }} onClick={() => { if (!intendedPlayRef.current) togglePlay(); }}>
+                    Play again
+                  </button>
+                </>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+      {showSchedule && (
+        <div id="schedule-overlay-bg" onClick={() => setShowSchedule(false)} className="overlay-bg-enter" style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 2000, overflowY: "auto", padding: "2rem 1rem" }}>
+          <SchedulePanel
+            scheduleData={scheduleData}
+            hour12={hour12}
+            resolveAvatar={getAvatarSrc}
+            onHost={(pick) => { setShowSchedule(false); setShowHost(pick); }}
+            onClose={() => setShowSchedule(false)}
+          />
+        </div>
+      )}
       {showSkills && (
         <div id="skills-overlay-bg" onClick={() => setShowSkills(false)} className="overlay-bg-enter" style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 2000, overflowY: "auto", padding: "2rem 1rem" }}>
           <div id="skills-overlay-card" onClick={(e) => e.stopPropagation()} className="overlay-card-enter" style={{ maxWidth: "720px", width: "100%", margin: "0 auto", minHeight: "auto", padding: "0 0.5rem", position: "relative", zIndex: 2001 }}>
@@ -2603,19 +3202,42 @@ export default function Home() {
           tagged with (lib/version.ts), so it cannot drift from either — an operator
           reading this knows exactly what is running. The link is what makes a
           release useful: it is where the notes and the upgrade instructions are. */}
-      <footer id="app-footer" style={{ marginTop: "3rem", paddingTop: "1.25rem", borderTop: "1px solid rgba(255,255,255,0.10)", display: "flex", justifyContent: "center", alignItems: "center", gap: "0.5rem", flexWrap: "wrap", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+      <footer id="app-footer" style={{ marginTop: "3rem", display: "flex", justifyContent: "center" }}>
+        <div style={{ display: "flex", justifyContent: "center", alignItems: "center", gap: "0.5rem", flexWrap: "wrap", fontSize: "0.8rem", color: "var(--color-text-dim)", background: "rgba(0,0,0,0.45)", borderRadius: "999px", padding: "0.4rem 1rem", textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}>
         <a
           id="footer-version"
           href={`${REPO_URL}/releases`}
           target="_blank"
           rel="noreferrer"
           title={`${APP_NAME} ${APP_VERSION} — check for updates`}
-          style={{ color: "inherit", textDecoration: "none", borderBottom: "1px dotted rgba(255,255,255,0.28)", paddingBottom: "1px" }}
+          style={{ color: "inherit", textDecoration: "none", borderBottom: "1px dotted rgba(255,255,255,0.5)", paddingBottom: "1px" }}
         >
           {APP_NAME} {APP_VERSION}
         </a>
         <span aria-hidden="true">&middot;</span>
-        <span>unofficial companion software</span>
+        <span>
+          unofficial companion to{" "}
+          <a
+            href={SUBWAVE_URL}
+            target="_blank"
+            rel="noreferrer"
+            title="Subwave — the upstream project (not affiliated)"
+            style={{ color: "inherit", textDecoration: "none", borderBottom: "1px dotted rgba(255,255,255,0.5)", paddingBottom: "1px" }}
+          >
+            Subwave
+          </a>
+        </span>
+        <span aria-hidden="true">&middot;</span>
+        <a
+          href={REPO_URL}
+          target="_blank"
+          rel="noreferrer"
+          title={`${APP_NAME} source on GitHub`}
+          style={{ color: "inherit", textDecoration: "none", borderBottom: "1px dotted rgba(255,255,255,0.5)", paddingBottom: "1px" }}
+        >
+          source
+        </a>
+        </div>
       </footer>
 
     </main>

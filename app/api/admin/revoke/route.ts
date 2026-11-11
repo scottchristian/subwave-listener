@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
+import { refreshSessionsForUser } from "@/lib/session-cache";
 
 // Revoke a grant: approved (and non-owner admin) accounts go back to pending.
 // Cannot revoke yourself — that would lock the last admin out with no UI left.
@@ -26,6 +27,17 @@ export async function POST(req: NextRequest) {
   await prisma.user.update({
     where: { id: body.userId },
     data: { isApproved: false, isAdmin: false, canUseDj: false, canApprove: false, canUseSkills: false },
+  });
+  // Every cached verdict for this user is now wrong. Written through rather than
+  // dropped, so a revoked listener loses access on their next request instead of
+  // at the end of the revalidation interval — and without a database read to
+  // prove it. Every flag is set explicitly because revoke clears all of them.
+  refreshSessionsForUser(body.userId, {
+    isApproved: false,
+    isAdmin: false,
+    canUseDj: false,
+    canApprove: false,
+    canUseSkills: false,
   });
   return NextResponse.json({ success: true });
 }

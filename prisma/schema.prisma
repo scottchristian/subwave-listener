@@ -9,7 +9,7 @@ generator client {
 // rewrites this block alongside DATABASE_URL and DB_PROVIDER; gen-schema.mjs
 // performs the same swap for one-off copies.
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
@@ -72,6 +72,11 @@ model User {
   pushSubscriptions PushSubscription[]
   presenceHeartbeat PresenceHeartbeat?
   skillRuns      SkillRun[]
+  // Screens this person set up, and screens whose firmware they uploaded.
+  // Audit only — never read in an authorisation branch. SetNull, not Cascade,
+  // so removing a staff account does not brick a wall display.
+  devicesCreated Device[] @relation("DeviceCreatedBy")
+  devicesUploaded Device[] @relation("DeviceUploadedBy")
 }
 
 model VerificationToken {
@@ -236,4 +241,247 @@ model SkillRun {
   // The worker claims the oldest queued row; the poll path reads one row by id.
   @@index([status, queuedAt])
   @@index([userId, queuedAt])
+}
+
+
+// A wall-mounted ESP32-P4 screen.
+//
+// A device is NOT a user. It has its own row, its own credential, and its own
+// auth helper, and no path at any privilege level resolves a device request to a
+// User. Admin permissions on PROVISIONING are separate from device permissions:
+// an admin can create this row, and that authorises the creation and nothing
+// after it. See device/capabilities.md for the full reasoning and the five ways
+// a device drifts into being a person.
+//
+// The device's entire persistent state is its WiFi credentials and its token.
+// Everything else it knows — branding, schedule, settings, artwork, window
+// position — is cache, re-fetchable from the server at will.
+//
+// Every enum-shaped field here is a String, because this schema must generate for
+// SQLite as well as Postgres and Prisma enums are Postgres-only (see SkillRun).
+model Device {
+  id String @id @default(cuid())
+
+  // Stable hardware id, minted by the firmware and COMPILED INTO IT as an ESPHome
+  // substitution. Null until a build completes: the row exists before its binary
+  // does, which is what makes "flash didn't complete" a visible state rather than
+  // a half-registered ghost.
+  deviceId String? @unique
+
+  // Operator-visible name. Nothing reads it for authorisation.
+  name  String
+  model String @default("jc8012p4a1")
+
+  // ---- credentials -------------------------------------------------------
+  // Single-use, 7-day TTL, minted at row creation. Delivered to the device
+  // through the bind flow (server URL + bind code) rather than compiled into
+  // the firmware, so one standard image serves every screen.
+  claimToken   String?
+  claimExpires DateTime?
+
+  // Short human-readable code (e.g. "AB1-C23") shown in the admin panel and
+  // typed into the device during setup. The device sends it to the bind
+  // endpoint along with the server URL it was given, and receives the
+  // deviceId + claimToken in return. Single-use: consumed on first bind.
+  bindCode        String?   @unique
+  bindCodeExpires DateTime?
+
+  // sha256 of the long-lived bearer token. The raw token is returned exactly once,
+  // at claim, and is never retrievable afterwards.
+  tokenHash   String?
+  rotatedAt   DateTime?
+
+  // Rotation grace window. A device authenticates WITH the token being replaced,
+  // so it cannot be handed a new one unless the old one keeps working long enough
+  // to deliver it — a single-field write would strand the device permanently.
+  // Both are accepted inside the window; the heartbeat response carries the new
+  // token and the device swaps it into NVS.
+  //
+  // The cost is real and bounded: a stolen old token stays usable for the window.
+  // Fifteen minutes is generous for a device that heartbeats every 60 seconds.
+  prevTokenHash    String?
+  prevTokenExpires DateTime?
+
+  // ---- lifecycle ---------------------------------------------------------
+  //   building  row exists, binary not uploaded yet
+  //   claimed   claimed, not yet heard from
+  //   active    heartbeating
+  //   offline   lastSeenAt past the stale window
+  //   revoked   credentials dead, row kept for the audit trail
+  status String @default("building")
+
+  buildStatus String    @default("building") // building | built | failed
+  buildLog    String?
+  firmwareSha String?
+  builtAt     DateTime?
+  firmwareVer String?
+  lastSeenAt  DateTime?
+  ip          String?
+  rssi        Int?
+
+  // ---- settings ----------------------------------------------------------
+  // bumped by every admin change; the device reports what it actually applied.
+  // The higher revision wins, and the admin panel shows the reported value, so
+  // a device and an admin can never disagree without it being visible.
+  settingsRev Int       @default(1)
+  appliedRev  Int?
+  orientation String    @default("landscape") // landscape | portrait
+  themeMode   String    @default("auto")      // auto | day | night
+  brightness  Int       @default(70)
+  idleMode    String    @default("dim")       // stay | dim | off
+  idleMin     Int       @default(15)
+  idlePct     Int       @default(20)
+  // Additional minutes after dimming before the backlight goes off. 0 = Never,
+  // which is the default: a screen that went black when the server and firmware
+  // disagreed about this field would be the worse failure.
+  idleOffMin  Int       @default(0)
+  skipEnabled String    @default("1")
+
+  // Server capability only, and off. A wall display rotates only when pressed,
+  // so there is deliberately no device-facing control for this.
+  rotateViews String @default("0")
+
+  // ---- location and timezone ---------------------------------------------
+  // timezone is captured automatically from the setup browser's
+  // Intl.DateTimeFormat zone. lat/lon come from a one-tap geolocation prompt on
+  // the same page, because a timezone gives solar noon but NOT latitude, and
+  // sunrise needs latitude.
+  timezone String @default("")
+  lat      Float?
+  lon      Float?
+
+  // ---- audit only --------------------------------------------------------
+  // Never read in an authorisation branch. SetNull rather than Cascade so
+  // deleting a staff account does not take its screens with it.
+  createdById  String?
+  uploadedById String?
+  createdBy    User?   @relation("DeviceCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  uploadedBy   User?   @relation("DeviceUploadedBy", fields: [uploadedById], references: [id], onDelete: SetNull)
+
+  // ---- shared firmware OTA ----------------------------------------------
+  // Reported by firmware that understands the shared-release protocol. Every
+  // image built before it leaves this false, which is what keeps those screens
+  // working unchanged: the heartbeat skips OTA entirely when it is false.
+  //
+  // otaInstalledVersion is the version the RUNNING image reports, which is what
+  // a boot confirmation is checked against. Device.firmwareVer above stays the
+  // ESPHome project version and is deliberately not reused for this: the two
+  // mean different things, and conflating them is how a screen ends up labelled
+  // with a release it never booted.
+  otaCapable          Boolean   @default(false)
+  otaInstalledVersion String?
+  otaInstalledSha     String?
+  otaInstalledSlot    String?   // app0 | app1 — which OTA slot the image booted from
+  otaInstalledAt      DateTime?
+
+  otaAttempts DeviceOtaAttempt[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // The admin list filters by status; the offline sweep asks for rows whose
+  // lastSeenAt is older than the stale window, in that order.
+  @@index([status])
+  @@index([lastSeenAt])
+}
+
+// A published, immutable shared firmware release.
+//
+// WHY IMMUTABLE. Every screen installs the same bytes, so a release's identity is
+// its sha256, not an editable row. The version is unique and the bytes behind it
+// never change: re-uploading the same version with different bytes is refused
+// rather than silently replacing the image a fleet is midway through installing.
+//
+// DESCRIPTOR VERSION MUST EQUAL RELEASE VERSION. That is checked at upload time.
+// Without it a screen would boot an image whose own descriptor names a different
+// release, and no boot report, rollback decision or audit could say which one is
+// actually running. Firmware whose descriptor still carries the ESPHome project
+// version is rejected with that reason rather than accepted under a label it does
+// not claim for itself.
+//
+// ARTIFACTS ARE NEVER DELETED. A withdrawn release may still be pinned by an
+// install in flight, and deleting the bytes would strand it mid-download. There is
+// deliberately no delete path.
+model FirmwareRelease {
+  id String @id @default(cuid())
+
+  // Dotted numeric, e.g. "1.15.0". Unique because a version names exactly one
+  // artifact, and a second upload under the same name is either the same bytes
+  // (idempotent) or a mistake (refused).
+  version   String @unique
+  sha256    String @unique
+  sizeBytes Int
+
+  // Relative to the firmware root, never absolute and never client-supplied.
+  storageKey String
+  filename   String
+
+  // What the bytes say about themselves. Stored so a published release can be
+  // audited without re-reading the artifact.
+  descriptorProject String
+  descriptorVersion String
+  chipId            Int
+  minChipRev        Int?
+  maxChipRev        Int?
+
+  // Audit only — plain column, never read in an authorisation branch.
+  uploadedById String?
+
+  createdAt   DateTime  @default(now())
+  publishedAt DateTime?
+  withdrawnAt DateTime?
+
+  attempts DeviceOtaAttempt[]
+
+  @@index([createdAt])
+}
+
+// One device's attempt to install one shared release.
+//
+// THE NULLABLE UNIQUE RESERVATION. activeDeviceId holds the device id only while
+// the attempt is live, and is nulled the moment it reaches a terminal phase. The
+// unique index therefore permits exactly one live attempt per device while
+// allowing unlimited history — SQLite and Postgres both treat NULLs as distinct.
+// A plain "check then insert" would let two heartbeats that arrive together both
+// pass the check, so the constraint, not the read, is what enforces the rule.
+//
+// PHASE IS A STRING for the same reason every other enum-shaped field here is:
+// this schema must generate for SQLite as well as Postgres.
+model DeviceOtaAttempt {
+  id String @id @default(cuid())
+
+  // The device's idempotency key from the explicit install tap. Repeating the
+  // request — a lost response, a reboot — returns this same row.
+  requestId String
+  deviceId  String
+  releaseId String
+
+  // requested | accepted | downloading | verifying | installing | rebooting |
+  // success | failure | rollback | unknown as decided by the screen. Terminal
+  // states are succeeded, failed, rolled_back, unknown and rejected; `unknown`
+  // is what silence ages into, never an assumption that it worked.
+  phase String @default("requested")
+
+  // See the model comment. Null once terminal.
+  activeDeviceId String? @unique
+
+  requestedAt  DateTime  @default(now())
+  acceptedAt   DateTime?
+  installingAt DateTime?
+  rebootingAt  DateTime?
+  finishedAt   DateTime?
+  bootResult   String? // ok | rolled_back
+  errorCode    String?
+  errorMessage String?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  device  Device          @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  release FirmwareRelease @relation(fields: [releaseId], references: [id], onDelete: Restrict)
+
+  @@unique([deviceId, requestId])
+  @@index([deviceId, createdAt])
+  @@index([releaseId])
+  @@index([phase])
 }

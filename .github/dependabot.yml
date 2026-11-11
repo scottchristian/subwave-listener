@@ -23,6 +23,19 @@ updates:
           - minor
           - patch
 
+  # Dockerfile.e2e is the throwaway station the updater test builds from.
+  - package-ecosystem: docker
+    directory: "/"
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Australia/Sydney
+    commit-message:
+      prefix: chore(docker)
+
+  # No workflows exist yet, but this entry means actions are covered as soon
+  # as one is added.
   - package-ecosystem: github-actions
     directory: "/"
     schedule:

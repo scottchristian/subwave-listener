@@ -4,6 +4,8 @@ import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
+import { noteStreamStart, noteStreamEnd, toLivePerson } from "@/lib/presence-live";
+import { trackAppStream } from "@/lib/station-activity";
 import { STATION } from "@/lib/station";
 import { getSubwaveConfig } from "@/lib/subwave";
 import http from "http";
@@ -25,13 +27,16 @@ export async function GET(req: NextRequest) {
 
   // Maintenance: admins pass through (so they can verify), everyone else
   // gets the notice. Existing sockets drain on their own.
-  try {
-    const maint = await prisma.setting.findUnique({ where: { key: "maintenanceMode" } });
-    if (maint?.value === "true" && !user.isAdmin) {
-      const msg = await prisma.setting.findUnique({ where: { key: "maintenanceMessage" } });
-      return new Response(msg?.value || "Station down for maintenance — back soon.", { status: 503 });
-    }
-  } catch {}
+  //
+  // Reads the local mirror when Postgres cannot be asked. This check used to
+  // sit in an empty `catch {}`, which meant a database outage during
+  // maintenance served the audio anyway — the station was supposed to be dark
+  // and was not. "Unknown" stays unknown: an unresolved state must not start
+  // refusing listeners on its own.
+  const maintenance = await readMaintenance();
+  if (maintenance.mode === true && !user.isAdmin) {
+    return new Response(maintenance.message || "Station down for maintenance — back soon.", { status: 503 });
+  }
 
   const cfg = await getSubwaveConfig();
   const streamUrl = cfg.streamUrl;
@@ -49,6 +54,9 @@ export async function GET(req: NextRequest) {
       startTime: new Date(),
     }
   });
+  // Live "who is streaming" for the presence route — memory, not a read.
+  // The row above still writes: per-user history needs it.
+  noteStreamStart(toLivePerson(user));
 
   const targetUrl = new URL(streamUrl);
   targetUrl.searchParams.set("auth", stationPassword);
@@ -80,9 +88,14 @@ export async function GET(req: NextRequest) {
       return new Response("Failed to get stream reader", { status: 500 });
     }
 
+    const activity = trackAppStream(user.id, streamSession.id);
     const onDisconnect = async () => {
+      // Nonblocking and connection-scoped; another tab stays live. No chunks
+      // means stop is a no-op and never creates online evidence.
+      void activity.stop().catch(() => console.error("STATION_ACTIVITY_STREAM_STOP_FAILED"));
       // Prevent double-logging
       if ((streamSession as any).endTime) return;
+      noteStreamEnd(user.id);
       
       const endTime = new Date();
       (streamSession as any).endTime = endTime; // mark locally
@@ -114,26 +127,23 @@ export async function GET(req: NextRequest) {
     });
 
     const stream = new ReadableStream({
-      async start(controller) {
+      async pull(controller) {
         try {
-          while (true) {
-            if (req.signal.aborted) {
-              break;
-            }
+          if (!req.signal.aborted) {
             const { done, value } = await reader.read();
-            if (done) break;
-            try {
+            if (!done && !req.signal.aborted) {
               controller.enqueue(value);
-            } catch {
-              break; // downstream closed mid-write — stop, don't throw
+              if (value?.byteLength) {
+                void activity.touch().catch(() => console.error("STATION_ACTIVITY_STREAM_WRITE_FAILED"));
+              }
+              return;
             }
           }
-        } catch (e) {
-          // Client disconnected
-        } finally {
-          await onDisconnect();
-          try { controller.close(); } catch(e) {}
+        } catch {
+          cancelReader();
         }
+        await onDisconnect();
+        try { controller.close(); } catch {}
       },
       cancel() {
         console.log("Stream cancelled by client");
@@ -159,5 +169,33 @@ export async function GET(req: NextRequest) {
   } catch (error) {
     console.error("Fetch to stream URL failed", error);
     return new Response("Proxy error", { status: 502 });
+  }
+}
+
+/**
+ * Maintenance state: Postgres if it answers, the local mirror if it does not.
+ *
+ * `mode` is `boolean | null` on purpose. `null` means "we do not know" and is
+ * deliberately not `false`: collapsing it either way would either serve audio
+ * during a maintenance window (the bug this fixes) or cut off a station because
+ * a database blipped for a moment. Callers must treat null as "carry on".
+ */
+async function readMaintenance(): Promise<{ mode: boolean | null; message: string }> {
+  try {
+    const maint = await prisma.setting.findUnique({ where: { key: "maintenanceMode" } });
+    const msg = await prisma.setting.findUnique({ where: { key: "maintenanceMessage" } });
+    return { mode: maint?.value === "true", message: msg?.value || "" };
+  } catch {
+    try {
+      const { liteGetSettings } = await import("@/lib/lite-cache");
+      const rows = await liteGetSettings();
+      const mode = typeof rows.maintenanceMode === "string" ? rows.maintenanceMode === "true" : null;
+      return {
+        mode,
+        message: typeof rows.maintenanceMessage === "string" ? rows.maintenanceMessage : "",
+      };
+    } catch {
+      return { mode: null, message: "" };
+    }
   }
 }

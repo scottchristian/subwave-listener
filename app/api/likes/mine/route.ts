@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "@/app/api/auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
+import { liteEnabled, liteListMine, mergeLikeRows } from "@/lib/lite-cache";
 
 // The signed-in user's own like history, newest first.
 export async function GET() {
@@ -14,10 +15,14 @@ export async function GET() {
         if (!user || !user.isApproved) {
             return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
         }
-        const likes = await prisma.songLike.findMany({
+        const pgLikes = await prisma.songLike.findMany({
             where: { userId: user.id },
             orderBy: { createdAt: 'desc' }
         });
+        // Unflushed taps merge in so your own like shows instantly.
+        const likes = (await liteEnabled())
+            ? mergeLikeRows(pgLikes, await liteListMine(user.id))
+            : pgLikes;
         return NextResponse.json({ likes, hideLikeName: user.hideLikeName, userId: user.id });
     } catch (error) {
         console.error("GET mine likes error:", error);

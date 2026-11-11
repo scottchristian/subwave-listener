@@ -1,0 +1,11 @@
+# E2E-only. Never used in production deploys (those rsync source and build on
+# the VPS). This exists so `npm run check` stays fast: the real pipeline is
+# exercised here, in a throwaway container, instead of in the unit suite.
+node_modules
+.next
+.git
+data
+.env*
+*.db
+coverage
+.opencode

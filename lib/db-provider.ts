@@ -31,7 +31,11 @@ export function maskDatabaseUrl(url: string | null | undefined): string {
   if (!url) return "";
   let out = url;
   // userinfo: scheme://user:secret@host -> scheme://user:***@host
-  out = out.replace(/^([a-z]+:\/\/)([^:@/]+):([^@]*)@/i, "$1$2:***@");
+  // The username group is * — every shape with userinfo and a colon masks.
+  // Requiring a username here leaked the password on `postgresql://:secret@host`
+  // (empty username, which providers do hand out), because the regex never
+  // matched and the URL was returned verbatim.
+  out = out.replace(/^([a-z][a-z0-9+.-]*:\/\/)([^/@]*):([^@]*)@/i, "$1$2:***@");
   // Drop the query string entirely — it can carry sslkey paths and passwords.
   out = out.replace(/\?.*$/, "?***");
   return out;

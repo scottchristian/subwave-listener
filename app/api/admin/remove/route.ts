@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "../../auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
+import { dropSessionsForUser } from "@/lib/session-cache";
 
 // Remove an account outright. Donations keep their record (attribution
 // nulled); sessions, likes, requests and push subscriptions cascade.
@@ -28,6 +29,9 @@ export async function POST(req: NextRequest) {
       data: { userId: null },
     });
     await prisma.user.delete({ where: { id: body.userId } });
+    // The user's sessions cascade away with them; the cached verdicts are a
+    // separate store and have to be dropped by hand.
+    dropSessionsForUser(body.userId);
     return NextResponse.json({ success: true });
   } catch {
     return NextResponse.json({ error: "User not found" }, { status: 404 });

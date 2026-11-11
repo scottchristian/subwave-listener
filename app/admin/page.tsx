@@ -1,18 +1,31 @@
 "use client";
 
+import ScreensPanel from "./ScreensPanel";
+import StationStatsPanel from "./StationStatsPanel";
+
 import { useSession } from "next-auth/react";
 import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { STATION } from "@/lib/station";
 import { APP_VERSION, REPO_URL } from "@/lib/version";
+import type { BackupSummary } from "@/lib/backup";
+import type { UpdateJob } from "@/lib/update";
 import DatabasePanel from "./DatabasePanel";
 import CollapsibleSection from "./CollapsibleSection";
 import HeaderToggle from "./HeaderToggle";
+import { shouldHeartbeat } from "@/lib/heartbeat";
+import TimeSelect from "./TimeSelect";
+import UpdateModal from "./UpdateModal";
+import { formatTimeOfDay, defaultHour12 } from "@/lib/update-time";
 import {
   SKIP_VISIBILITY_OPTIONS,
+  SKIP_VISIBILITY_SCREENS_OPTIONS,
   parseSkipVisibility,
+  parseSkipVisibilityScreens,
   type SkipVisibility,
+  type SkipVisibilityScreens,
 } from "@/lib/skipvisibility";
+import { parseStillListening, validateStillListening, STILL_LISTENING_KEYS } from "@/lib/still-listening";
 
 export default function AdminPage() {
   const { data: session, status } = useSession();
@@ -22,12 +35,21 @@ export default function AdminPage() {
   const [stats, setStats] = useState<any[]>([]);
   const [signedInUsers, setSignedInUsers] = useState<any[]>([]);
   const [streamingUsers, setStreamingUsers] = useState<any[]>([]);
+  // When the dashboard stopped polling. `loadPresence` is gated on `shouldHeartbeat`
+  // so an idle tab sends nothing and the database can sleep — which is correct.
+  // The bug was that it kept showing the last answer as if it were live. This
+  // timestamp makes the staleness visible instead of silent.
+  const [presenceFetchedAt, setPresenceFetchedAt] = useState<number | null>(null);
   const loadPresence = () => {
+    // Same rule as the player: a buried, untouched admin tab is not using
+    // anything, so it sends no heartbeat and the database can sleep.
+    if (!shouldHeartbeat(false)) return;
     fetch("/api/presence")
       .then(r => r.json())
       .then(d => {
         if (Array.isArray(d.users)) setSignedInUsers(d.users);
         if (Array.isArray(d.streaming)) setStreamingUsers(d.streaming);
+        setPresenceFetchedAt(Date.now());
       })
       .catch(() => {});
   };
@@ -58,7 +80,14 @@ export default function AdminPage() {
   const [updateInfo, setUpdateInfo] = useState<{
     current: string; latest: string | null; updateAvailable: boolean;
     releaseUrl: string; notes: string | null; checkedAt: string;
+    channel: "release" | "main" | "develop";
   } | null>(null);
+  // Server-side backups (env, database, artwork, setup marker). Null until
+  // loaded; the panel fetches them with the rest of the admin data.
+  const [backups, setBackups] = useState<BackupSummary[] | null>(null);
+  const [backupBusy, setBackupBusy] = useState<"create" | string | null>(null);
+  const [backupMsg, setBackupMsg] = useState("");
+  const [restoreConfirmId, setRestoreConfirmId] = useState<string | null>(null);
   // The three header chips. All default on, so opening the panel shows the
   // station as it is rather than as a fresh install would be.
   const [headerListeners, setHeaderListeners] = useState(true);
@@ -76,6 +105,23 @@ export default function AdminPage() {
   const [streamMode, setStreamMode] = useState<"relay" | "direct">("relay");
     // Who listeners get the Skip button. Admins always see it regardless.
     const [skipVisibility, setSkipVisibility] = useState<SkipVisibility>("solo");
+  // A SEPARATE setting, on purpose. SkipVisibility governs the listener
+  // experience, and changing it must not silently change what a public display
+  // in a cafe can do — those are two decisions by two different people, and
+  // folding them together makes one of them unmakeable.
+  const [skipVisibilityScreens, setSkipVisibilityScreens] = useState<SkipVisibilityScreens>("follow");
+  // "Are you still listening?" Idle streams stop instead of playing to an
+  // empty room. Loaded with the rest of the settings, saved by the section.
+  const [slEnabled, setSlEnabled] = useState(false);
+  const [slMinutes, setSlMinutes] = useState("60");
+  const [slReminder, setSlReminder] = useState("10");
+  const [slMsg, setSlMsg] = useState("");
+  const [slBusy, setSlBusy] = useState(false);
+  // Station coordinates for the astronomical theme (day/night on the screen).
+  const [stationLat, setStationLat] = useState("");
+  const [stationLon, setStationLon] = useState("");
+  const [coordMsg, setCoordMsg] = useState("");
+  const [coordBusy, setCoordBusy] = useState(false);
   const [backendListeners, setBackendListeners] = useState<number | null>(null);
   const [backendBuffer, setBackendBuffer] = useState<number | null>(null);
   const [googleClientId, setGoogleClientId] = useState("");
@@ -121,11 +167,11 @@ export default function AdminPage() {
   const [brandTab, setBrandTab] = useState<"logo" | "icon" | "background">("logo");
   const [brandVersion, setBrandVersion] = useState(0);
   // Tab rail: one screen per job. Persisted so a refresh lands back here.
-  type AdminTab = "stats" | "people" | "station" | "services" | "system" | "database";
+  type AdminTab = "stats" | "people" | "station" | "screens" | "services" | "system" | "database";
   const [activeTab, setActiveTab] = useState<AdminTab>(() => {
     try {
       const t = localStorage.getItem("admin-tab");
-      return t === "people" || t === "station" || t === "services" || t === "system" || t === "database" ? t : "stats";
+      return t === "people" || t === "station" || t === "screens" || t === "services" || t === "system" || t === "database" ? t : "stats";
     } catch { return "stats"; }
   });
   // "out" while the current panel fades, "in" once the new one should rise.
@@ -175,15 +221,52 @@ export default function AdminPage() {
   // caches the answer for an hour anyway, and this is not something an operator
   // watches change. Failure leaves the panel saying nothing rather than showing an
   // error, because a station that cannot reach GitHub is not in trouble.
+  // Extracted so opening the System tab can re-ask with a live check.
+  const loadUpdateStatus = (refresh: boolean) => {
+    // no-store: the server keeps its own hourly cache (GitHub rate limits),
+    // but the browser must not serve a stale channel — the radio follows the
+    // saved preference, and a cached answer points it at the previous one.
+    // refresh=1 goes further and skips the server cache too, asking GitHub now.
+    fetch(refresh ? "/api/admin/update-check?refresh=1" : "/api/admin/update-check", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d) {
+          setUpdateInfo(d);
+          // The server owns the saved channel — the radio follows it rather
+          // than resetting to Stable on every visit.
+          if (d.channel === "release" || d.channel === "main" || d.channel === "develop") {
+            setUpdateChannel(d.channel);
+          }
+        }
+      })
+      .catch(() => {});
+  };
   useEffect(() => {
     if (status !== "authenticated" || !(session?.user as any)?.isAdmin) return;
     let cancelled = false;
-    fetch("/api/admin/update-check")
+    // Backups list. Failure leaves the panel saying nothing — same reasoning
+    // as the update check: a station that cannot reach its own disk is in
+    // trouble this panel cannot help with.
+    fetch("/api/admin/backup")
       .then((r) => (r.ok ? r.json() : null))
-      .then((d) => { if (!cancelled && d) setUpdateInfo(d); })
+      .then((d) => { if (!cancelled && d) setBackups(d.backups || []); })
+      .catch(() => {});
+    loadUpdateStatus(false);
+    fetch("/api/admin/update/notify", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => { if (!cancelled && d) setUpdateNotify(d.enabled === true); })
       .catch(() => {});
     return () => { cancelled = true; };
   }, [status, session]);
+
+  // A fresh answer every time the operator opens System: the button in front
+  // of them reflects what GitHub says now, not what the hourly cache said.
+  // Human-gated (one tab open per visit), so GitHub's 60 req/hr is not at risk.
+  useEffect(() => {
+    if (status !== "authenticated" || !(session?.user as any)?.isAdmin) return;
+    if (activeTab !== "system") return;
+    loadUpdateStatus(true);
+  }, [activeTab, status, session]);
 
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -274,7 +357,21 @@ export default function AdminPage() {
         const sm = settings.find((s: any) => s.key === "streamMode");
         if (sm) setStreamMode(sm.value === "direct" ? "direct" : "relay");
           const sv = settings.find((s: any) => s.key === "skipVisibility");
+          const svs = settings.find((s: any) => s.key === "skipVisibilityScreens");
           if (sv) setSkipVisibility(parseSkipVisibility(sv.value));
+          if (svs) setSkipVisibilityScreens(parseSkipVisibilityScreens(svs.value));
+          const sl = parseStillListening({
+            enabled: settings.find((s: any) => s.key === STILL_LISTENING_KEYS.enabled)?.value,
+            minutes: settings.find((s: any) => s.key === STILL_LISTENING_KEYS.minutes)?.value,
+            reminderMinutes: settings.find((s: any) => s.key === STILL_LISTENING_KEYS.reminder)?.value,
+          });
+          setSlEnabled(sl.enabled);
+          setSlMinutes(String(sl.minutes));
+          setSlReminder(String(sl.reminderMinutes));
+          const lat = settings.find((s: any) => s.key === "stationLat");
+          const lon = settings.find((s: any) => s.key === "stationLon");
+          if (lat) setStationLat(lat.value);
+          if (lon) setStationLon(lon.value);
         if (STATION.backendUrl) {
           fetch(`${STATION.backendUrl}/api/now-playing`)
             .then(r => r.json())
@@ -401,6 +498,350 @@ export default function AdminPage() {
   };
 
 
+  /**
+   * Backup actions. Each refreshes the list afterwards so the panel never shows a
+   * backup that no longer exists (or hides one that does). Restore navigates
+   * nowhere: the station restarts underneath, and the admin page simply starts
+   * failing its polls until the new process answers.
+   */
+  const refreshBackups = async () => {
+    try {
+      const r = await fetch("/api/admin/backup");
+      if (r.ok) {
+        const d = await r.json();
+        setBackups(d.backups || []);
+      }
+    } catch {
+      // leave the old list rather than blanking it on a transient failure
+    }
+  };
+
+  const createBackupNow = async () => {
+    setBackupBusy("create");
+    setBackupMsg("");
+    try {
+      const res = await fetch("/api/admin/backup", { method: "POST" });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "backup failed");
+      setBackupMsg(`Backed up ${Object.values((d.backup.tables || {}) as Record<string, number>).reduce((a: number, b: number) => a + b, 0)} database rows plus settings and artwork.`);
+      await refreshBackups();
+    } catch (e) {
+      setBackupMsg(`Backup failed: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setBackupBusy(null);
+    }
+  };
+
+  const deleteBackupNow = async (id: string) => {
+    setBackupBusy(id);
+    try {
+      await fetch(`/api/admin/backup/${id}`, { method: "DELETE" });
+      await refreshBackups();
+    } finally {
+      setBackupBusy(null);
+      if (restoreConfirmId === id) setRestoreConfirmId(null);
+    }
+  };
+
+  const restoreBackupNow = async (id: string) => {
+    setBackupBusy(id);
+    setBackupMsg("");
+    try {
+      const res = await fetch(`/api/admin/backup/${id}/restore`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "restore failed");
+      setBackupMsg("Restored. The station is restarting on those settings now — give it half a minute, then reload.");
+    } catch (e) {
+      setBackupMsg(`Restore failed: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setBackupBusy(null);
+      setRestoreConfirmId(null);
+    }
+  };
+
+  // In-app update: state, polling and actions. The job file survives the pm2
+  // restart at the end of an update, so polling resumes into the new process
+  // and the outcome is visible without anyone having watched it happen.
+  const [updateJob, setUpdateJob] = useState<UpdateJob | null>(null);
+  const [updateBusy, setUpdateBusy] = useState(false);
+  // The progress popup. Opened when an update or rollback starts; the operator
+  // may close it mid-run (the job continues server-side) and reopen it from
+  // the progress line. Never auto-closed on completion — "done" is the one
+  // thing they must not miss.
+  const [showUpdateModal, setShowUpdateModal] = useState(false);
+  const [updateMsg, setUpdateMsg] = useState("");
+  const [updateConfirmListeners, setUpdateConfirmListeners] = useState(false);
+  // Set when the server refuses for listeners on air: the button stays, and a
+  // checkbox appears for the operator to accept interrupting them.
+  const [updateNeedsListenerConfirm, setUpdateNeedsListenerConfirm] = useState(false);
+  const [stationTimezone, setStationTimezone] = useState<string | null>(null);
+  const [updateSource, setUpdateSource] = useState<{
+    channel: string;
+    ref: string;
+    sha: string | null;
+    version: string;
+  } | null>(null);
+  const [updateChannel, setUpdateChannel] = useState<"release" | "main" | "develop">("release");
+  const [autoUpdateOn, setAutoUpdateOn] = useState(false);
+  const [autoStart, setAutoStart] = useState("");
+  const [autoEnd, setAutoEnd] = useState("");
+  const [autoMsg, setAutoMsg] = useState("");
+  const [autoBusy, setAutoBusy] = useState(false);
+  // Update-news push opt-in. Per admin, loaded once, saved on every toggle —
+  // same pattern as the channel radio: a preference, not a form.
+  const [updateNotify, setUpdateNotify] = useState(false);
+  const [updateNotifyMsg, setUpdateNotifyMsg] = useState("");
+  // Clock face for every time in the app. Account-wide like the player's —
+  // the toggle below writes the same preference the top menu writes.
+  const [hour12, setHour12] = useState<boolean>(() => defaultHour12());
+  useEffect(() => {
+    if (status !== "authenticated" || !(session?.user as any)?.isAdmin) return;
+    fetch("/api/profile/clock", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (d && typeof d.hour12 === "boolean") setHour12(d.hour12);
+      })
+      .catch(() => {});
+  }, [status, session]);
+  const setClockFace = (v: boolean) => {
+    setHour12(v);
+    fetch("/api/profile/clock", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ hour12: v }),
+    }).catch(() => {
+      // display preference only — never blocks saving the window itself
+    });
+  };
+
+  const refreshUpdate = async () => {
+    try {
+      const r = await fetch("/api/admin/update");
+      if (r.ok) {
+        const d = await r.json();
+        setUpdateJob(d.job || null);
+        setUpdateSource(d.source || null);
+        if (typeof d.stationTimezone === "string" && d.stationTimezone) {
+          setStationTimezone(d.stationTimezone);
+        }
+        if (d.auto) {
+          setAutoUpdateOn(d.auto.enabled);
+          setAutoStart(d.auto.start);
+          setAutoEnd(d.auto.end);
+        }
+      }
+    } catch {
+      // a station mid-restart answers nothing — the next poll gets it
+    }
+  };
+
+  useEffect(() => {
+    refreshUpdate();
+  }, [status, session]);
+
+  useEffect(() => {
+    if (updateJob?.status !== "running") return;
+    const id = setInterval(refreshUpdate, 2500);
+    return () => clearInterval(id);
+  }, [updateJob?.status]);
+
+  // A finished job leaves the update-check cache (and the button it feeds)
+  // describing the world before the restart. Re-ask once the new process is
+  // up, so the button stops offering the version just installed. Fires once
+  // per terminal transition — the ref, not the render, remembers.
+  const lastTerminalStatus = useRef<string | null>(null);
+  useEffect(() => {
+    const st = updateJob?.status;
+    if (st !== "done" && st !== "failed" && st !== "rolled-back") return;
+    if (lastTerminalStatus.current === updateJob?.updatedAt) return;
+    lastTerminalStatus.current = updateJob?.updatedAt ?? null;
+    const t = setTimeout(() => loadUpdateStatus(true), 30000);
+    return () => clearTimeout(t);
+  }, [updateJob?.status]);
+
+  /**
+   * Choosing a channel saves it: "receive developer updates" is a persistent
+   * preference, not a per-click choice. The next check (and the prompt it may
+   * produce) follows the saved channel.
+   */
+  const saveUpdateNotify = async (enabled: boolean) => {
+    setUpdateNotify(enabled);
+    setUpdateNotifyMsg("");
+    try {
+      const res = await fetch("/api/admin/update/notify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "could not save");
+      setUpdateNotifyMsg(enabled ? "Saved — update news on." : "Saved — update news off.");
+    } catch (e) {
+      setUpdateNotify(!enabled);
+      setUpdateNotifyMsg(`Could not save: ${(e as Error)?.message || "unknown error"}`);
+    }
+  };
+
+  const saveUpdateChannel = async (channel: "release" | "main" | "develop") => {
+    setUpdateChannel(channel);
+    try {
+      await fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "updateChannel", value: channel }),
+      });
+    } catch {
+      // cosmetic if it fails — the update itself still takes an explicit channel
+    }
+  };
+
+  /**
+   * Save the automatic window. Validated twice: here for fast feedback, and
+   * server-side where it counts — a hand-crafted request with "25:99" must not
+   * arm the scheduler.
+   */
+  const saveAutoUpdate = async () => {
+    setAutoBusy(true);
+    setAutoMsg("");
+    try {
+      const res = await fetch("/api/admin/update/auto", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ enabled: autoUpdateOn, start: autoStart, end: autoEnd }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "could not save");
+      setAutoMsg(
+        d.saved.enabled
+          ? `Automatic updates on, ${d.saved.start}–${d.saved.end} station time.`
+          : "Automatic updates off."
+      );
+    } catch (e) {
+      setAutoMsg(`Could not save: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setAutoBusy(false);
+    }
+  };
+
+  const startUpdate = async (channel: "release" | "main" | "develop", target?: string) => {
+    setUpdateBusy(true);
+    setUpdateMsg("");
+    setUpdateNeedsListenerConfirm(false);
+    try {
+      const res = await fetch("/api/admin/update", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ channel, target, confirmListeners: updateConfirmListeners }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (res.status === 409 && d.needsConfirm) {
+        setUpdateMsg(d.error);
+        setUpdateNeedsListenerConfirm(true);
+        return;
+      }
+      if (!res.ok) throw new Error(d.error || "update failed to start");
+      setUpdateMsg(`Updating to ${d.channel === "release" ? `v${d.to}` : d.to} — settings are backed up first, then the station rebuilds and restarts. Do not close this tab.`);
+      await refreshUpdate();
+      setShowUpdateModal(true);
+    } catch (e) {
+      setUpdateMsg(`Update failed to start: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const rollbackUpdate = async () => {
+    setUpdateBusy(true);
+    setUpdateMsg("");
+    try {
+      const res = await fetch("/api/admin/update/rollback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirm: true }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "rollback failed to start");
+      setUpdateMsg("Rolling back to the pre-update state — the station restarts when it is back in place.");
+      await refreshUpdate();
+      setShowUpdateModal(true);
+    } catch (e) {
+      setUpdateMsg(`Rollback failed to start: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setUpdateBusy(false);
+    }
+  };
+
+  const saveStillListening = async () => {
+    const v = validateStillListening(slMinutes, slReminder);
+    if (!v.ok) {
+      setSlMsg(v.error);
+      return;
+    }
+    setSlBusy(true);
+    setSlMsg("");
+    try {
+      for (const [key, value] of [
+        [STILL_LISTENING_KEYS.enabled, slEnabled ? "true" : "false"],
+        [STILL_LISTENING_KEYS.minutes, String(v.minutes)],
+        [STILL_LISTENING_KEYS.reminder, String(v.reminderMinutes)],
+      ] as const) {
+        const res = await fetch("/api/admin/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key, value }),
+        });
+        if (!res.ok) throw new Error(`could not save ${key}`);
+      }
+      setSlMsg(
+        slEnabled
+          ? `On — streams stop after ${v.minutes} minutes idle, with a reminder ${v.reminderMinutes} minutes before.`
+          : "Off."
+      );
+    } catch (e) {
+      setSlMsg(`Could not save: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setSlBusy(false);
+    }
+  };
+
+  const saveCoordinates = async () => {
+    const lat = Number(stationLat);
+    const lon = Number(stationLon);
+    if (!Number.isFinite(lat) || lat < -90 || lat > 90) {
+      setCoordMsg("Latitude must be between -90 and 90");
+      return;
+    }
+    if (!Number.isFinite(lon) || lon < -180 || lon > 180) {
+      setCoordMsg("Longitude must be between -180 and 180");
+      return;
+    }
+    setCoordBusy(true);
+    setCoordMsg("");
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "stationLat", value: String(lat) }),
+      });
+      if (!res.ok) throw new Error("could not save stationLat");
+      const res2 = await fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "stationLon", value: String(lon) }),
+      });
+      if (!res2.ok) throw new Error("could not save stationLon");
+      setCoordMsg("Saved — screens will switch day/night on their next poll");
+    } catch (e) {
+      setCoordMsg(`Could not save: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setCoordBusy(false);
+    }
+  };
+
   const saveStreamMode = async (mode: "relay" | "direct") => {    setStreamMode(mode);
     await fetch("/api/admin/settings", {
       method: "POST",
@@ -436,6 +877,14 @@ export default function AdminPage() {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key: "skipVisibility", value: mode }),
+    });
+  };
+  const saveSkipVisibilityScreens = async (mode: SkipVisibilityScreens) => {
+    setSkipVisibilityScreens(mode);
+    await fetch("/api/admin/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: "skipVisibilityScreens", value: mode }),
     });
   };
   const testServer = async () => {
@@ -816,6 +1265,7 @@ export default function AdminPage() {
             ["stats", "Stats", streamingUsers.length > 0 ? `${streamingUsers.length} live` : null],
             ["people", "People", pendingCount > 0 ? `${pendingCount} waiting` : null],
             ["station", "Station", null],
+            ["screens", "Screens", null],
             ["services", "Services", null],
             ["system", "System", null],
             ["database", "Database", null],
@@ -927,9 +1377,16 @@ export default function AdminPage() {
           </div>
         </section>
 
+        <StationStatsPanel active={activeTab === "stats"} users={users} />
+
         {/* Now Streaming */}
         <section className="card" id="section-streaming" style={activeTab === "stats" ? undefined : { display: "none" }}>
           <h2>Now Streaming ({streamingUsers.length})</h2>
+          {presenceFetchedAt !== null && Date.now() - presenceFetchedAt > 60_000 && (
+            <p id="presence-stale" style={{ color: "var(--color-muted)", fontSize: "0.8rem", marginTop: "0.25rem" }}>
+              Paused — this tab has been idle, so polling stopped to let the database sleep. Move or click to resume.
+            </p>
+          )}
           <div style={{ marginTop: "1rem" }}>
             {streamingUsers.length === 0 && <p className="about-text">Nobody streaming right now.</p>}
             {streamingUsers.map((u: any) => {
@@ -948,6 +1405,11 @@ export default function AdminPage() {
         {/* Now Signed In */}
         <section className="card" id="section-signed-in" style={activeTab === "stats" ? undefined : { display: "none" }}>
           <h2>Now Signed In ({signedInUsers.length})</h2>
+          {presenceFetchedAt !== null && Date.now() - presenceFetchedAt > 60_000 && (
+            <p id="presence-stale-signed-in" style={{ color: "var(--color-muted)", fontSize: "0.8rem", marginTop: "0.25rem" }}>
+              Paused — this tab has been idle, so polling stopped to let the database sleep. Move or click to resume.
+            </p>
+          )}
           <div style={{ marginTop: "1rem" }}>
             {signedInUsers.length === 0 && <p className="about-text">Nobody signed in right now.</p>}
             {signedInUsers.map((u: any) => {
@@ -1550,6 +2012,8 @@ export default function AdminPage() {
 
         {/* Diagnostics */}
         {/* Database — engine, permissions, copy, switch */}
+        <ScreensPanel hidden={activeTab !== "screens"} />
+
         <section className="card" id="section-database" style={activeTab === "database" ? undefined : { display: "none" }}>
           <DatabasePanel />
         </section>
@@ -1592,7 +2056,9 @@ export default function AdminPage() {
             </a>
           </div>
 
-          {updateInfo?.updateAvailable && (
+          {/* Always rendered: stable updates appear here when one exists, and the
+              branch tips are offered regardless for testing. */}
+          <div>
             <div
               id="software-update-available"
               style={{
@@ -1601,13 +2067,286 @@ export default function AdminPage() {
                 fontSize: "0.9rem",
               }}
             >
-              <strong>Version {updateInfo.latest} is available.</strong>{" "}
-              <span style={{ color: "var(--color-muted)" }}>
-                Read the notes first, then deploy when the station is quiet &mdash; the deploy refuses to run
-                while anyone is listening unless you pass --force.
-              </span>
+              <div>
+                {updateJob?.status === "running" ? (
+                  <strong>Updating to {updateJob.to}.</strong>
+                ) : updateInfo?.updateAvailable ? (
+                  <>
+                    <strong>
+                      {updateInfo.channel === "release"
+                        ? `Version ${updateInfo.latest} is available.`
+                        : `A ${updateInfo.channel} update is available (${updateInfo.latest}).`}
+                    </strong>{" "}
+                  </>
+                ) : (
+                  <>
+                    <strong>Up to date on stable{updateInfo?.latest ? ` (v${updateInfo.latest})` : ""}.</strong>{" "}
+                  </>
+                )}
+                <span style={{ color: "var(--color-muted)" }}>
+                  Read the notes first. Updating backs up the settings, then rebuilds and
+                  restarts the station — it refuses while anyone is listening unless you
+                  accept interrupting them below.
+                </span>
+              </div>
+              {/* Channel: stable releases, or either branch tip for testing. */}
+              <div style={{ marginTop: "0.75rem", display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
+                {([
+                  // updateInfo.latest belongs to the SAVED channel, so it is only a
+                  // version number on release — on a branch it reads develop@abc1234.
+                  ["release", updateInfo?.channel === "release" && updateInfo?.latest ? `Stable v${updateInfo.latest}` : "Stable (tested releases)"],
+                  ["main", "Main branch (latest, may be unreleased)"],
+                  ["develop", "Developer branch (in progress)"],
+                ] as const).map(([value, label]) => (
+                  <label key={value} className="check" style={{ fontSize: "0.85rem" }}>
+                    <input
+                      type="radio"
+                      name="update-channel"
+                      checked={updateChannel === value}
+                      onChange={() => saveUpdateChannel(value)}
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+              {updateSource ? (
+                <div style={{ marginTop: "0.25rem", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                  Installed from {updateSource.channel}
+                  {updateSource.sha ? ` @ ${updateSource.sha.slice(0, 7)}` : ` v${updateSource.version}`}.
+                </div>
+              ) : null}
+              {/* Automatic updates: a nightly window, station time. */}
+              <div
+                id="software-auto-update"
+                style={{
+                  marginTop: "0.75rem", padding: "0.85rem 1rem", borderRadius: "8px",
+                  border: "1px solid var(--color-border)", fontSize: "0.9rem",
+                }}
+              >
+                <label className="check" style={{ fontSize: "0.9rem", fontWeight: 600 }}>
+                  <input
+                    type="checkbox"
+                    checked={autoUpdateOn}
+                    onChange={(e) => setAutoUpdateOn(e.target.checked)}
+                  />
+                  Update automatically when no one is listening
+                </label>
+                {autoUpdateOn ? (
+                  <>
+                    <div
+                      style={{
+                        marginTop: "0.6rem", display: "flex", alignItems: "flex-end",
+                        gap: "0.75rem", flexWrap: "wrap",
+                        opacity: 1, transform: "translateY(0)",
+                        transition: "opacity 180ms ease, transform 180ms ease",
+                      }}
+                    >
+                      <span role="group" aria-label="Clock format" style={{ display: "inline-flex", borderRadius: "8px", overflow: "hidden", border: "1px solid var(--color-border)", alignSelf: "flex-end" }}>
+                        {([["12-hour", true], ["24-hour", false]] as const).map(([label, v]) => (
+                          <button
+                            key={label}
+                            type="button"
+                            aria-pressed={hour12 === v}
+                            onClick={() => setClockFace(v)}
+                            style={{
+                              padding: "0.55rem 0.8rem",
+                              fontSize: "0.85rem",
+                              fontWeight: 700,
+                              border: "none",
+                              cursor: "pointer",
+                              background: hour12 === v ? "var(--color-accent)" : "transparent",
+                              color: hour12 === v ? "#fff" : "var(--color-muted)",
+                            }}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </span>
+                      <TimeSelect id="input-auto-start" label="Start time" value={autoStart} onChange={setAutoStart} hour12={hour12} />
+                      <TimeSelect id="input-auto-end" label="End time" value={autoEnd} onChange={setAutoEnd} hour12={hour12} />
+                      <button
+                        id="btn-save-auto-update"
+                        className="primary-btn"
+                        style={{ width: "auto", padding: "0.55rem 1.1rem", alignSelf: "flex-end" }}
+                        disabled={autoBusy}
+                        onClick={saveAutoUpdate}
+                      >
+                        {autoBusy ? "Saving…" : "Save window"}
+                      </button>
+                    </div>
+                    <div style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                      {autoStart && autoEnd ? (
+                        <>Updates between <strong>{formatTimeOfDay(autoStart, hour12)}</strong> and{" "}
+                        <strong>{formatTimeOfDay(autoEnd, hour12)}</strong> station time{stationTimezone ? ` (${stationTimezone})` : ""}. </>
+                      ) : (
+                        <>Pick a start and an end time{stationTimezone ? ` (station time, ${stationTimezone})` : ""}. </>
+                      )}
+                      Overnight windows wrap — {formatTimeOfDay("22:00", hour12)} to {formatTimeOfDay("04:00", hour12)} means
+                      exactly that. The station updates itself the first minute inside the window that it finds an
+                      update waiting and the room empty; a failed automatic update is not retried for a day.
+                      {stationTimezone ? (
+                        <>
+                          {" "}It is now{" "}
+                          {(() => {
+                            try {
+                              return new Intl.DateTimeFormat("en-GB", {
+                                timeZone: stationTimezone,
+                                hour: "2-digit",
+                                minute: "2-digit",
+                                hour12,
+                              }).format(new Date());
+                            } catch {
+                              return "";
+                            }
+                          })()}{" "}
+                          at the station.
+                        </>
+                      ) : null}
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)",
+                    opacity: 1, transform: "translateY(0)",
+                    transition: "opacity 180ms ease, transform 180ms ease",
+                  }}>
+                    Tick the box to set a nightly window. Times are station time
+                    {stationTimezone ? ` (${stationTimezone})` : ""}.
+                  </div>
+                )}
+                {autoMsg ? (
+                  <div id="auto-update-msg" style={{ marginTop: "0.5rem", fontSize: "0.875rem", color: "var(--color-accent)",
+                    opacity: 1, transform: "translateY(0)",
+                    transition: "opacity 180ms ease, transform 180ms ease",
+                  }}>
+                    {autoMsg}
+                  </div>
+                ) : null}
+              </div>
+
+              <div
+                id="software-update-notify"
+                style={{
+                  marginTop: "0.75rem", padding: "0.85rem 1rem", borderRadius: "8px",
+                  border: "1px solid var(--color-border)", fontSize: "0.9rem",
+                }}
+              >
+                <label className="check" style={{ fontSize: "0.9rem", fontWeight: 600 }}>
+                  <input
+                    id="input-update-notify"
+                    type="checkbox"
+                    checked={updateNotify}
+                    onChange={(e) => saveUpdateNotify(e.target.checked)}
+                  />
+                  Notify me when a new version is found
+                </label>
+                <div style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                  A push to your devices when an update lands. Needs push enabled on this device first — Services → Push Notifications.
+                </div>
+                {updateNotifyMsg ? (
+                  <div id="update-notify-msg" style={{ marginTop: "0.5rem", fontSize: "0.875rem", color: "var(--color-accent)" }}>
+                    {updateNotifyMsg}
+                  </div>
+                ) : null}
+              </div>
+
+              <div style={{ marginTop: "0.75rem", display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap" }}>
+                <button
+                  id="btn-start-update"
+                  className="primary-btn"
+                  style={{ width: "auto", padding: "0.5rem 1.1rem" }}
+                  disabled={
+                    updateBusy ||
+                    updateJob?.status === "running" ||
+                    !updateInfo ||
+                    !updateInfo.updateAvailable
+                  }
+                  onClick={() =>
+                    startUpdate(updateChannel, updateChannel === "release" ? updateInfo?.latest || undefined : undefined)
+                  }
+                >
+                  {updateJob?.status === "running"
+                    ? "Updating…"
+                    : updateBusy
+                      ? "Starting…"
+                      : !updateInfo
+                        ? "Checking…"
+                        : updateInfo.updateAvailable
+                          ? updateChannel === "release"
+                            ? `Update to v${updateInfo.latest}`
+                            : `Update to latest ${updateChannel}`
+                          : `Up to date${updateChannel === "release" ? "" : ` on ${updateChannel}`}`}
+                </button>
+                {updateNeedsListenerConfirm ? (
+                  <label className="check" style={{ fontSize: "0.85rem" }}>
+                    <input
+                      type="checkbox"
+                      checked={updateConfirmListeners}
+                      onChange={(e) => setUpdateConfirmListeners(e.target.checked)}
+                    />
+                    I know listeners are on air — update anyway
+                  </label>
+                ) : null}
+              </div>
+              {updateJob?.status === "running" ? (
+                <div id="update-progress" style={{ marginTop: "0.75rem", fontSize: "0.85rem", color: "var(--color-muted)",
+                  opacity: 1, transform: "translateY(0)",
+                  transition: "opacity 180ms ease, transform 180ms ease",
+                }}>
+                  {(updateJob.log.slice(-3).join(" · ")) || "Starting…"}{" "}
+                  <button
+                    type="button"
+                    onClick={() => setShowUpdateModal(true)}
+                    style={{ background: "none", border: "none", padding: 0, cursor: "pointer", fontSize: "inherit", color: "var(--color-accent)", textDecoration: "underline" }}
+                  >
+                    View progress
+                  </button>
+                </div>
+              ) : null}
             </div>
-          )}
+          </div>
+
+          {updateMsg ? (
+            <div id="software-update-msg" style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-accent)",
+              opacity: 1, transform: "translateY(0)",
+              transition: "opacity 180ms ease, transform 180ms ease",
+            }}>
+              {updateMsg}
+            </div>
+          ) : null}
+
+          {updateJob && updateJob.status !== "running" && (updateJob.status === "done" || updateJob.status === "failed" || updateJob.status === "rolled-back") ? (
+            <div
+              id="software-update-last"
+              style={{
+                marginTop: "1rem", padding: "0.85rem 1rem", borderRadius: "8px",
+                border: "1px solid var(--color-border)", fontSize: "0.875rem",
+                opacity: 1, transform: "translateY(0)",
+                transition: "opacity 180ms ease, transform 180ms ease",
+              }}
+            >
+              <div>
+                {updateJob.status === "done" ? (
+                  <>Last update{updateJob.trigger === "auto" ? " (automatic)" : ""} to <strong>v{updateJob.to}</strong> completed. Verify the station, then carry on.</>
+                ) : updateJob.status === "rolled-back" ? (
+                  <>Last update to <strong>v{updateJob.to}</strong> was rolled back{updateJob.error ? `: ${updateJob.error}` : ""}.</>
+                ) : (
+                  <>Last update to <strong>v{updateJob.to}</strong> failed{updateJob.error ? `: ${updateJob.error}` : ""}.</>
+                )}
+              </div>
+              {updateJob.backupId && (updateJob.status === "failed" || updateJob.status === "done") ? (
+                <div style={{ marginTop: "0.6rem" }}>
+                  <button
+                    id="btn-rollback-update"
+                    className="seg-btn"
+                    disabled={updateBusy}
+                    onClick={rollbackUpdate}
+                  >
+                    Roll back to v{updateJob.from}
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
 
           {updateInfo && !updateInfo.updateAvailable && (
             <div id="software-update-current" style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-muted)" }}>
@@ -1621,6 +2360,139 @@ export default function AdminPage() {
             </div>
           )}
         </section>
+
+        {/* Backups: everything that makes this station this station, snapshotted. */}
+        <section className="card" id="section-backups" style={activeTab === "system" ? undefined : { display: "none" }}>
+          <h2>Backups</h2>
+          <p className="about-text" style={{ marginTop: "0.5rem", fontSize: "0.875rem" }}>
+            The settings file, the whole database, the station artwork and the setup
+            marker — everything a failed update would need to put back. Snapshots live
+            on this server; download one to keep it somewhere else.
+          </p>
+
+          <div style={{ marginTop: "1rem", display: "flex", alignItems: "center", gap: "1rem", flexWrap: "wrap" }}>
+            <button
+              id="btn-create-backup"
+              className="primary-btn"
+              style={{ width: "auto", padding: "0.5rem 1.1rem" }}
+              disabled={backupBusy !== null}
+              onClick={createBackupNow}
+            >
+              {backupBusy === "create" ? "Backing up…" : "Back up now"}
+            </button>
+            {backupMsg ? (
+              <span id="backup-msg" style={{ fontSize: "0.875rem", color: "var(--color-accent)" }}>{backupMsg}</span>
+            ) : null}
+          </div>
+
+          <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+            {backups === null ? (
+              <div style={{ fontSize: "0.875rem", color: "var(--color-muted)",
+                opacity: 1, transform: "translateY(0)",
+                transition: "opacity 180ms ease, transform 180ms ease",
+              }}>Loading backups…</div>
+            ) : backups.length === 0 ? (
+              <div id="backups-empty" style={{ fontSize: "0.875rem", color: "var(--color-muted)",
+                opacity: 1, transform: "translateY(0)",
+                transition: "opacity 180ms ease, transform 180ms ease",
+              }}>
+                No backups yet. Take one before changing anything you cannot easily undo.
+              </div>
+            ) : (
+              backups.map((b) => {
+                const rows = Object.values(b.tables).reduce((a: number, x: number) => a + x, 0);
+                const when = (() => {
+                  try {
+                    return new Date(b.createdAt).toLocaleString();
+                  } catch {
+                    return b.createdAt;
+                  }
+                })();
+                const size = b.sizeBytes > 1048576
+                  ? `${(b.sizeBytes / 1048576).toFixed(1)} MB`
+                  : `${Math.max(1, Math.round(b.sizeBytes / 1024))} KB`;
+                const busy = backupBusy === b.id;
+                const confirming = restoreConfirmId === b.id;
+                return (
+                  <div
+                    key={b.id}
+                    id={`backup-${b.id}`}
+                    style={{
+                      display: "flex", alignItems: "center", gap: "0.75rem", flexWrap: "wrap",
+                      padding: "0.7rem 0.9rem", borderRadius: "8px",
+                      border: "1px solid var(--color-border)", background: "rgba(255,255,255,0.03)",
+                    }}
+                  >
+                    <div style={{ flex: "1 1 200px", minWidth: 0 }}>
+                      <div style={{ fontSize: "0.9rem", fontWeight: 600 }}>
+                        {b.label || "Backup"} <span style={{ fontWeight: 400, color: "var(--color-muted)" }}>· v{b.appVersion}</span>
+                      </div>
+                      <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                        {when} · {rows.toLocaleString()} rows · {b.brandFiles} artwork files · {size}
+                      </div>
+                    </div>
+                    {confirming ? (
+                      <>
+                        <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                          Restore, replacing current settings? The station restarts.
+                        </span>
+                        <button
+                          id={`btn-restore-confirm-${b.id}`}
+                          className="primary-btn"
+                          style={{ width: "auto", padding: "0.4rem 0.9rem", fontSize: "0.8rem" }}
+                          disabled={busy}
+                          onClick={() => restoreBackupNow(b.id)}
+                        >
+                          {busy ? "Restoring…" : "Yes, restore"}
+                        </button>
+                        <button
+                          id={`btn-restore-cancel-${b.id}`}
+                          className="seg-btn"
+                          disabled={busy}
+                          onClick={() => setRestoreConfirmId(null)}
+                        >
+                          Cancel
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <a
+                          id={`btn-download-backup-${b.id}`}
+                          href={`/api/admin/backup/${b.id}/download`}
+                          style={{
+                            fontSize: "0.8rem", fontWeight: 600, color: "var(--color-text)",
+                            border: "1px solid var(--color-border)", borderRadius: "8px",
+                            padding: "0.4rem 0.9rem", textDecoration: "none", whiteSpace: "nowrap",
+                          }}
+                        >
+                          Download
+                        </a>
+                        <button
+                          id={`btn-restore-backup-${b.id}`}
+                          className="seg-btn"
+                          disabled={backupBusy !== null}
+                          onClick={() => setRestoreConfirmId(b.id)}
+                        >
+                          Restore
+                        </button>
+                        <button
+                          id={`btn-delete-backup-${b.id}`}
+                          className="seg-btn"
+                          disabled={backupBusy !== null}
+                          onClick={() => deleteBackupNow(b.id)}
+                          aria-label={`Delete backup ${b.label || b.id}`}
+                        >
+                          Delete
+                        </button>
+                      </>
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </section>
+
 
         <section className="card" id="section-diagnostics" style={activeTab === "system" ? undefined : { display: "none" }}>
           <h2>Diagnostics</h2>
@@ -1773,11 +2645,20 @@ export default function AdminPage() {
           </div>
           <div style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
             {streamMode === "relay" ? (
-              <span>One upstream connection feeds every listener. Backend counts relay sockets (all proxy addresses); per-listener identity lives here in Signed In.</span>
+              <span style={{
+                opacity: 1, transform: "translateY(0)",
+                transition: "opacity 180ms ease, transform 180ms ease",
+              }}>One upstream connection feeds every listener. Backend counts relay sockets (all proxy addresses); per-listener identity lives here in Signed In.</span>
             ) : (
               <>
-                <span>Each player connects straight to the master — the backend sees true counts and real IPs natively.</span>
-                <span>Costs: backend upload scales per listener, and the station password ships in page JS (approved eyes only — rotate it if shared).</span>
+                <span style={{
+                  opacity: 1, transform: "translateY(0)",
+                  transition: "opacity 180ms ease, transform 180ms ease",
+                }}>Each player connects straight to the master — the backend sees true counts and real IPs natively.</span>
+                <span style={{
+                  opacity: 1, transform: "translateY(0)",
+                  transition: "opacity 180ms ease, transform 180ms ease",
+                }}>Costs: backend upload scales per listener, and the station password ships in page JS (approved eyes only — rotate it if shared).</span>
               </>
             )}
             <span>Applies on next Play; current listeners keep their path until they re-tune.</span>
@@ -1816,10 +2697,186 @@ export default function AdminPage() {
             <span>{SKIP_VISIBILITY_OPTIONS.find((o) => o.value === skipVisibility)?.blurb}</span>
             <span>Admins always see Skip — this only governs listeners. Takes effect on their next page load.</span>
           </div>
+
+          {/* Wall screens. A SEPARATE control, because "who gets Skip in the
+              browser" and "may a screen in the hallway cut the music" are two
+              different decisions by two different people, and one shared control
+              makes one of them unmakeable. */}
+          <div style={{ marginTop: "1.25rem", paddingTop: "1.25rem", borderTop: "1px solid var(--color-border)" }}>
+            <p style={{ margin: "0 0 0.5rem", fontWeight: 600 }}>Wall screens</p>
+            <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+              {SKIP_VISIBILITY_SCREENS_OPTIONS.map((opt) => (
+                <button
+                  key={opt.value}
+                  id={`btn-skip-screens-${opt.value}`}
+                  onClick={() => saveSkipVisibilityScreens(opt.value)}
+                  aria-pressed={skipVisibilityScreens === opt.value}
+                  className="primary-btn"
+                  style={{
+                    width: "auto",
+                    padding: "0.5rem 1.25rem",
+                    background: skipVisibilityScreens === opt.value ? "var(--color-text)" : "rgba(255,255,255,0.08)",
+                    color: skipVisibilityScreens === opt.value ? "var(--color-bg)" : "var(--color-text)",
+                  }}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+            <div style={{ marginTop: "1rem", fontSize: "0.875rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+              <span>{SKIP_VISIBILITY_SCREENS_OPTIONS.find((o) => o.value === skipVisibilityScreens)?.blurb}</span>
+              <span>A screen decides for itself from this, and never registers as a listener while doing it — so the counts on this page never include a wall.</span>
+            </div>
+          </div>
+        </CollapsibleSection>
+
+        {/* Idle listening cutoff. The player stops itself after the window and
+            offers one tap to extend it — a stream nobody is hearing stops
+            costing the station bandwidth. */}
+        <CollapsibleSection
+          id="section-still-listening"
+          title={<>Are You Still Listening</>}
+          summary={<>Stop streams left playing to an empty room. Listeners get a reminder first, and one tap adds a full window.</>}
+          hidden={activeTab !== "station"}
+        >
+          <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <label className="check" style={{ fontSize: "0.9rem", fontWeight: 600 }}>
+              <input
+                id="input-still-listening-enabled"
+                type="checkbox"
+                checked={slEnabled}
+                onChange={(e) => setSlEnabled(e.target.checked)}
+              />
+              Stop idle streams
+            </label>
+            <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+              <div>
+                <label htmlFor="input-still-listening-minutes" style={{ display: "block", marginBottom: "0.5rem" }}>Listening time (minutes)</label>
+                <input
+                  id="input-still-listening-minutes"
+                  type="number"
+                  inputMode="numeric"
+                  min={5}
+                  max={720}
+                  value={slMinutes}
+                  onChange={(e) => setSlMinutes(e.target.value)}
+                  className="input-field"
+                  style={{ width: "140px" }}
+                />
+              </div>
+              <div>
+                <label htmlFor="input-still-listening-reminder" style={{ display: "block", marginBottom: "0.5rem" }}>Remind me before (minutes)</label>
+                <input
+                  id="input-still-listening-reminder"
+                  type="number"
+                  inputMode="numeric"
+                  min={1}
+                  value={slReminder}
+                  onChange={(e) => setSlReminder(e.target.value)}
+                  className="input-field"
+                  style={{ width: "140px" }}
+                />
+              </div>
+            </div>
+            <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>
+              A stream left running stops on its own when the time runs out. The reminder chimes first, and one tap pushes the stop out by a full window.
+            </div>
+            <div>
+              <button
+                id="btn-save-still-listening"
+                className="primary-btn"
+                style={{ width: "150px", padding: "0.5rem" }}
+                onClick={saveStillListening}
+                disabled={slBusy}
+              >
+                {slBusy ? "Saving…" : "Save"}
+              </button>
+            </div>
+            {slMsg && <div id="still-listening-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{slMsg}</div>}
+          </div>
+        </CollapsibleSection>
+
+        {/* Station coordinates. The wall screen uses the station's latitude
+            and longitude to calculate sunrise/sunset and switch its theme
+            automatically. Without coordinates it falls back to night (the safe
+            direction — a dim screen is fixable from the app; a bright one at
+            3am is not). The device setup portal also asks for these, but the
+            admin can set or correct them here without re-flashing the screen. */}
+        <CollapsibleSection
+          id="section-station-coordinates"
+          title={<>Station Coordinates</>}
+          summary={<>Latitude and longitude for the astronomical day/night theme on wall screens.</>}
+          hidden={activeTab !== "station"}
+        >
+          <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
+            <div style={{ display: "flex", gap: "1rem", flexWrap: "wrap" }}>
+              <div>
+                <label htmlFor="input-station-lat" style={{ display: "block", marginBottom: "0.5rem" }}>Latitude</label>
+                <input
+                  id="input-station-lat"
+                  type="number"
+                  inputMode="numeric"
+                  step="0.000001"
+                  min={-90}
+                  max={90}
+                  value={stationLat}
+                  onChange={(e) => setStationLat(e.target.value)}
+                  className="input-field"
+                  style={{ width: "200px" }}
+                  placeholder="-42.8821"
+                />
+              </div>
+              <div>
+                <label htmlFor="input-station-lon" style={{ display: "block", marginBottom: "0.5rem" }}>Longitude</label>
+                <input
+                  id="input-station-lon"
+                  type="number"
+                  inputMode="numeric"
+                  step="0.000001"
+                  min={-180}
+                  max={180}
+                  value={stationLon}
+                  onChange={(e) => setStationLon(e.target.value)}
+                  className="input-field"
+                  style={{ width: "200px" }}
+                  placeholder="147.3272"
+                />
+              </div>
+            </div>
+            <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>
+              The screen uses these to calculate sunrise and sunset for its day/night
+              theme. Without them it defaults to night (the safe direction — a dim
+              screen is fixable from the app; a bright one at 3am is not). The device
+              setup portal also asks for these during provisioning; entering them here
+              saves a re-flash.
+            </div>
+            <div>
+              <button
+                id="btn-save-coordinates"
+                className="primary-btn"
+                style={{ width: "150px", padding: "0.5rem" }}
+                onClick={saveCoordinates}
+                disabled={coordBusy}
+              >
+                {coordBusy ? "Saving…" : "Save"}
+              </button>
+            </div>
+            {coordMsg && <div id="coord-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{coordMsg}</div>}
+          </div>
         </CollapsibleSection>
         </div>
       </div>
       </div>
+      {showUpdateModal && updateJob ? (
+        <UpdateModal
+          job={updateJob}
+          channel={updateChannel}
+          busy={updateBusy}
+          onClose={() => setShowUpdateModal(false)}
+          onReload={() => window.location.reload()}
+          onRollback={rollbackUpdate}
+        />
+      ) : null}
     </div>
   );
 }

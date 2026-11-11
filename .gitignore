@@ -1,4 +1,5 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+.agents/teamwork
 
 # dependencies
 /node_modules
@@ -40,6 +41,11 @@ yarn-error.log*
 # local sqlite data (never publish listening history / secrets)
 data/
 *.db
+
+# build stamp, written by deploy.sh from the local commit SHA and verified against
+# the release tag on the host. Untracked by design: it describes a deployment,
+# not a commit.
+public/build-sha.txt
 *.db-journal
 
 # setup wizard marker. Its presence IS the "this station is configured" flag, so
@@ -59,3 +65,25 @@ DEPLOY.md
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Device working documents — design spec, capability rule, API contract,
+# provisioning runbook, hardware notes, task list. These are the thinking space
+# for the ESP32-P4 screen component, not deliverables: they change weekly, they
+# reference half-built code, and nothing reads them but us. Same reasoning as
+# DEPLOY.md and deploy.sh above.
+#
+# Only *.md is ignored. device/firmware/ is real source and WILL be committed —
+# the specs graduate into docs/ when the component works.
+/device/*.md
+
+# check-script artifacts (throwaway sqlite client + generated test schema).
+# The scripts remove these on exit; this covers interrupted runs.
+/.test-client
+
+# Rendered layout previews (npm run render:setup). Regenerable, and only
+# meaningful next to the YAML they were drawn from.
+/.preview
+/prisma/.gen-test.prisma
+/prisma/lite-client
+/prisma/.gen-cache.prisma
+/prisma/.gen-sqlite.prisma

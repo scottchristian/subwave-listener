@@ -1,0 +1,15 @@
+# Throwaway E2E station for the in-app updater test. Not a production image:
+# production deploys rsync source and builds on the VPS (see deploy.sh).
+FROM node:20-bookworm
+
+RUN npm i -g pm2 && pm2 --version
+
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY . .
+RUN npx prisma generate
+
+# Wired at container start (see e2e/entrypoint.sh).
+EXPOSE 3000
+ENTRYPOINT ["/app/e2e/entrypoint.sh"]

@@ -27,13 +27,18 @@ export const maxDuration = 600;
  * query then fails at runtime with "the URL must start with the protocol
  * file:". The env file and this file must move together.
  */
-async function setSchemaProvider(provider: string): Promise<void> {
+async function setSchemaProvider(provider: "postgresql" | "sqlite"): Promise<void> {
+  const safeProvider = provider === "postgresql" ? "postgresql" : "sqlite";
   const raw = await fs.readFile(SCHEMA, "utf8");
   const next = raw.replace(
     /(datasource\s+db\s*\{\s*provider\s*=\s*")[^"]*(")/,
-    `$1${provider}$2`
+    `$1${safeProvider}$2`
   );
-  if (next === raw && !new RegExp(`provider\\s*=\\s*"${provider}"`).test(raw)) {
+  const alreadyPresent =
+    safeProvider === "postgresql"
+      ? /provider\s*=\s*"postgresql"/.test(raw)
+      : /provider\s*=\s*"sqlite"/.test(raw);
+  if (next === raw && !alreadyPresent) {
     throw new Error(`could not find the datasource block in ${SCHEMA}`);
   }
   if (next !== raw) {
@@ -197,12 +202,48 @@ export async function POST(req: Request) {
   // Both the env file and the schema have now been changed. If anything below
   // fails the station is mid-switch — the worst state, because the running
   // process is on the old engine while the files say otherwise. Put both back.
-  const rollback = async () => {
+  //
+  // The generated client is part of "both", and leaving it out is what made a
+  // failed attempt dangerous rather than merely useless. Prisma bakes the
+  // provider into the generated code, so a rollback that restores the schema and
+  // the env but not the client leaves a SQLite client against a Postgres URL.
+  // The running process survives that — it already loaded the old client into
+  // memory — which is exactly what makes it a trap: the station looks perfectly
+  // healthy, and then the next deploy or restart loads the mismatched client and
+  // every query fails. So the client is regenerated here, and a failure to do
+  // so is reported rather than swallowed.
+  const rollback = async (): Promise<string | null> => {
     await fs.copyFile(`${SCHEMA}.bak-switch`, SCHEMA).catch(() => {});
     await fs.rm(`${SCHEMA}.bak-switch`, { force: true }).catch(() => {});
     try {
       await updateEnvFile({ DATABASE_URL: process.env.DATABASE_URL || "", DB_PROVIDER: from });
     } catch {}
+    try {
+      await run(/* turbopackIgnore: true */ "npx", ["prisma", "generate"], {
+        cwd: APP_DIR,
+        timeout: 300_000,
+        env: { ...process.env, DATABASE_URL: process.env.DATABASE_URL || "" },
+      });
+      return null;
+    } catch (e: any) {
+      const out = `${e?.stdout || ""}${e?.stderr || ""}`.trim();
+      return `The database files were put back, but regenerating the Prisma client for ${from} FAILED: ${out
+        .split("\n")
+        .slice(-2)
+        .join(" · ")}. Run \`npx prisma generate\` on the host before restarting anything.`;
+    }
+  };
+
+  /**
+   * The last few lines of a failed child process, for the error the operator
+   * reads. A build that fails with "Build failed" and no reason is the same as a
+   * build that did not fail: you cannot act on it.
+   */
+  const whyItFailed = (e: any): string => {
+    const out = `${e?.stdout || ""}${e?.stderr || ""}`.trim();
+    if (!out) return "";
+    const lines = out.split("\n").filter((l) => l.trim());
+    return lines.slice(-6).join(" · ");
   };
 
   // Regenerate the Prisma client for the new provider. The generated code is
@@ -216,11 +257,12 @@ export async function POST(req: Request) {
     });
   } catch (e: any) {
     const out = `${e?.stdout || ""}${e?.stderr || ""}`.trim();
-    await rollback();
+    const clientNote = await rollback();
     return NextResponse.json(
       {
         error:
-          `Prisma client generation failed. Nothing was switched — schema and environment were both put back. ${out.split("\n").slice(-2).join(" · ")}`,
+          `Prisma client generation failed. Nothing was switched — schema, environment and the generated Prisma client were all put back. ${out.split("\n").slice(-2).join(" · ")}`,
+        ...(clientNote ? { clientWarning: clientNote } : {}),
       },
       { status: 500 }
     );
@@ -228,28 +270,63 @@ export async function POST(req: Request) {
 
   // Rebuild so the new client is bundled. A failed build leaves the previous
   // .next in place and we bail before restarting.
+  //
+  // SKIP_UNIT_CHECKS=1 is REQUIRED here, and its absence is why a real cutover
+  // to SQLite reported "Build failed" with no reason at all. `npm run build`
+  // runs scripts/run-checks.mjs first, which exits 1 on any Node too old to
+  // execute the TypeScript suites — the deploy host is on Node 20, so the build
+  // died at its very first step, before compiling anything, and the error text
+  // was thrown away rather than reported. deploy.sh already sets this for the
+  // same reason; a cutover rebuilds on the same host and needs it too.
   try {
     await run("npm", ["run", "build"], {
       cwd: APP_DIR,
       timeout: 600_000,
-      env: { ...process.env, DATABASE_URL: url },
+      env: { ...process.env, DATABASE_URL: url, SKIP_UNIT_CHECKS: "1" },
     });
   } catch (e: any) {
-    await rollback();
+    const clientNote = await rollback();
+    const why = whyItFailed(e);
     return NextResponse.json(
       {
         error:
-          "Build failed. Nothing was switched — schema and environment were both put back, and the previous version is still running.",
+          "Build failed. Nothing was switched — schema, environment and the generated Prisma client were all put back, and the previous version is still running." +
+          (why ? ` Reason: ${why}` : ""),
+        ...(clientNote ? { clientWarning: clientNote } : {}),
       },
       { status: 500 }
     );
   }
 
   // The response has to reach the browser before the process goes away.
+  //
+  // `--update-env` and an explicit environment are BOTH required, and this is
+  // the fourth bug in this route — the one that made a successful cutover leave
+  // the station unable to sign in.
+  //
+  // A plain `pm2 restart` replays the environment PM2 stored when the app was
+  // first started, which still held the old DATABASE_URL. Next.js does not
+  // override a variable that already exists in process.env, so reloading
+  // .env.local changed nothing: the process kept resolving DATABASE_URL to the
+  // old Postgres URL while the regenerated Prisma client was SQLite, and every
+  // session read failed with
+  //
+  //   Error validating datasource `db`: the URL must start with the protocol
+  //   `file:`.
+  //
+  // which the client classified as a sleeping database — so the listener was
+  // shown "Waking the station up" against a database that did not exist and
+  // could not be woken. Passing the new values with --update-env is what makes
+  // the restart actually pick up the switch.
   setTimeout(() => {
-    execFile(/* turbopackIgnore: true */ PM2_BIN, ["restart", PM2_APP], (err) => {
-      if (err) console.error("Restart after database switch failed:", err.message);
-    });
+    execFile(
+      /* turbopackIgnore: true */ PM2_BIN,
+      ["restart", PM2_APP, "--update-env"],
+      { env: { ...process.env, DATABASE_URL: url, DB_PROVIDER: to } },
+      (err) => {
+        if (err) console.error("Restart after database switch failed:", err.message);
+      }
+    );
   }, 800);
 
   await fs.rm(`${SCHEMA}.bak-switch`, { force: true }).catch(() => {});

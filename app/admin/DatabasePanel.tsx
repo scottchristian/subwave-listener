@@ -119,6 +119,20 @@ export default function DatabasePanel() {
   const [kaSeconds, setKaSeconds] = useState("300");
   const [kaBusy, setKaBusy] = useState(false);
   const [kaMsg, setKaMsg] = useState("");
+  // Layerbase free-plan warning: shown after enabling, never blocks.
+  const [kaWarn, setKaWarn] = useState<string | null>(null);
+  // Limited-communication mode: likes + link lookups served from SQLite,
+  // flushed to Postgres every N minutes. Shown only on Postgres.
+  const [liteOn, setLiteOn] = useState(false);
+  const [liteMinutes, setLiteMinutes] = useState("20");
+  const [liteSessionMinutes, setLiteSessionMinutes] = useState("20");
+  const [liteBusy, setLiteBusy] = useState(false);
+  const [liteMsg, setLiteMsg] = useState("");
+  const liteTouched = useRef(false);
+  // Set on any hand edit, cleared on successful save. The 15s status poll
+  // must not touch the form while this is set — it used to flip the switch
+  // back on under the operator's finger before they reached Save.
+  const kaTouched = useRef(false);
 
   const onPostgres = status?.provider === "postgresql";
 
@@ -154,8 +168,25 @@ export default function DatabasePanel() {
         const d = await r.json();
         if (stop) return;
         setKa(d);
-        setKaOn(d.enabled);
-        setKaSeconds(String(d.seconds));
+        if (!kaTouched.current) {
+          setKaOn(d.enabled);
+          setKaSeconds(String(d.seconds));
+        }
+        if (!liteTouched.current) {
+          try {
+            const sres = await fetch("/api/admin/settings");
+            if (sres.ok) {
+              const rows = await sres.json();
+              const get = (k: string) => rows.find((x: any) => x.key === k)?.value;
+              if (get("liteCacheEnabled") === "true") setLiteOn(true);
+              else if (get("liteCacheEnabled") === "false") setLiteOn(false);
+              const m = Math.floor(Number(get("liteFlushMinutes")));
+              if (Number.isFinite(m)) setLiteMinutes(String(m));
+              const sm = Math.floor(Number(get("liteSessionMinutes")));
+              if (Number.isFinite(sm)) setLiteSessionMinutes(String(sm));
+            }
+          } catch {}
+        }
       } catch {}
     };
     pull();
@@ -178,6 +209,10 @@ export default function DatabasePanel() {
       const d = await r.json();
       if (!r.ok) throw new Error(d.error || "Could not save");
       setKa(d);
+      setKaWarn(typeof d.layerbaseWarning === "string" && d.layerbaseWarning ? d.layerbaseWarning : null);
+      kaTouched.current = false;
+      setKaOn(d.enabled);
+      setKaSeconds(String(d.seconds));
       setKaMsg(
         d.enabled
           ? `Pinging every ${d.seconds}s. The station pings immediately on restart.`
@@ -188,6 +223,45 @@ export default function DatabasePanel() {
       setError(e.message || "Could not save");
     } finally {
       setKaBusy(false);
+    }
+  };
+
+  const saveLiteCache = async () => {
+    const minutes = Math.floor(Number(liteMinutes));
+    if (!Number.isInteger(minutes) || minutes < 5 || minutes > 240) {
+      setLiteMsg("Flush every 5–240 minutes.");
+      return;
+    }
+    const sessionMinutes = Math.floor(Number(liteSessionMinutes));
+    if (!Number.isInteger(sessionMinutes) || sessionMinutes < 5 || sessionMinutes > 240) {
+      setLiteMsg("Re-check every 5–240 minutes.");
+      return;
+    }
+    setLiteBusy(true);
+    setLiteMsg("");
+    try {
+      for (const [key, value] of [
+        ["liteCacheEnabled", liteOn ? "true" : "false"],
+        ["liteFlushMinutes", String(minutes)],
+        ["liteSessionMinutes", String(sessionMinutes)],
+      ] as const) {
+        const r = await fetch("/api/admin/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ key, value }),
+        });
+        if (!r.ok) throw new Error(`could not save ${key}`);
+      }
+      liteTouched.current = false;
+      setLiteMsg(
+        liteOn
+          ? `On — likes, link lookups and sign-in checks serve from this server. Postgres catches up every ${minutes} minutes; sign-in re-checks every ${sessionMinutes}.`
+          : "Off — likes, links and sign-in checks use Postgres directly."
+      );
+    } catch (e: any) {
+      setLiteMsg(`Could not save: ${e.message || "unknown error"}`);
+    } finally {
+      setLiteBusy(false);
     }
   };
 
@@ -541,7 +615,7 @@ export default function DatabasePanel() {
                 role="switch"
                 aria-checked={kaOn}
                 aria-labelledby="db-keepalive-label"
-                onClick={() => setKaOn((o) => !o)}
+                onClick={() => { kaTouched.current = true; setKaOn((o) => !o); }}
                 style={{
                   flexShrink: 0, width: "48px", height: "27px", borderRadius: "999px", border: "none", cursor: "pointer",
                   backgroundColor: kaOn ? "var(--color-accent)" : "rgba(255,255,255,0.18)",
@@ -566,14 +640,14 @@ export default function DatabasePanel() {
                 max={ka?.max ?? 3600}
                 value={kaSeconds}
                 disabled={!kaOn}
-                onChange={(e) => setKaSeconds(e.target.value)}
+                onChange={(e) => { kaTouched.current = true; setKaSeconds(e.target.value); }}
               />
               <button
                 id="db-keepalive-save"
                 className="primary-btn"
                 style={{ width: "auto", padding: "0.5rem 1rem" }}
                 onClick={saveKeepAlive}
-                disabled={kaBusy || !kaOn}
+                disabled={kaBusy}
               >
                 {kaBusy ? "Saving…" : "Save"}
               </button>
@@ -595,6 +669,89 @@ export default function DatabasePanel() {
                 Most free tiers suspend after about five minutes idle. 300s is a safe default.
               </p>
             )}
+          </div>
+
+          {/* Limited communication: the SQLite write-back cache. Postgres-only —
+              a station already on SQLite has nothing to save. */}
+          <div style={{ marginTop: "1.5rem" }}>
+            <h3 style={{ fontSize: "1rem", marginBottom: "0.35rem" }}>Limit database chatter</h3>
+            <p style={{ color: "var(--color-muted)", fontSize: "0.875rem", marginTop: "0.35rem" }}>
+              Likes and song-link lookups are served from a small database on this server instead of Postgres,
+              and written back every few minutes. Day-to-day use then barely touches Postgres — enough to stay
+              inside a free tier&apos;s sleep allowance — while logins, settings and history still use Postgres
+              directly. Unliking applies everywhere instantly; everything else catches up at the next flush. If
+              this server were ever lost, at most one flush interval of likes could go missing; Postgres remains
+              the permanent record.
+            </p>
+            <div className="db-keepalive" style={{ marginTop: "0.75rem" }}>
+              <div className="db-keepalive-row">
+                <span id="db-lite-label" className="db-keepalive-label">Cache likes &amp; links locally</span>
+                <button
+                  id="db-lite-toggle"
+                  role="switch"
+                  aria-checked={liteOn}
+                  aria-labelledby="db-lite-label"
+                  onClick={() => { liteTouched.current = true; setLiteOn((o) => !o); }}
+                  style={{
+                    flexShrink: 0, width: "48px", height: "27px", borderRadius: "999px", border: "none", cursor: "pointer",
+                    backgroundColor: liteOn ? "var(--color-accent)" : "rgba(255,255,255,0.18)",
+                    position: "relative", transition: "background-color 0.2s ease", padding: 0,
+                  }}
+                >
+                  <span style={{
+                    position: "absolute", top: "2px", left: liteOn ? "23px" : "2px", width: "23px", height: "23px",
+                    borderRadius: "50%", backgroundColor: "#fff", transition: "left 0.2s ease",
+                  }} />
+                </button>
+              </div>
+              <div className="db-keepalive-row">
+                <label htmlFor="db-lite-minutes" className="db-keepalive-label">Flush every (minutes)</label>
+                <input
+                  id="db-lite-minutes"
+                  className="db-input db-narrow"
+                  type="number"
+                  inputMode="numeric"
+                  min={5}
+                  max={240}
+                  value={liteMinutes}
+                  disabled={!liteOn}
+                  onChange={(e) => { liteTouched.current = true; setLiteMinutes(e.target.value); }}
+                />
+                <button
+                  id="db-lite-save"
+                  className="primary-btn"
+                  style={{ width: "auto", padding: "0.5rem 1rem" }}
+                  onClick={saveLiteCache}
+                  disabled={liteBusy}
+                >
+                  {liteBusy ? "Saving…" : "Save"}
+                </button>
+              </div>
+              <div className="db-keepalive-row">
+                <label htmlFor="db-lite-session-minutes" className="db-keepalive-label">Re-check sign-in every (minutes)</label>
+                <input
+                  id="db-lite-session-minutes"
+                  className="db-input db-narrow"
+                  type="number"
+                  inputMode="numeric"
+                  min={5}
+                  max={240}
+                  value={liteSessionMinutes}
+                  disabled={!liteOn}
+                  onChange={(e) => { liteTouched.current = true; setLiteSessionMinutes(e.target.value); }}
+                />
+              </div>
+              <p style={{ color: "var(--color-muted)", fontSize: "0.8rem", marginTop: "0.35rem" }}>
+                Sign-in and approval answers are cached on this server and re-checked with Postgres on this
+                interval, which is what removes the repeated lookup behind every request. Keep it above about
+                fifteen minutes or the database never gets to sleep. Signing out, approving and revoking all take
+                effect immediately regardless. This file is only a cache: deleting it costs one re-check, never an
+                outage.
+              </p>
+              {liteMsg && (
+                <p style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{liteMsg}</p>
+              )}
+            </div>
           </div>
         </div>
       )}
@@ -861,6 +1018,19 @@ export default function DatabasePanel() {
         </div>
       )}
 
+      {kaWarn && (
+        <div id="keepalive-warn-bg" onClick={() => setKaWarn(null)} className="overlay-bg-enter" style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 2000, overflowY: "auto", padding: "2rem 1rem" }}>
+          <div id="keepalive-warn-card" onClick={(e) => e.stopPropagation()} className="overlay-card-enter" style={{ maxWidth: "480px", width: "100%", margin: "0 auto", minHeight: "auto", padding: "0 0.5rem", position: "relative", zIndex: 2001 }}>
+            <div className="card">
+              <h2 style={{ fontSize: "1.3rem", margin: "0 0 0.75rem" }}>Heads up: Layerbase free plan</h2>
+              <p style={{ fontSize: "0.95rem", marginBottom: "1rem" }}>{kaWarn}</p>
+              <button id="btn-keepalive-warn-ok" className="primary-btn" style={{ width: "auto", padding: "0.55rem 1.25rem" }} onClick={() => setKaWarn(null)}>
+                I understand — keep it on
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       {(message || error) && (
         <p style={{ marginTop: "1.25rem", fontSize: "0.9rem", color: error ? "#e06a5c" : "var(--color-accent)" }}>
           {error || message}

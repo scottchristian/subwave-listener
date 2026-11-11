@@ -1,0 +1,1636 @@
+# Panel, touch, and LVGL.
+#
+# The panel block itself lives in panel.yaml (or whatever `panel_include`
+# names) so that it can be swapped without touching anything below.
+#
+# THE PANEL IS 800x1280 PORTRAIT. The UI is 1280x800 landscape, driven by a
+# rotation rather than by the panel being landscape. Getting that backwards
+# produces a screen that is alive, responsive, and mirrored — so it is worth
+# knowing before you spend an afternoon on it.
+display: !include ${panel_include}
+
+touchscreen:
+  - platform: gsl3680
+    id: tft_touch
+    display: tft_display
+    reset_pin: GPIO22
+    interrupt_pin: GPIO21
+    touch_timeout: 50ms
+    transform:
+      mirror_x: true
+      # VERIFIED IN PHASE 2 BEFORE ANYTHING ELSE. A wrong touch transform makes
+      # every later step unverifiable: you cannot tell a layout bug from a
+      # coordinate bug, and both look like "the button does nothing".
+      mirror_y: false
+    # WAKING & DIAGNOSTICS TOUCH LISTENERS:
+    # "Waking is touch-only" (device/design.md) because there is no audio
+    # here and so no user activity to measure — a track change or a heartbeat
+    # must not light up a screen in an empty room.
+    #
+    # DOWN, MOVEMENT AND RELEASE, IN THAT ORDER, AT THE INPUT BOUNDARY. These
+    # triggers run BEFORE LVGL's listener (verified in touchscreen.cpp:
+    # update_trigger_ → touch_trigger_ → listener->touch), so a screen that is
+    # off has already shown its shield by the time LVGL decides what the press
+    # hit. A wake gesture cannot also press the widget underneath it.
+    #
+    # Movement matters as much as a fresh touch: a finger that lands on an
+    # already-awake screen and slides is activity, and a finger that lands and
+    # holds is activity for as long as it is down.
+    on_touch:
+      - lambda: |-
+          ESP_LOGI("subwave.touch", "Touch down at (%d, %d)", touch.x, touch.y);
+          subwave_display::idle_touch();
+    on_update:
+      - lambda: subwave_display::idle_touch_move();
+    on_release:
+      - lambda: |-
+          ESP_LOGI("subwave.touch", "Touch release");
+          subwave_display::idle_release();
+
+# WiFi is a SEPARATE ESP32-C6 on SPI, so the display and the network are
+# coupled only by the fact that they share a board.
+#
+# NO SEPARATE `spi:` BLOCK. An earlier version of this file declared one with
+# clk/mosi/miso AND passed `spi_id:` here — which double-declared GPIO16 and
+# GPIO17 as both SPI data and the C6's d2/d3, and `spi_id` is not an option this
+# component accepts at all. The pins are declared once, here, exactly as the
+# reference board config for this panel does it.
+esp32_hosted:
+  variant: esp32c6
+  reset_pin: GPIO54
+  cmd_pin: GPIO19
+  clk_pin: GPIO18
+  d0_pin: GPIO14
+  d1_pin: GPIO15
+  d2_pin: GPIO16
+  d3_pin: GPIO17
+  active_high: true
+
+lvgl:
+  id: main_lvgl
+  # 6% is the reference project's value for this panel and it is deliberate.
+  buffer_size: 6%
+  # The P4 software rotation path uses PPA/DMA, so rotated draw chunks want a
+  # cache-line-friendly RGB565 boundary rather than LVGL's 2-pixel default.
+  # Do not change this without measuring.
+  draw_rounding: 32
+  byte_order: little_endian
+  rotation: ${display_rotation}
+
+  # The reference project has this on_boot sequence to initialize LVGL properly.
+  # Without it, the display may not initialize properly and remain blank.
+  on_boot:
+    - lambda: |
+        id(lvgl_ready) = true;
+    - script.execute: apply_screen_rotation
+
+  pages:
+    - id: main_page
+      scrollbar_mode: "off"
+      scrollable: false
+      width: 100%
+      height: 100%
+      bg_color: 0x000000
+      pad_top: 0
+      pad_bottom: 0
+      pad_left: 0
+      pad_right: 0
+
+      widgets:
+        # ---------------------------------------------------------------------------
+        # WHAT WAS HERE, AND WHY IT IS GONE.
+        #
+        # Fourteen widgets inherited from the reference board's config: an artwork
+        # backdrop, two cover images, an "artwork unavailable" label, a 480px
+        # opaque black accent panel, a track-info panel with its own title / artist
+        # / time labels, a play/pause button, a progress bar and a station logo.
+        #
+        # NOT ONE OF THEM WAS BOUND OR REFERENCED. Each screen carries its own
+        # artwork, its own title and its own logo, and every one of these ids
+        # appears in no bind_object() call and in no OBJ() in the C++. They were
+        # also, unavoidably, invisible: they are siblings of window_stack rather
+        # than children of it, and window_stack is declared after them, so all
+        # three windows — each with an opaque background — were painted over the
+        # lot.
+        #
+        # They stayed anyway, and that is the problem. The accent panel is 480px of
+        # solid black on the RIGHT-HAND side of the screen, which is exactly where
+        # now.yaml puts the cover — so to anyone reading this file it looks
+        # deliberately placed to hide the artwork. And the play/pause button was
+        # wired to skip_toggle, which toggles a SETTING, so a reader would
+        # reasonably conclude there was a working media control wired to the wrong
+        # thing.
+        #
+        # Inert code sitting in the wrong place is still wrong, and worse than
+        # missing code: the next person to move an artwork x-coordinate spends an
+        # afternoon on a panel that was never on screen.
+        # ---------------------------------------------------------------------------
+
+        # ---- the sliding stack (three windows + setup + sleep hint) ----
+        - obj:
+            id: window_stack
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            scrollable: false
+            bg_color: 0x06101E
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            radius: 0
+            widgets:
+              # 1 of 3 — what is playing.
+              - obj:
+                  id: window_0
+                  width: 100%
+                  height: 100%
+                  align: TOP_LEFT
+                  scrollable: false
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  border_width: 0
+                  pad_all: 0
+                  radius: 0
+                  widgets: !include screens/now.yaml
+
+              # 2 of 3 — the show list.
+              - obj:
+                  id: window_1
+                  width: 100%
+                  height: 100%
+                  align: TOP_LEFT
+                  scrollable: false
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  border_width: 0
+                  pad_all: 0
+                  radius: 0
+                  widgets: !include screens/shows.yaml
+
+              # 3 of 3 — the screen's own settings.
+              - obj:
+                  id: window_2
+                  width: 100%
+                  height: 100%
+                  align: TOP_LEFT
+                  scrollable: false
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  border_width: 0
+                  pad_all: 0
+                  radius: 0
+                  widgets: !include screens/settings.yaml
+
+              # The provisioning screens. Two slots in the same stack: Wi-Fi,
+              # then bind-to-station. Navigated with window_go (targets 3, 4).
+              - obj:
+                  id: setup_wifi_screen
+                  width: 100%
+                  height: 100%
+                  align: TOP_LEFT
+                  scrollable: false
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  border_width: 0
+                  pad_all: 0
+                  radius: 0
+                  widgets: !include screens/setup_wifi.yaml
+
+              - obj:
+                  id: setup_bind_screen
+                  width: 100%
+                  height: 100%
+                  align: TOP_LEFT
+                  scrollable: false
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  border_width: 0
+                  pad_all: 0
+                  radius: 0
+                  widgets: !include screens/setup_bind.yaml
+
+              # The asleep notice — the last slot, bare label.
+              - label:
+                  id: sleep_hint
+                  width: 100%
+                  height: 100%
+                  align: TOP_LEFT
+                  text_color: 0x6A8BA8
+                  text_font: font_body
+                  text_align: CENTER
+                  hidden: true
+
+        # ---- chrome: navigation dock for the 3 station screens (hidden during setup) ----
+        - obj:
+            id: chrome
+            width: 100%
+            height: 72px
+            align: BOTTOM_LEFT
+            scrollable: false
+            bg_color: 0x06101E
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            radius: 0
+            widgets:
+              - obj:
+                  id: chrome_rule
+                  x: 0px
+                  y: 0px
+                  width: 1280px
+                  height: 1px
+                  bg_color: 0x1A3050
+                  bg_opa: COVER
+                  border_width: 0
+                  radius: 0
+
+              - button:
+                  id: btn_prev
+                  x: 24px
+                  y: 10px
+                  width: 64px
+                  height: 52px
+                  bg_color: 0x0D1F35
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 8px
+                  on_click:
+                    - script.execute: window_prev
+                  widgets:
+                    - label:
+                        id: glyph_prev
+                        clickable: false
+                        text: "‹"
+                        text_font: font_title
+                        text_color: 0xDCE8F5
+                        align: CENTER
+
+              # Direct-tap screen tabs (Now Playing, Schedule, Settings)
+              - button:
+                  id: nav_tab_0
+                  x: 344px
+                  y: 12px
+                  width: 184px
+                  height: 48px
+                  bg_color: 0x0D1F35
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x4E9FD4
+                  radius: 8px
+                  pad_all: 0
+                  on_click:
+                    - script.execute:
+                        id: window_go
+                        target: 0
+                  widgets:
+                    - label:
+                        id: nav_lbl_0
+                        clickable: false
+                        text: "Now Playing"
+                        text_font: font_small
+                        text_color: 0xDCE8F5
+                        align: CENTER
+                    - obj:
+                        id: rail_0
+                        clickable: false
+                        align: BOTTOM_MID
+                        width: 56px
+                        height: 3px
+                        bg_color: 0x4E9FD4
+                        bg_opa: COVER
+                        border_width: 0
+                        radius: 2px
+
+              - button:
+                  id: nav_tab_1
+                  x: 548px
+                  y: 12px
+                  width: 184px
+                  height: 48px
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 8px
+                  pad_all: 0
+                  on_click:
+                    - script.execute:
+                        id: window_go
+                        target: 1
+                  widgets:
+                    - label:
+                        id: nav_lbl_1
+                        clickable: false
+                        text: "Schedule"
+                        text_font: font_small
+                        text_color: 0x6A8BA8
+                        align: CENTER
+                    - obj:
+                        id: rail_1
+                        clickable: false
+                        align: BOTTOM_MID
+                        width: 56px
+                        height: 3px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 0
+                        radius: 2px
+
+              - button:
+                  id: nav_tab_2
+                  x: 752px
+                  y: 12px
+                  width: 184px
+                  height: 48px
+                  bg_color: 0x06101E
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 8px
+                  pad_all: 0
+                  on_click:
+                    - script.execute:
+                        id: window_go
+                        target: 2
+                  widgets:
+                    - label:
+                        id: nav_lbl_2
+                        clickable: false
+                        text: "Settings"
+                        text_font: font_small
+                        text_color: 0x6A8BA8
+                        align: CENTER
+                    - obj:
+                        id: rail_2
+                        clickable: false
+                        align: BOTTOM_MID
+                        width: 56px
+                        height: 3px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 0
+                        radius: 2px
+
+              - button:
+                  id: btn_next
+                  x: 1192px
+                  y: 10px
+                  width: 64px
+                  height: 52px
+                  bg_color: 0x0D1F35
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 8px
+                  on_click:
+                    - script.execute: window_next
+                  widgets:
+                    - label:
+                        id: glyph_next
+                        clickable: false
+                        text: "›"
+                        text_font: font_title
+                        text_color: 0xDCE8F5
+                        align: CENTER
+
+        # ---- boot_overlay: full-screen loading & connectivity test screen ----
+        - obj:
+            id: boot_overlay
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            scrollable: false
+            bg_color: 0x06101E
+            bg_opa: COVER
+            border_width: 0
+            pad_all: 0
+            radius: 0
+            widgets:
+              - obj:
+                  id: boot_card
+                  align: CENTER
+                  width: 680px
+                  height: 340px
+                  scrollable: false
+                  bg_color: 0x0D1F35
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 12px
+                  pad_all: 0
+                  widgets:
+                    - label:
+                        id: boot_kicker
+                        text: "SUB/WAVE"
+                        text_font: font_small
+                        text_color: 0x4E9FD4
+                        align: TOP_MID
+                        y: 36px
+                    - label:
+                        id: boot_title
+                        text: "Connecting to Wi-Fi"
+                        text_font: font_title
+                        text_color: 0xDCE8F5
+                        align: TOP_MID
+                        y: 76px
+                    - label:
+                        id: boot_step
+                        text: "Trying to connect to Wi-Fi…"
+                        text_font: font_body
+                        text_color: 0xDCE8F5
+                        align: TOP_MID
+                        y: 156px
+                    - label:
+                        id: boot_detail
+                        text: "Waiting for network association"
+                        text_font: font_small
+                        text_color: 0x6A8BA8
+                        align: TOP_MID
+                        y: 200px
+                    - obj:
+                        id: boot_bar_track
+                        x: 80px
+                        y: 268px
+                        width: 520px
+                        height: 8px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 0
+                        radius: 4px
+                    - obj:
+                        id: boot_bar_fill
+                        x: 80px
+                        y: 268px
+                        width: 130px
+                        height: 8px
+                        bg_color: 0x4E9FD4
+                        bg_opa: COVER
+                        border_width: 0
+                        radius: 4px
+
+        # ---- presenter_modal: full-screen presenter detail popup ----
+        - obj:
+            id: presenter_modal
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            scrollable: false
+            bg_color: 0x000000
+            bg_opa: 70%
+            border_width: 0
+            pad_all: 0
+            radius: 0
+            hidden: true
+            clickable: true
+            on_click:
+              - lambda: |-
+                  id(display_client)->close_presenter_modal();
+            widgets:
+              - obj:
+                  id: presenter_card
+                  align: CENTER
+                  width: 1040px
+                  height: 600px
+                  scrollable: false
+                  bg_color: 0x0D1F35
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 14px
+                  pad_all: 0
+                  clickable: true
+                  widgets:
+                    - label:
+                        id: presenter_name
+                        text: "Presenter Name"
+                        text_font: font_title
+                        text_color: 0xDCE8F5
+                        align: TOP_LEFT
+                        x: 36px
+                        y: 22px
+                        width: 760px
+
+                    - button:
+                        id: btn_presenter_close
+                        align: TOP_RIGHT
+                        x: -32px
+                        y: 24px
+                        width: 100px
+                        height: 48px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 1
+                        border_color: 0x1A3050
+                        radius: 8px
+                        pad_all: 0
+                        on_click:
+                          - lambda: |-
+                              id(display_client)->close_presenter_modal();
+                        widgets:
+                          - label:
+                              id: presenter_close_label
+                              text: "Close"
+                              text_font: font_small
+                              text_color: 0xDCE8F5
+                              align: CENTER
+
+                    - obj:
+                        id: presenter_rule
+                        align: TOP_LEFT
+                        x: 36px
+                        y: 84px
+                        width: 968px
+                        height: 1px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 0
+                        radius: 0
+
+                    - obj:
+                        id: presenter_avatar_well
+                        align: TOP_LEFT
+                        x: 36px
+                        y: 104px
+                        width: 280px
+                        height: 280px
+                        radius: 12px
+                        bg_color: 0x0A182B
+                        bg_opa: COVER
+                        border_width: 2
+                        border_color: 0x1A3050
+                        border_opa: COVER
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        widgets:
+                          - label:
+                              id: presenter_avatar_label
+                              text: "ON AIR"
+                              text_font: font_small
+                              text_color: 0x294A6E
+                              align: CENTER
+                          - image:
+                              id: presenter_avatar
+                              src: presenter_avatar_image
+                              width: 280px
+                              height: 280px
+                              align: CENTER
+                              clickable: false
+                              hidden: true
+
+                    - label:
+                        id: presenter_role
+                        text: "Host"
+                        text_font: font_small
+                        text_color: 0x4E9FD4
+                        align: TOP_LEFT
+                        x: 344px
+                        y: 106px
+                        width: 660px
+
+                    - label:
+                        id: presenter_tagline
+                        text: ""
+                        text_font: font_body
+                        text_color: 0xDCE8F5
+                        align: TOP_LEFT
+                        x: 344px
+                        y: 140px
+                        width: 660px
+                        long_mode: WRAP
+
+                    - obj:
+                        id: presenter_nav_panel
+                        align: BOTTOM_LEFT
+                        x: 36px
+                        y: -24px
+                        width: 968px
+                        height: 52px
+                        pad_all: 0
+                        border_width: 0
+                        bg_opa: TRANSP
+                        scrollable: false
+                        clickable: false
+                        hidden: true
+                        widgets:
+                          - label:
+                              id: presenter_count_lbl
+                              text: "Presenter 1 of 1"
+                              text_font: font_small
+                              text_color: 0x6A8BA8
+                              align: LEFT_MID
+
+                          - button:
+                              id: btn_presenter_prev
+                              align: RIGHT_MID
+                              x: -128px
+                              width: 110px
+                              height: 44px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x1A3050
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - lambda: |-
+                                    id(display_client)->prev_presenter_in_modal();
+                              widgets:
+                                - label:
+                                    id: presenter_prev_label
+                                    text: "‹ Prev"
+                                    text_font: font_small
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+
+                          - button:
+                              id: btn_presenter_next
+                              align: RIGHT_MID
+                              x: 0px
+                              width: 110px
+                              height: 44px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x1A3050
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - lambda: |-
+                                    id(display_client)->next_presenter_in_modal();
+                              widgets:
+                                - label:
+                                    id: presenter_next_label
+                                    text: "Next ›"
+                                    text_font: font_small
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+
+        # ---- ota_modal: install confirmation, then install progress ----
+        #
+        # A full-screen overlay rather than another window in the swipe stack:
+        # an install is not a place you navigate away from, and the dock must
+        # not be reachable while the screen is restarting. The card is the same
+        # shape as presenter_modal, so it reads as the same device talking.
+        #
+        # IT NEVER INSTALLS BY ITSELF. The row and button open it; only
+        # "Install now" calls request_firmware_update(). While the install is
+        # running the buttons are hidden and the bar reports the worker's
+        # snapshot, so every number on the glass was produced by the download
+        # actually making progress.
+        - obj:
+            id: ota_modal
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            scrollable: false
+            bg_color: 0x000000
+            bg_opa: 82%
+            border_width: 0
+            pad_all: 0
+            radius: 0
+            hidden: true
+            clickable: true
+            widgets:
+              - obj:
+                  id: ota_modal_card
+                  align: CENTER
+                  width: 920px
+                  height: 480px
+                  scrollable: false
+                  bg_color: 0x0D1F35
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 14px
+                  pad_all: 0
+                  clickable: true
+                  widgets:
+                    - label:
+                        id: ota_modal_title
+                        text: "Firmware Update"
+                        text_font: font_title
+                        text_color: 0xDCE8F5
+                        align: TOP_LEFT
+                        x: 40px
+                        y: 32px
+                        width: 840px
+                        long_mode: WRAP
+
+                    - label:
+                        id: ota_modal_message
+                        text: ""
+                        text_font: font_body
+                        text_color: 0x9FB6CC
+                        align: TOP_LEFT
+                        x: 40px
+                        y: 100px
+                        width: 840px
+                        long_mode: WRAP
+
+                    - label:
+                        id: ota_progress_pct
+                        text: ""
+                        text_font: font_body
+                        text_color: 0x4E9FD4
+                        align: TOP_RIGHT
+                        x: -40px
+                        y: 236px
+                        width: 160px
+                        hidden: true
+
+                    # A track and a filled bar rather than an lv_bar: the fill
+                    # width is the only thing that changes, so progress can
+                    # never render a value the worker did not publish.
+                    - obj:
+                        id: ota_progress_track
+                        align: TOP_LEFT
+                        x: 40px
+                        y: 270px
+                        width: 840px
+                        height: 16px
+                        radius: 8px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        hidden: true
+                        widgets:
+                          - obj:
+                              id: ota_progress_fill
+                              x: 0px
+                              y: 0px
+                              width: 0px
+                              height: 16px
+                              radius: 8px
+                              bg_color: 0x4E9FD4
+                              bg_opa: COVER
+                              border_width: 0
+
+                    - button:
+                        id: btn_ota_no
+                        align: BOTTOM_LEFT
+                        x: 40px
+                        y: -32px
+                        width: 220px
+                        height: 56px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 1
+                        border_color: 0x29527A
+                        radius: 8px
+                        pad_all: 0
+                        on_click:
+                          - script.execute: firmware_update_cancel
+                        widgets:
+                          - label:
+                              id: ota_no_label
+                              text: "Not now"
+                              text_font: font_body
+                              text_color: 0xDCE8F5
+                              align: CENTER
+
+                    - button:
+                        id: btn_ota_yes
+                        align: BOTTOM_RIGHT
+                        x: -40px
+                        y: -32px
+                        width: 260px
+                        height: 56px
+                        bg_color: 0x4E9FD4
+                        bg_opa: COVER
+                        border_width: 0
+                        radius: 8px
+                        pad_all: 0
+                        on_click:
+                          - script.execute: firmware_update_confirm
+                        widgets:
+                          - label:
+                              id: ota_yes_label
+                              text: "Install now"
+                              text_font: font_body
+                              text_color: 0x06101E
+                              align: CENTER
+
+        # ---- idle_modal: the When Idle settings dialog ----
+        #
+        # Opened from the settings row; every control writes the same draft the
+        # idle controller reads. Controls that cannot affect the chosen behavior
+        # are hidden by ui_refresh_idle_dialog() rather than disabled: a dim
+        # percentage on a "stay on" screen is a value that does nothing, and a
+        # greyed-out control still invites a tap.
+        #
+        # The value labels are painted by the C++ from the settings the server
+        # actually holds, so the dialog cannot show a number the screen is not
+        # using. The steppers send a delta to scripts that clamp and push; the
+        # second timeout is ADDITIONAL time after the screen has dimmed, and
+        # "Never" is its zero.
+        - obj:
+            id: idle_modal
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            scrollable: false
+            bg_color: 0x000000
+            bg_opa: 82%
+            border_width: 0
+            pad_all: 0
+            radius: 0
+            hidden: true
+            clickable: true
+            on_click:
+              - script.execute: idle_dialog_close
+            widgets:
+              - obj:
+                  id: idle_modal_card
+                  align: CENTER
+                  width: 920px
+                  height: 600px
+                  scrollable: false
+                  bg_color: 0x0D1F35
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 14px
+                  pad_all: 0
+                  clickable: true
+                  widgets:
+                    - label:
+                        id: idle_modal_title
+                        text: "When Idle"
+                        text_font: font_title
+                        text_color: 0xDCE8F5
+                        align: TOP_LEFT
+                        x: 40px
+                        y: 32px
+                        width: 840px
+
+                    - label:
+                        id: idle_modal_help
+                        text: "Inactivity counts from the last touch. A track change or a heartbeat never wakes the screen."
+                        text_font: font_small
+                        text_color: 0x6A8BA8
+                        align: TOP_LEFT
+                        x: 40px
+                        y: 92px
+                        width: 840px
+                        long_mode: WRAP
+
+                    - label:
+                        id: idle_modal_behavior
+                        text: "Behavior"
+                        text_font: font_body
+                        text_color: 0xDCE8F5
+                        align: TOP_LEFT
+                        x: 40px
+                        y: 150px
+                        width: 260px
+
+                    - button:
+                        id: btn_idle_stay
+                        align: TOP_LEFT
+                        x: 316px
+                        y: 146px
+                        width: 180px
+                        height: 48px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 1
+                        border_color: 0x29527A
+                        radius: 8px
+                        pad_all: 0
+                        on_click:
+                          - script.execute: { id: idle_mode_set, mode: 0 }
+                        widgets:
+                          - label:
+                              id: idle_stay_label
+                              text: "Stay on"
+                              text_font: font_small
+                              text_color: 0xDCE8F5
+                              align: CENTER
+
+                    - button:
+                        id: btn_idle_dim
+                        align: TOP_LEFT
+                        x: 508px
+                        y: 146px
+                        width: 180px
+                        height: 48px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 1
+                        border_color: 0x29527A
+                        radius: 8px
+                        pad_all: 0
+                        on_click:
+                          - script.execute: { id: idle_mode_set, mode: 1 }
+                        widgets:
+                          - label:
+                              id: idle_dim_label
+                              text: "Dim"
+                              text_font: font_small
+                              text_color: 0xDCE8F5
+                              align: CENTER
+
+                    - button:
+                        id: btn_idle_off
+                        align: TOP_LEFT
+                        x: 700px
+                        y: 146px
+                        width: 180px
+                        height: 48px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 1
+                        border_color: 0x29527A
+                        radius: 8px
+                        pad_all: 0
+                        on_click:
+                          - script.execute: { id: idle_mode_set, mode: 2 }
+                        widgets:
+                          - label:
+                              id: idle_off_label
+                              text: "Turn off"
+                              text_font: font_small
+                              text_color: 0xDCE8F5
+                              align: CENTER
+
+                    # ---- Inactivity timeout, hidden in Stay on ----
+                    - obj:
+                        id: row_idle_min
+                        align: TOP_LEFT
+                        x: 0px
+                        y: 220px
+                        width: 920px
+                        height: 48px
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        widgets:
+                          - label:
+                              id: idle_min_title
+                              text: "Inactivity timeout"
+                              text_font: font_body
+                              text_color: 0xDCE8F5
+                              align: LEFT_MID
+                              x: 40px
+                              width: 520px
+                          - button:
+                              id: btn_idle_min_down
+                              align: LEFT_MID
+                              x: 620px
+                              width: 56px
+                              height: 48px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x29527A
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - script.execute: { id: idle_min_step, delta: -1 }
+                              widgets:
+                                - label:
+                                    text: "-"
+                                    clickable: false
+                                    text_font: font_body
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+                          - label:
+                              id: idle_min_value
+                              text: "30 min"
+                              text_font: font_body
+                              text_color: 0x4E9FD4
+                              align: LEFT_MID
+                              x: 688px
+                              width: 130px
+                              text_align: CENTER
+                          - button:
+                              id: btn_idle_min_up
+                              align: LEFT_MID
+                              x: 824px
+                              width: 56px
+                              height: 48px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x29527A
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - script.execute: { id: idle_min_step, delta: 1 }
+                              widgets:
+                                - label:
+                                    text: "+"
+                                    clickable: false
+                                    text_font: font_body
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+
+                    # ---- Dim brightness, hidden unless Dim ----
+                    - obj:
+                        id: row_idle_pct
+                        align: TOP_LEFT
+                        x: 0px
+                        y: 286px
+                        width: 920px
+                        height: 48px
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        widgets:
+                          - label:
+                              id: idle_pct_title
+                              text: "Dim brightness"
+                              text_font: font_body
+                              text_color: 0xDCE8F5
+                              align: LEFT_MID
+                              x: 40px
+                              width: 520px
+                          - button:
+                              id: btn_idle_pct_down
+                              align: LEFT_MID
+                              x: 620px
+                              width: 56px
+                              height: 48px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x29527A
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - script.execute: { id: idle_pct_step, delta: -1 }
+                              widgets:
+                                - label:
+                                    text: "-"
+                                    clickable: false
+                                    text_font: font_body
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+                          - label:
+                              id: idle_pct_value
+                              text: "20%"
+                              text_font: font_body
+                              text_color: 0x4E9FD4
+                              align: LEFT_MID
+                              x: 688px
+                              width: 130px
+                              text_align: CENTER
+                          - button:
+                              id: btn_idle_pct_up
+                              align: LEFT_MID
+                              x: 824px
+                              width: 56px
+                              height: 48px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x29527A
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - script.execute: { id: idle_pct_step, delta: 1 }
+                              widgets:
+                                - label:
+                                    text: "+"
+                                    clickable: false
+                                    text_font: font_body
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+
+                    # ---- Turn off after another…, hidden unless Dim ----
+                    - obj:
+                        id: row_idle_off
+                        align: TOP_LEFT
+                        x: 0px
+                        y: 352px
+                        width: 920px
+                        height: 48px
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        widgets:
+                          - label:
+                              id: idle_off_title
+                              text: "Turn off after another"
+                              text_font: font_body
+                              text_color: 0xDCE8F5
+                              align: LEFT_MID
+                              x: 40px
+                              width: 520px
+                          - button:
+                              id: btn_idle_off_down
+                              align: LEFT_MID
+                              x: 620px
+                              width: 56px
+                              height: 48px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x29527A
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - script.execute: { id: idle_off_step, delta: -1 }
+                              widgets:
+                                - label:
+                                    text: "-"
+                                    clickable: false
+                                    text_font: font_body
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+                          - label:
+                              id: idle_off_value
+                              text: "Never"
+                              text_font: font_body
+                              text_color: 0x4E9FD4
+                              align: LEFT_MID
+                              x: 688px
+                              width: 130px
+                              text_align: CENTER
+                          - button:
+                              id: btn_idle_off_up
+                              align: LEFT_MID
+                              x: 824px
+                              width: 56px
+                              height: 48px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x29527A
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - script.execute: { id: idle_off_step, delta: 1 }
+                              widgets:
+                                - label:
+                                    text: "+"
+                                    clickable: false
+                                    text_font: font_body
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+
+                    - label:
+                        id: idle_modal_note
+                        text: ""
+                        text_font: font_small
+                        text_color: 0x6A8BA8
+                        align: TOP_LEFT
+                        x: 40px
+                        y: 420px
+                        width: 840px
+                        long_mode: WRAP
+
+                    - button:
+                        id: btn_idle_done
+                        align: BOTTOM_RIGHT
+                        x: -40px
+                        y: -32px
+                        width: 180px
+                        height: 56px
+                        bg_color: 0x4E9FD4
+                        bg_opa: COVER
+                        border_width: 0
+                        radius: 8px
+                        pad_all: 0
+                        on_click:
+                          - script.execute: idle_dialog_close
+                        widgets:
+                          - label:
+                              id: idle_done_label
+                              text: "Done"
+                              text_font: font_body
+                              text_color: 0x06101E
+                              align: CENTER
+
+        # ---- wake_shield: the first gesture on a dark screen is only a wake ----
+        #
+        # A full-screen, transparent, clickable rectangle, LAST so it starts
+        # above every window, the chrome, both existing modals and the idle
+        # dialog. The controller shows it exactly while the backlight is off,
+        # re-raises it with lv_obj_move_foreground (a dialog left open can have
+        # raised itself above this object), and keeps it up for the whole gesture
+        # that wakes the screen. LVGL delivers a press to the topmost clickable
+        # object and this one has no handler, so the touch that wakes a dark
+        # screen cannot press what was underneath it.
+        #
+        # TRANSPARENT, NOT BLACK: the backlight is already off, and an opaque
+        # rectangle would cut the 800 ms fade to black to an instant cut.
+        - obj:
+            id: wake_shield
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            scrollable: false
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            radius: 0
+            hidden: true
+            clickable: true
+
+# ---------------------------------------------------------------------------
+# Artwork.
+#
+# `online_image` rather than a baked-in `image:`, because the cover changes every
+# few minutes and a wall screen cannot be reflashed each time. It also ships
+# `online_image.set_url` and `online_image.release`, which is what theme.yaml's
+# art_swap needs to hold the outgoing cover until the incoming one has actually
+# decoded.
+#
+# RGB565, BINARY, resized at decode. The panel is RGB565 and resizing on the
+# device rather than asking the station for a 520px cover keeps the download
+# buffer small — which on hex-mode PSRAM is not a detail.
+#
+# THE INITIAL URL IS DELIBERATELY A 404. There is no artwork until the station
+# says what is playing, and pointing these at a placeholder file that does not
+# exist gets the same result — an empty surface — without shipping a placeholder
+# and without pretending the screen has a cover it does not.
+# ---------------------------------------------------------------------------
+online_image:
+  - id: art_out_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/art/none.jpg"
+    format: JPEG
+    type: RGB565
+    resize: 520x520
+    buffer_size: ${art_buffer_bytes}
+    update_interval: never
+    # The art route is bearer-protected; without this every fetch 401s and the
+    # cover stays blank. The header is templated so it is read at fetch time,
+    # after the claim has stored the token.
+    request_headers:
+      Authorization: !lambda "return std::string(\"Bearer \") + id(display_client)->bearer();"
+    on_download_finished:
+      - lambda: |-
+          ESP_LOGI("subwave.art", "Cover decoded into art_out_image (%dx%d)",
+                   id(art_out_image)->get_width(), id(art_out_image)->get_height());
+          lv_image_set_src(id(art_in), id(art_out_image)->get_lv_image_dsc());
+          id(art_primed) = true;
+          if (!id(art_fading)) {
+            id(art_swap).execute();
+          } else {
+            id(art_queued) = true;
+          }
+    on_error:
+      - lambda: |-
+          ESP_LOGW("subwave.art", "art_out_image: download or decode failed");
+          id(display_client)->on_art_error();
+
+  - id: art_in_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/art/none.jpg"
+    format: JPEG
+    type: RGB565
+    resize: 520x520
+    buffer_size: ${art_buffer_bytes}
+    update_interval: never
+    request_headers:
+      Authorization: !lambda "return std::string(\"Bearer \") + id(display_client)->bearer();"
+    on_download_finished:
+      # THE TRIGGER THAT WAS MISSING, TWICE OVER. art_primed was declared,
+      # consulted by art_swap, and never set by anything — so the crossfade never
+      # ran. And art_tick, the only thing that flushed a queued swap, was never
+      # called either, so even a queued swap stayed queued forever. The incoming
+      # cover, once decoded, sat there undisplayed.
+      #
+      # Also: ESPHome's Image::get_lv_image_dsc() lazily populates its LVGL
+      # descriptor ONLY when called, and at boot `data_start_` is nullptr — so
+      # lv_image_set_src() at boot leaves `img->src == NULL`. Re-binding here
+      # after end_decode() hands LVGL the newly allocated RGB565 pixel buffer.
+      - lambda: |-
+          ESP_LOGI("subwave.art", "Cover decoded into art_in_image (%dx%d)",
+                   id(art_in_image)->get_width(), id(art_in_image)->get_height());
+          lv_image_set_src(id(art_in), id(art_in_image)->get_lv_image_dsc());
+          id(art_primed) = true;
+          if (!id(art_fading)) {
+            id(art_swap).execute();
+          } else {
+            id(art_queued) = true;
+          }
+    on_error:
+      - lambda: |-
+          ESP_LOGW("subwave.art", "art_in_image: download or decode failed");
+          id(display_client)->on_art_error();
+
+  # ---- station logo & presenter avatars ----------------------------------
+  - id: station_logo_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/brand/logo.png"
+    format: PNG
+    type: RGB
+    transparency: alpha_channel
+    resize: 192x48
+    buffer_size: 16384
+    update_interval: never
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(station_logo), id(station_logo_image));
+          lv_obj_clear_flag(id(station_logo), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "station_logo: download failed"
+
+  - id: now_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 88x88
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(now_avatar), id(now_avatar_image));
+          lv_obj_clear_flag(id(now_avatar), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "now_avatar: no avatar"
+
+  # The co-host beside the on-air portrait. Its own buffer, for the same reason
+  # each schedule row has its own: one image cannot show two faces at once.
+  - id: now_avatar_2_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 88x88
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(now_avatar_2), id(now_avatar_2_image));
+          lv_obj_clear_flag(id(now_avatar_2), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "now_avatar_2: no avatar"
+
+  # FIVE SEPARATE BUFFERS, and that is the point rather than an oversight. An
+  # avatar belongs to one row and only ever appears on that row's expanded tray,
+  # so five 56x56 buffers cost about 30KB together — which buys the thing that
+  # matters: showing a face never delays the row it sits on. One shared buffer
+  # would make five rows fight over it, and a schedule that reflows while you are
+  # reading it is worse than one with no faces at all.
+  - id: row_0_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_0_avatar), id(row_0_avatar_image));
+          lv_obj_clear_flag(id(row_0_avatar), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "row_0: no avatar"
+
+  - id: row_1_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_1_avatar), id(row_1_avatar_image));
+          lv_obj_clear_flag(id(row_1_avatar), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "row_1: no avatar"
+
+  - id: row_2_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_2_avatar), id(row_2_avatar_image));
+          lv_obj_clear_flag(id(row_2_avatar), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "row_2: no avatar"
+
+  - id: row_3_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_3_avatar), id(row_3_avatar_image));
+          lv_obj_clear_flag(id(row_3_avatar), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "row_3: no avatar"
+
+  - id: row_4_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_4_avatar), id(row_4_avatar_image));
+          lv_obj_clear_flag(id(row_4_avatar), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "row_4: no avatar"
+
+  # The second host on each row, shown beside the first.
+  - id: row_0_avatar2_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_0_avatar2), id(row_0_avatar2_image));
+          lv_obj_clear_flag(id(row_0_avatar2), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "row_0_avatar2: no avatar"
+
+  - id: row_1_avatar2_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_1_avatar2), id(row_1_avatar2_image));
+          lv_obj_clear_flag(id(row_1_avatar2), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "row_1_avatar2: no avatar"
+
+  - id: row_2_avatar2_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_2_avatar2), id(row_2_avatar2_image));
+          lv_obj_clear_flag(id(row_2_avatar2), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "row_2_avatar2: no avatar"
+
+  - id: row_3_avatar2_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_3_avatar2), id(row_3_avatar2_image));
+          lv_obj_clear_flag(id(row_3_avatar2), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "row_3_avatar2: no avatar"
+
+  - id: row_4_avatar2_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png"
+    format: PNG
+    type: RGB565
+    resize: 56x56
+    buffer_size: 8192
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(row_4_avatar2), id(row_4_avatar2_image));
+          lv_obj_clear_flag(id(row_4_avatar2), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "row_4_avatar2: no avatar"
+
+  - id: presenter_avatar_image
+    http_request_id: shared_http
+    url: "http://192.168.4.1/api/devices/avatar/none.png?size=280"
+    format: PNG
+    type: RGB565
+    resize: 280x280
+    buffer_size: 65536
+    update_interval: never
+    request_headers:
+      Authorization: !lambda 'return std::string("Bearer ") + id(display_client)->bearer();'
+    on_download_finished:
+      - lambda: |-
+          lv_image_set_src(id(presenter_avatar), id(presenter_avatar_image));
+          lv_image_set_inner_align(id(presenter_avatar), LV_IMAGE_ALIGN_COVER);
+          lv_image_set_antialias(id(presenter_avatar), true);
+          lv_obj_clear_flag(id(presenter_avatar), LV_OBJ_FLAG_HIDDEN);
+    on_error:
+      - logger.log: "presenter_avatar: no avatar"
+
+# ---------------------------------------------------------------------------
+# LVGL initialization state.
+globals:
+  - id: lvgl_ready
+    type: bool
+    restore_value: no
+    initial_value: 'false'
+
+# ---------------------------------------------------------------------------
+# Screen rotation script.
+script:
+  - id: apply_screen_rotation
+    mode: restart
+    then:
+      - lambda: |-
+          // Apply the orientation from device settings using native LVGL rotation
+          const char* orient = id(display_client)->settings().orientation.c_str();
+          if (strcmp(orient, "portrait") == 0) {
+            id(tft_display).set_rotation(esphome::display::DISPLAY_ROTATION_0_DEGREES);
+          } else if (strcmp(orient, "landscape") == 0) {
+            id(tft_display).set_rotation(esphome::display::DISPLAY_ROTATION_90_DEGREES);
+          }
+
+# ---------------------------------------------------------------------------
+# Fonts.
+#
+# THREE, AND THREE IS THE BUDGET. 16MB of flash holds one merged factory image
+# and there is not much room to be generous. Adding a fourth is a decision, not a
+# detail.
+#
+# Newsreader for the track title, Archivo for everything else. Deliberately NOT
+# the web app's Outfit: a serif display face is the voice of a radio station, and
+# a wall screen seen from across a room is the one place that voice is legible.
+# See device/design.md.
+#
+# ONE GLYPH SET, SHARED BY ALL THREE. These are subsets, not full Latin: the
+# fold across two lines produces exactly one space glyph, which is the whole
+# trick to keeping a 4bpp face small enough to ship three of.
+# ---------------------------------------------------------------------------
+font:
+  - file: "gfonts://Newsreader@Semi-bold"
+    id: font_title
+    size: 48
+    bpp: 4
+    glyphs: >-
+      !"#$%&()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`
+      abcdefghijklmnopqrstuvwxyz{|}~©°·–—'…‹›
+
+  - file: "gfonts://Archivo@Medium"
+    id: font_body
+    size: 26
+    bpp: 4
+    glyphs: >-
+      !"#$%&()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`
+      abcdefghijklmnopqrstuvwxyz{|}~©°·–—'…‹›
+
+  - file: "gfonts://Archivo@Medium"
+    id: font_small
+    size: 18
+    bpp: 4
+    glyphs: >-
+      !"#$%&()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`
+      abcdefghijklmnopqrstuvwxyz{|}~©°·–—'…‹›
