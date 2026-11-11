@@ -18,6 +18,7 @@
 #include "esphome/components/light/light_call.h"
 #include "esphome/components/light/light_state.h"
 #include "display_client.h"
+#include "idle_policy.h"
 
 // LVGL object ids come from the YAML. They are declared here rather than pulled
 // from a generated header because the whole point of pre-allocating all three
@@ -124,7 +125,10 @@ static void art_effects_tick(lv_timer_t *timer) {
   auto *obj = static_cast<lv_obj_t *>(lv_timer_get_user_data(timer));
   auto *c = client();
   bool active = false;
-  if (ui_ready() && c != nullptr && !c->stream_idle() && lv_obj_is_visible(obj)) {
+  // A dark screen has nothing to animate, and a screen dark because flash is
+  // being written must not be repainted at 30fps: the draw would land between
+  // the writes the darkness exists to hide.
+  if (ui_ready() && !idle_effects_suspended() && c != nullptr && !c->stream_idle() && lv_obj_is_visible(obj)) {
     for (auto *cover : {OBJ(art_in), OBJ(art_out)}) {
       if (!lv_obj_has_flag(cover, LV_OBJ_FLAG_HIDDEN) && lv_image_get_src(cover) != nullptr &&
           lv_obj_get_style_opa(cover, LV_PART_MAIN) > LV_OPA_MIN) {
@@ -554,10 +558,21 @@ void settings_refresh() {
   }
 
   lv_label_set_text(OBJ(lbl_theme), s.theme_mode == "auto" ? "Follow the sun" : (s.theme_mode == "day" ? "Always day" : "Always night"));
-  const char *idle = s.idle_mode == "stay" ? "Stay on" : (s.idle_mode == "dim" ? "Dim" : "Off");
-  char idle_buf[64];
-  snprintf(idle_buf, sizeof(idle_buf), "%s, after %d minutes", idle, s.idle_min);
+  // The row has to say what will actually happen, including the second delay,
+  // or the screen and the dialog can describe different behaviour.
+  char idle_buf[96];
+  if (s.idle_mode == "stay") {
+    snprintf(idle_buf, sizeof(idle_buf), "Stay on");
+  } else if (s.idle_mode == "off") {
+    snprintf(idle_buf, sizeof(idle_buf), "Off after %d min", s.idle_min);
+  } else if (s.idle_off_min > 0) {
+    snprintf(idle_buf, sizeof(idle_buf), "Dim after %d min · off +%d min", s.idle_min, s.idle_off_min);
+  } else {
+    snprintf(idle_buf, sizeof(idle_buf), "Dim after %d min · stays dim", s.idle_min);
+  }
   lv_label_set_text(OBJ(lbl_idle), idle_buf);
+
+  ui_refresh_idle_dialog();
   lv_label_set_text(OBJ(lbl_orientation), s.orientation == "portrait" ? "Portrait — restarts" : "Landscape");
   lv_label_set_text(OBJ(lbl_skip), s.skip_enabled ? "Allowed" : "Hidden");
 
@@ -913,6 +928,11 @@ void ui_hide_firmware_prompt() {
   lv_obj_invalidate(modal);
 }
 
+// Defined with the inactivity controller below. An install that fails hands the
+// screen back, and the controller has to start from Awake with a fresh period
+// rather than resume whatever it was doing before the flash write.
+static void idle_reclaim_screen_();
+
 static void ui_apply_ota_screen_() {
   if (s_ota_screen_wanted_off == s_ota_screen_applied_off) return;
   if (g_backlight == nullptr) {
@@ -934,6 +954,7 @@ static void ui_apply_ota_screen_() {
   call.set_transition_length(300);
   call.perform();
   s_ota_screen_applied_off = s_ota_screen_wanted_off;
+  if (!s_ota_screen_applied_off) idle_reclaim_screen_();
   ESP_LOGI(TAG, "OTA screen %s for the install.", s_ota_screen_applied_off ? "off" : "on");
 }
 
@@ -985,84 +1006,361 @@ void bind_backlight(esphome::light::LightState *light) {
   ESP_LOGI(TAG, "Backlight bound (%p).", (void *) light);
 }
 
-void idle_apply(bool asleep) {
-  // A firmware install owns the backlight while it applies the image. The
-  // one-second keepalive must not light a screen that is dark because the panel
-  // cannot be fed during flash writes.
-  if (s_ota_screen_wanted_off) return;
+// ---------------------------------------------------------------------------
+// The inactivity controller.
+//
+// THE PHASE IS THE TRUTH, AND THE LIGHT FOLLOWS IT. Awake, Dimmed and Off are
+// the only states; every backlight write starts from one of them, and the
+// cached (on, percent) pair means a poll that changes nothing costs no fade.
+// The transition lengths are deliberately different: dimming is slow enough to
+// read as the screen settling, a wake is fast enough that the first touch feels
+// answered, and turning off is slow enough not to look like a failure.
+//
+// esphome::millis(), NOT station_now_ms(). The idle period is a fact about this
+// device; it must not depend on the station answering, and it must not jump
+// when the station's clock does. The subtraction itself lives in idle_policy.h
+// and is unsigned, so a wrap after 49.7 days is invisible.
+// ---------------------------------------------------------------------------
+static constexpr uint32_t IDLE_DIM_TRANSITION_MS = 800;
+static constexpr uint32_t IDLE_WAKE_TRANSITION_MS = 120;
+static constexpr uint32_t IDLE_OFF_TRANSITION_MS = 800;
+
+static subwave_idle::Phase s_idle_phase = subwave_idle::Phase::Awake;
+static uint32_t s_idle_last_activity_ms = 0;
+static uint32_t s_idle_dimmed_at_ms = 0;
+static bool s_idle_touch_held = false;
+// True between a waking touch-down on a dark screen and its release. The shield
+// stays up for that whole gesture, so the touch that wakes the screen cannot
+// also press whatever was underneath it.
+static bool s_idle_wake_gesture = false;
+static bool s_idle_initialized = false;
+
+// The last thing actually commanded, not the last thing read from settings.
+// Comparing against this is what stops a one-second poll from restarting an
+// 800ms fade that is still running.
+static bool s_light_on = false;
+static int s_light_percent = -1;
+
+static inline lv_obj_t *idle_widget_(const char *name) { return static_cast<lv_obj_t *>(lookup(name)); }
+
+static int idle_normal_percent_() {
   auto *c = client();
-  if (c == nullptr || !ui_ready()) return;
+  return subwave_idle::clamp_percent(c == nullptr ? 70 : c->settings().brightness);
+}
 
-  // WALL DISPLAY: screen is ALWAYS on. idle_apply() is called from idle_touch()
-  // (wake) and idle_poll() (deadline passed). We never actually turn off the
-  // backlight - a wall screen should always be visible.
-  BOOL(screen_asleep) = asleep;
-
+static void apply_light_(bool on, int percent, uint32_t transition_ms) {
   if (g_backlight == nullptr) return;
-
-  // Only re-apply if brightness actually changed — avoids restarting the 800ms
-  // transition on every poll/tick, which causes visible flicker.
-  float brightness = c == nullptr ? 1.0f : (float) c->settings().brightness / 100.0f;
-  static float last_applied = -1.0f;
-  if (brightness == last_applied) return;
-  last_applied = brightness;
-
-  ESP_LOGI(TAG, "idle_apply(asleep=%d): setting backlight to %d%% (800ms transition).", (int) asleep, (int) (brightness * 100.0f));
+  if (s_light_on == on && (!on || s_light_percent == percent)) return;
 
   auto call = g_backlight->make_call();
-  call.set_state(true);
-  call.set_brightness(brightness);
-  call.set_transition_length(800);
+  if (on) {
+    call.set_state(true);
+    call.set_brightness(static_cast<float>(percent) / 100.0f);
+  } else {
+    call.set_state(false);
+  }
+  call.set_transition_length(transition_ms);
   call.perform();
+  s_light_on = on;
+  s_light_percent = on ? percent : 0;
+}
+
+static void idle_enter_(subwave_idle::Phase phase, uint32_t transition_ms) {
+  const uint32_t now = esphome::millis();
+  s_idle_phase = phase;
+  if (phase == subwave_idle::Phase::Dimmed) s_idle_dimmed_at_ms = now;
+
+  auto *c = client();
+  const int normal = idle_normal_percent_();
+  const int dim = subwave_idle::dim_percent(normal, c == nullptr ? normal : c->settings().idle_pct);
+  switch (phase) {
+    case subwave_idle::Phase::Awake:
+      apply_light_(true, normal, transition_ms);
+      break;
+    case subwave_idle::Phase::Dimmed:
+      apply_light_(true, dim, transition_ms);
+      break;
+    case subwave_idle::Phase::Off:
+      apply_light_(false, 0, transition_ms);
+      break;
+  }
+
+  BOOL(screen_asleep) = phase == subwave_idle::Phase::Off;
+
+  // The shield is up exactly while the screen is off, and stays up through the
+  // gesture that wakes it. It is a real, clickable, transparent rectangle over
+  // the whole page: the first press after dark lands on it, so no widget behind
+  // it can be activated by the touch that only meant "wake up".
+  lv_obj_t *shield = OBJ(wake_shield);
+  if (shield != nullptr) {
+    if (phase == subwave_idle::Phase::Off) {
+      lv_obj_clear_flag(shield, LV_OBJ_FLAG_HIDDEN);
+      // Some dialogs (the idle settings, a presenter bio) raise themselves with
+      // lv_obj_move_foreground when they open. A screen can time out with one of
+      // them still up, so being "last in the YAML" is not enough: the shield has
+      // to be re-raised whenever the screen goes dark, or the waking gesture
+      // would land on the dialog and close it instead of only waking.
+      lv_obj_move_foreground(shield);
+    } else if (!s_idle_wake_gesture) {
+      lv_obj_add_flag(shield, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+
+  ESP_LOGI(TAG, "Idle phase -> %s (light %s at %d%%).", phase == subwave_idle::Phase::Awake ? "awake"
+                                               : phase == subwave_idle::Phase::Dimmed ? "dimmed"
+                                                                                      : "off",
+           s_light_on ? "on" : "off", s_light_percent);
+}
+
+// Defined above as a forward declaration for ui_apply_ota_screen_().
+static void idle_reclaim_screen_() {
+  if (!ui_ready() || !s_idle_initialized) return;
+  s_idle_phase = subwave_idle::Phase::Awake;
+  s_idle_touch_held = false;
+  s_idle_wake_gesture = false;
+  s_idle_dimmed_at_ms = 0;
+  s_idle_last_activity_ms = esphome::millis();
+  BOOL(screen_asleep) = false;
+  if (lv_obj_t *shield = OBJ(wake_shield)) lv_obj_add_flag(shield, LV_OBJ_FLAG_HIDDEN);
+  // The install has just driven the light to the configured level; record that
+  // so the next poll does not fade it again.
+  s_light_on = true;
+  s_light_percent = idle_normal_percent_();
+  ESP_LOGI(TAG, "Idle controller reclaimed the screen after the install (awake, %d%%).", s_light_percent);
+}
+
+bool idle_effects_suspended() {
+  return s_ota_screen_applied_off || s_idle_phase == subwave_idle::Phase::Off;
+}
+
+void idle_init() {
+  if (!ui_ready()) return;
+  s_idle_initialized = true;
+  s_idle_phase = subwave_idle::Phase::Awake;
+  s_idle_touch_held = false;
+  s_idle_wake_gesture = false;
+  s_idle_dimmed_at_ms = 0;
+  s_idle_last_activity_ms = esphome::millis();
+  s_light_on = false;
+  s_light_percent = -1;
+
+  auto *c = client();
+  idle_enter_(subwave_idle::Phase::Awake, 0);
+  ESP_LOGI(TAG, "Inactivity armed: mode=%s, %d min, dim %d%%, off after %d additional min (0 = never).",
+           c == nullptr ? "stay" : c->settings().idle_mode.c_str(), c == nullptr ? 30 : c->settings().idle_min,
+           c == nullptr ? 20 : c->settings().idle_pct, c == nullptr ? 0 : c->settings().idle_off_min);
 }
 
 void idle_touch() {
+  if (!ui_ready() || !s_idle_initialized) return;
+  // The install owns the screen. A touch while flash is being written must not
+  // light it, and must not count as activity the controller did not see.
+  if (s_ota_screen_wanted_off || s_ota_screen_applied_off) return;
+
   s_touch_counter++;
-  if (ui_ready() && OBJ(val_up) != nullptr) {
-    settings_refresh();
+  s_idle_touch_held = true;
+  const uint32_t now = esphome::millis();
+  if (s_idle_phase == subwave_idle::Phase::Off) s_idle_wake_gesture = true;
+  if (s_idle_phase != subwave_idle::Phase::Awake) {
+    idle_enter_(subwave_idle::Phase::Awake, IDLE_WAKE_TRANSITION_MS);
   }
-  // Any touch wakes, and restarts the full timer. A track change, a show change
-  // or a heartbeat deliberately do NOT: a screen nobody is touching should stay
-  // as it is rather than lighting itself up in an empty room.
-  //
-  // esphome::millis(), NOT station_now_ms(). It used to be the server's clock,
-  // which made the idle deadline depend on the server answering — a screen that
-  // could not reach the station would never time out — and it jumps when the
-  // server's does, which would blank the screen early or never.
-  //
-  // We do NOT call idle_apply() here because on_touch fires before on_click on
-  // brightness segments. Calling idle_apply() would briefly flash the previous
-  // brightness before set_brightness_to() updates it. The 1-second keepalive
-  // interval maintains the backlight at the correct brightness within a second.
-  auto *c = client();
-  const uint32_t minutes = c == nullptr || c->settings().idle_min == 0 ? 30u : (uint32_t) c->settings().idle_min;
-  const std::string mode = c == nullptr ? std::string("stay") : c->settings().idle_mode;
-  float brightness = c == nullptr ? 1.0f : (float) c->settings().brightness / 100.0f;
-  ESP_LOGI(TAG, "Idle touch: wake (backlight %d%%), deadline %u minutes, mode=%s", (int) (brightness * 100.0f), (unsigned) minutes, mode.c_str());
-  U32(idle_deadline_ms) = (uint32_t) esphome::millis() + minutes * 60000u;
+  s_idle_last_activity_ms = now;
+
+  // The uptime line is a touch counter; the settings screen is the only place
+  // that shows it. Skipped on movement (idle_touch_move) so a drag does not
+  // repaint a whole screen per sample.
+  if (OBJ(val_up) != nullptr) settings_refresh();
 }
 
-/**
- * The idle tick. Asks one question and does whichever phase of the idle sequence
- * has come due. Called from the YAML interval every five seconds.
- *
- * WALL DISPLAY: the screen never dims or blanks. Every poll re-asserts the
- * backlight at 100% as a safety net — if anything outside this file drives the
- * backlight off, the next poll brings it back within five seconds.
- *
- * THERE IS NO TIMER HERE, and that is deliberate. ESPHome 2026.7's Application
- * has no timeout scheduling at all, so a deferred call has to be a deadline
- * checked by the next tick. And a self-rescheduling timer would have to be
- * cancelled and rebuilt on every wake, which is the shape of bug that outlives
- * the firmware. A poll cannot leave a timer behind.
- */
-void idle_poll() {
-  // Safety net: re-assert full brightness on every poll so the backlight can
-  // never stay off for more than one poll interval.
+void idle_touch_move() {
+  if (!ui_ready() || !s_idle_initialized) return;
+  if (s_ota_screen_wanted_off || s_ota_screen_applied_off) return;
+  s_idle_touch_held = true;
+  if (s_idle_phase == subwave_idle::Phase::Off) s_idle_wake_gesture = true;
+  if (s_idle_phase != subwave_idle::Phase::Awake) {
+    idle_enter_(subwave_idle::Phase::Awake, IDLE_WAKE_TRANSITION_MS);
+  }
+  s_idle_last_activity_ms = esphome::millis();
+}
+
+void idle_release() {
+  if (!ui_ready() || !s_idle_initialized) return;
+  s_idle_touch_held = false;
+  if (s_ota_screen_wanted_off || s_ota_screen_applied_off) {
+    s_idle_wake_gesture = false;
+    return;
+  }
+  // Releasing restarts the full period, including after a held touch that
+  // pinned the screen awake past its timeout.
+  s_idle_last_activity_ms = esphome::millis();
+  if (s_idle_wake_gesture) {
+    s_idle_wake_gesture = false;
+    if (lv_obj_t *shield = OBJ(wake_shield)) lv_obj_add_flag(shield, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void idle_set_manual_brightness(int percent) {
+  if (!ui_ready() || !s_idle_initialized) return;
+  if (s_ota_screen_wanted_off || s_ota_screen_applied_off) return;
+  percent = subwave_idle::clamp_percent(percent);
   auto *c = client();
-  if (c == nullptr || !ui_ready()) return;
-  if (g_backlight == nullptr) return;
-  idle_apply(false);
+  if (s_idle_phase == subwave_idle::Phase::Off) {
+    // The new level is stored; it takes effect on the next wake. A settings
+    // write must not light a dark room by itself.
+    s_light_on = false;
+    s_light_percent = 0;
+    return;
+  }
+  const int target = s_idle_phase == subwave_idle::Phase::Dimmed
+                         ? subwave_idle::dim_percent(percent, c == nullptr ? percent : c->settings().idle_pct)
+                         : percent;
+  apply_light_(true, target, IDLE_DIM_TRANSITION_MS);
+}
+
+void idle_poll() {
+  if (!ui_ready() || !s_idle_initialized) return;
+  if (s_ota_screen_wanted_off || s_ota_screen_applied_off) return;
+  auto *c = client();
+  if (c == nullptr || g_backlight == nullptr) return;
+
+  const auto &s = c->settings();
+  const subwave_idle::Policy policy =
+      subwave_idle::policy_for(s.idle_mode.c_str(), s.idle_min, s.idle_off_min);
+  const uint32_t now = esphome::millis();
+  const uint32_t elapsed = subwave_idle::elapsed_since(now, s_idle_last_activity_ms);
+  const uint32_t since_dim = subwave_idle::elapsed_since(now, s_idle_dimmed_at_ms);
+  const subwave_idle::Phase next =
+      subwave_idle::next_phase(s_idle_phase, s_idle_touch_held, elapsed, since_dim, policy);
+  if (next != s_idle_phase) {
+    idle_enter_(next, next == subwave_idle::Phase::Off ? IDLE_OFF_TRANSITION_MS : IDLE_DIM_TRANSITION_MS);
+    return;
+  }
+
+  // Same phase, but the brightness or dim setting may have changed underneath
+  // it (a manual tap, a theme change, a settings sync). Apply only a real
+  // change, and never move the phase here: a settings sync must not wake the
+  // room, and a poll that has nothing to say must not restart a fade.
+  if (s_idle_phase == subwave_idle::Phase::Off) {
+    apply_light_(false, 0, IDLE_OFF_TRANSITION_MS);
+    return;
+  }
+  const int normal = idle_normal_percent_();
+  const int target = s_idle_phase == subwave_idle::Phase::Dimmed
+                         ? subwave_idle::dim_percent(normal, s.idle_pct)
+                         : normal;
+  apply_light_(true, target, IDLE_DIM_TRANSITION_MS);
+}
+
+// ---------------------------------------------------------------------------
+// When Idle, the settings dialog.
+//
+// The row and the dialog read from the same StationSettings as the controller,
+// so the sentence on the row, the values in the dialog and the phase the screen
+// actually adopts cannot disagree. Controls that cannot affect the chosen mode
+// are hidden rather than disabled: a dim percentage on a screen set to "stay on"
+// is a value that does nothing, and a greyed-out control invites a tap anyway.
+// ---------------------------------------------------------------------------
+// The pointer is looked up at the call site and passed here, so every name the
+// dialog looks up appears literally as idle_widget_("…") in this file. The
+// bindings gate reads exactly that call, and a name hidden behind a helper
+// parameter is a name it cannot prove is bound.
+static void idle_style_mode_button_(lv_obj_t *btn, bool selected) {
+  if (btn == nullptr) return;
+  lv_obj_set_style_bg_color(btn, lv_color_hex(selected ? INT(c_accent) : INT(c_surface)), LV_PART_MAIN);
+  lv_obj_set_style_border_color(btn, lv_color_hex(selected ? INT(c_accent) : INT(c_rule)), LV_PART_MAIN);
+}
+
+static void idle_set_row_hidden_(lv_obj_t *row, bool hidden) {
+  if (row == nullptr) return;
+  if (hidden) {
+    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_clear_flag(row, LV_OBJ_FLAG_HIDDEN);
+  }
+}
+
+void ui_refresh_idle_dialog() {
+  if (!ui_ready()) return;
+  lv_obj_t *modal = idle_widget_("idle_modal");
+  if (modal == nullptr || lv_obj_has_flag(modal, LV_OBJ_FLAG_HIDDEN)) return;
+  auto *c = client();
+  if (c == nullptr) return;
+
+  const auto &s = c->settings();
+  const bool stay = s.idle_mode == "stay";
+  const bool dim = s.idle_mode == "dim";
+  const bool off = s.idle_mode == "off";
+
+  idle_style_mode_button_(idle_widget_("btn_idle_stay"), stay);
+  idle_style_mode_button_(idle_widget_("btn_idle_dim"), dim);
+  idle_style_mode_button_(idle_widget_("btn_idle_off"), off);
+  // Dark text on the accent fill, light text on the others. The label must be
+  // readable on whichever background the selected state just gave it.
+  if (auto *lbl = idle_widget_("idle_stay_label")) {
+    lv_obj_set_style_text_color(lbl, lv_color_hex(stay ? INT(c_bg) : INT(c_text)), LV_PART_MAIN);
+  }
+  if (auto *lbl = idle_widget_("idle_dim_label")) {
+    lv_obj_set_style_text_color(lbl, lv_color_hex(dim ? INT(c_bg) : INT(c_text)), LV_PART_MAIN);
+  }
+  if (auto *lbl = idle_widget_("idle_off_label")) {
+    lv_obj_set_style_text_color(lbl, lv_color_hex(off ? INT(c_bg) : INT(c_text)), LV_PART_MAIN);
+  }
+
+  const int minutes = s.idle_min < 1 ? 1 : (s.idle_min > 240 ? 240 : s.idle_min);
+  const int pct = subwave_idle::clamp_percent(s.idle_pct);
+  const int off_min = s.idle_off_min < 0 ? 0 : (s.idle_off_min > 240 ? 240 : s.idle_off_min);
+
+  char buf[32];
+  if (auto *lbl = idle_widget_("idle_min_value")) {
+    snprintf(buf, sizeof(buf), "%d min", minutes);
+    lv_label_set_text(lbl, buf);
+  }
+  if (auto *lbl = idle_widget_("idle_pct_value")) {
+    snprintf(buf, sizeof(buf), "%d%%", pct);
+    lv_label_set_text(lbl, buf);
+  }
+  if (auto *lbl = idle_widget_("idle_off_value")) {
+    if (off_min == 0) {
+      lv_label_set_text(lbl, "Never");
+    } else {
+      snprintf(buf, sizeof(buf), "%d min", off_min);
+      lv_label_set_text(lbl, buf);
+    }
+  }
+
+  idle_set_row_hidden_(idle_widget_("row_idle_min"), stay);
+  idle_set_row_hidden_(idle_widget_("row_idle_pct"), !dim);
+  idle_set_row_hidden_(idle_widget_("row_idle_off"), !dim);
+
+  if (auto *note = idle_widget_("idle_modal_note")) {
+    if (stay) {
+      lv_label_set_text(note, "The screen stays at its normal brightness. Any touch restarts the period.");
+    } else if (off) {
+      lv_label_set_text(note, "The backlight turns off after the timeout. Any touch wakes it.");
+    } else if (off_min == 0) {
+      lv_label_set_text(note, "The screen dims and stays dim until touched. Dimming never raises the brightness above the setting.");
+    } else {
+      lv_label_set_text(note, "After the additional delay the backlight turns off; a touch wakes it. Dimming never raises the brightness above the setting.");
+    }
+  }
+}
+
+void ui_show_idle_dialog() {
+  if (!ui_ready()) return;
+  lv_obj_t *modal = idle_widget_("idle_modal");
+  if (modal == nullptr) return;
+  lv_obj_clear_flag(modal, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_move_foreground(modal);
+  ui_refresh_idle_dialog();
+  lv_obj_invalidate(modal);
+}
+
+void ui_hide_idle_dialog() {
+  if (!ui_ready()) return;
+  lv_obj_t *modal = idle_widget_("idle_modal");
+  if (modal == nullptr) return;
+  lv_obj_add_flag(modal, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_invalidate(modal);
 }
 
 void ui_apply_logo(esphome::image::Image *img) {

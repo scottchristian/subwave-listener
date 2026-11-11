@@ -190,7 +190,7 @@ export async function PATCH(req: NextRequest) {
     case "resetSettings": {
       await prisma.device.update({
         where: { id },
-        data: { settingsRev: row.settingsRev + 1, brightness: 70, orientation: "landscape", themeMode: "auto", idleMode: "dim", idleMin: 15, idlePct: 20, skipEnabled: "1" },
+        data: { settingsRev: row.settingsRev + 1, brightness: 70, orientation: "landscape", themeMode: "auto", idleMode: "dim", idleMin: 15, idlePct: 20, idleOffMin: 0, skipEnabled: "1" },
       });
       break;
     }

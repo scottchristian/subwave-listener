@@ -331,6 +331,10 @@ model Device {
   idleMode    String    @default("dim")       // stay | dim | off
   idleMin     Int       @default(15)
   idlePct     Int       @default(20)
+  // Additional minutes after dimming before the backlight goes off. 0 = Never,
+  // which is the default: a screen that went black when the server and firmware
+  // disagreed about this field would be the worse failure.
+  idleOffMin  Int       @default(0)
   skipEnabled String    @default("1")
 
   // Server capability only, and off. A wall display rotates only when pressed,

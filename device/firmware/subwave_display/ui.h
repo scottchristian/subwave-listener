@@ -94,20 +94,65 @@ void ui_apply_row_avatar_2(int slot, esphome::image::Image *img);
 void ui_apply_cover_art(esphome::image::Image *img, int slot);
 void ui_apply_modal_avatar(esphome::image::Image *img);
 
-/** Blank the screen and show the "tap to wake" line, or the reverse. */
-void idle_apply(bool asleep);
-void idle_touch();
+// ---------------------------------------------------------------------------
+// The inactivity controller.
+//
+// ONE STATE MACHINE, THREE PHASES, ONE OWNER OF THE BACKLIGHT. Awake shows the
+// configured (theme-adjusted) brightness; Dimmed shows the lower of that and
+// the dim setting; Off turns the backlight off. Touch wakes, and every touch
+// restarts the full period.
+//
+// WHY A POLL RATHER THAN TIMERS. ESPHome 2026.7's Application has no timeout
+// scheduling, and a self-rescheduling timer would have to be torn down and
+// rebuilt on every touch — the shape of bug that outlives the firmware. One
+// one-second check of a monotonic timestamp cannot leak a timer, and the wake
+// path does not wait for it: a touch applies the light immediately.
+//
+// THE INSTALL OWNS THE LIGHT WHILE IT WRITES FLASH. ui_ota_screen_on(false) is
+// checked before anything here touches the backlight, so polling and touching
+// can never relight a screen that is dark because the panel cannot be fed.
+// ---------------------------------------------------------------------------
 
 /**
- * The idle tick: applies whichever phase of the idle sequence has come due.
+ * Start the controller. Called ONCE, after every widget is bound.
  *
- * Exposed rather than run on a timer of its own for two reasons, both
- * load-bearing. The deadline is ARMED by a touch and re-armed by every wake, so
- * a self-rescheduling timer would have to be cancelled and rebuilt each time —
- * and ESPHome 2026.7's Application has no timeout scheduling at all, so the
- * deferred blank has to be a deadline regardless. A poll cannot leak a timer.
+ * Until this runs, no idle function touches either the binding table or the
+ * light; the boot lambda's ordering is what keeps a store to an unbound
+ * `screen_asleep` from being a reset loop.
+ */
+void idle_init();
+
+/** Touch down. Wakes immediately; counts as activity. */
+void idle_touch();
+/** Touch moved while held. Counts as activity, but does not repaint settings. */
+void idle_touch_move();
+/** Touch released. Clears the hold and consumes a wake-only gesture. */
+void idle_release();
+
+/**
+ * The one-second policy check. Applies the phase that is due, and reconciles a
+ * changed brightness or dim setting without changing the phase.
  */
 void idle_poll();
+
+/**
+ * A manual brightness change from the Settings screen.
+ *
+ * Applies it in the current phase and updates the controller's cached target,
+ * so the next poll does not restart the same fade a second later.
+ */
+void idle_set_manual_brightness(int percent);
+
+/** True while nothing should repaint artwork effects (screen off or installing). */
+bool idle_effects_suspended();
+
+// ---------------------------------------------------------------------------
+// When Idle, the settings dialog.
+// ---------------------------------------------------------------------------
+void ui_show_idle_dialog();
+void ui_hide_idle_dialog();
+/** Repaint the dialog from the station's settings; no-op while it is closed. */
+void ui_refresh_idle_dialog();
 
 /** Server time in ms, taken from the station rather than from a local clock. */
 int64_t station_now_ms();
@@ -155,9 +200,9 @@ void bind_object(const char *name, lv_obj_t *obj);
  * Register the backlight.
  *
  * Separate from bind_object because it is not a widget — it is a light
- * component, and idle_apply() needs to drive it. `id(backlight)` is a helper
- * that only exists inside a YAML lambda, so from this translation unit the
- * object has to be handed over the same way every other one is.
+ * component, and the idle controller needs to drive it. `id(backlight)` is a
+ * helper that only exists inside a YAML lambda, so from this translation unit
+ * the object has to be handed over the same way every other one is.
  *
  * WHY THE BACKLIGHT AT ALL: dimming by showing a label over a still-lit screen
  * is not a screen going off. On a wall, in a dark room, at two metres, the

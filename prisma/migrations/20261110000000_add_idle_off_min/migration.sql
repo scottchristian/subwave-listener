@@ -1,0 +1,19 @@
+-- The second idle delay: how long the screen stays dim before its backlight
+-- goes off.
+--
+-- WHY IT IS SEPARATE FROM idleMin. Dimming is the reversible, visible half of
+-- going idle; turning the backlight off is the half that needs a touch to undo.
+-- A single timeout cannot describe both, and folding the second into the first
+-- would dim a screen that was meant to stay readable.
+--
+-- WHY THE DEFAULT IS 0. Zero means "never turn the backlight off", which is
+-- what every screen did before this column existed. A non-zero default would
+-- change the behaviour of installed firmware the moment the server was
+-- upgraded, and would blank a wall nobody had configured to blank.
+--
+-- THIS MIGRATION IS ADDITIVE AND SQLITE ONLY, like the rest: the column has a
+-- default, so existing rows are valid without a backfill, and Postgres is kept
+-- in shape by 'prisma db push' against the canonical schema.
+--
+-- AlterTable
+ALTER TABLE "Device" ADD COLUMN "idleOffMin" INTEGER NOT NULL DEFAULT 0;

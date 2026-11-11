@@ -5,6 +5,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "../auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
 import { noteStreamStart, noteStreamEnd, toLivePerson } from "@/lib/presence-live";
+import { trackAppStream } from "@/lib/station-activity";
 import { STATION } from "@/lib/station";
 import { getSubwaveConfig } from "@/lib/subwave";
 import http from "http";
@@ -87,7 +88,11 @@ export async function GET(req: NextRequest) {
       return new Response("Failed to get stream reader", { status: 500 });
     }
 
+    const activity = trackAppStream(user.id, streamSession.id);
     const onDisconnect = async () => {
+      // Nonblocking and connection-scoped; another tab stays live. No chunks
+      // means stop is a no-op and never creates online evidence.
+      void activity.stop().catch(() => console.error("STATION_ACTIVITY_STREAM_STOP_FAILED"));
       // Prevent double-logging
       if ((streamSession as any).endTime) return;
       noteStreamEnd(user.id);
@@ -122,26 +127,23 @@ export async function GET(req: NextRequest) {
     });
 
     const stream = new ReadableStream({
-      async start(controller) {
+      async pull(controller) {
         try {
-          while (true) {
-            if (req.signal.aborted) {
-              break;
-            }
+          if (!req.signal.aborted) {
             const { done, value } = await reader.read();
-            if (done) break;
-            try {
+            if (!done && !req.signal.aborted) {
               controller.enqueue(value);
-            } catch {
-              break; // downstream closed mid-write — stop, don't throw
+              if (value?.byteLength) {
+                void activity.touch().catch(() => console.error("STATION_ACTIVITY_STREAM_WRITE_FAILED"));
+              }
+              return;
             }
           }
-        } catch (e) {
-          // Client disconnected
-        } finally {
-          await onDisconnect();
-          try { controller.close(); } catch(e) {}
+        } catch {
+          cancelReader();
         }
+        await onDisconnect();
+        try { controller.close(); } catch {}
       },
       cancel() {
         console.log("Stream cancelled by client");

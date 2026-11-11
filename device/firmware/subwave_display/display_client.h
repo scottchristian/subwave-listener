@@ -75,6 +75,9 @@ struct StationSettings {
   std::string idle_mode = "stay";
   int idle_min = 30;
   int idle_pct = 20;
+  // Additional minutes after dimming before the backlight goes off. 0 = never,
+  // which is also what a server that does not send the field means.
+  int idle_off_min = 0;
   bool skip_enabled = true;
 };
 
@@ -138,6 +141,7 @@ struct WorkerSettings {
   char idle_mode[16]{"stay"};
   int idle_min = 30;
   int idle_pct = 20;
+  int idle_off_min = 0;
   bool skip_enabled = true;
 
   WorkerSettings() = default;
@@ -145,6 +149,7 @@ struct WorkerSettings {
       : brightness(s.brightness),
         idle_min(s.idle_min),
         idle_pct(s.idle_pct),
+        idle_off_min(s.idle_off_min),
         skip_enabled(s.skip_enabled) {
     strncpy(orientation, s.orientation.c_str(), sizeof(orientation) - 1);
     orientation[sizeof(orientation) - 1] = '\0';
@@ -162,6 +167,7 @@ struct WorkerSettings {
     s.idle_mode = idle_mode;
     s.idle_min = idle_min;
     s.idle_pct = idle_pct;
+    s.idle_off_min = idle_off_min;
     s.skip_enabled = skip_enabled;
     return s;
   }

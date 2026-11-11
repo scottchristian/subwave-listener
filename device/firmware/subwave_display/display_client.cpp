@@ -622,6 +622,9 @@ bool SubwaveDisplay::parse_state_(const std::string &json, WorkerResult *res) {
     res->settings.idle_mode = str_or(idle, "mode", res->settings.idle_mode);
     res->settings.idle_min = int_at(idle, "min", res->settings.idle_min);
     res->settings.idle_pct = int_at(idle, "pct", res->settings.idle_pct);
+    // A server that predates the field sends nothing, and 0 ("never") is the
+    // safe reading: the screen dims and stays dim rather than going black.
+    res->settings.idle_off_min = int_at(idle, "offMin", res->settings.idle_off_min);
   }
   if (cJSON *skip = cJSON_GetObjectItem(root, "skip")) {
     res->skip.shown = bool_at(skip, "shown");
@@ -1251,6 +1254,7 @@ void SubwaveDisplay::handle_worker_command_(const WorkerCommand &cmd) {
       cJSON_AddStringToObject(settings, "idleMode", cmd.settings.idle_mode);
       cJSON_AddNumberToObject(settings, "idleMin", cmd.settings.idle_min);
       cJSON_AddNumberToObject(settings, "idlePct", cmd.settings.idle_pct);
+      cJSON_AddNumberToObject(settings, "idleOffMin", std::clamp(cmd.settings.idle_off_min, 0, 240));
       cJSON_AddBoolToObject(settings, "skipEnabled", cmd.settings.skip_enabled);
       std::string body = json_stringify(root);
 
@@ -2692,7 +2696,8 @@ void SubwaveDisplay::send_heartbeat_() {
 }
 
 void SubwaveDisplay::push_settings(const StationSettings &s) {
-  ESP_LOGI(TAG, "push_settings: idle_mode=%s idle_min=%d idle_pct=%d", s.idle_mode.c_str(), s.idle_min, s.idle_pct);
+  ESP_LOGI(TAG, "push_settings: idle_mode=%s idle_min=%d idle_pct=%d idle_off_min=%d", s.idle_mode.c_str(),
+           s.idle_min, s.idle_pct, s.idle_off_min);
   bool orientation_changed = (s.orientation != this->settings_.orientation);
   this->settings_ = s;
   this->settings_dirty_ = true;

@@ -26,13 +26,26 @@ touchscreen:
     # "Waking is touch-only" (device/design.md) because there is no audio
     # here and so no user activity to measure — a track change or a heartbeat
     # must not light up a screen in an empty room.
+    #
+    # DOWN, MOVEMENT AND RELEASE, IN THAT ORDER, AT THE INPUT BOUNDARY. These
+    # triggers run BEFORE LVGL's listener (verified in touchscreen.cpp:
+    # update_trigger_ → touch_trigger_ → listener->touch), so a screen that is
+    # off has already shown its shield by the time LVGL decides what the press
+    # hit. A wake gesture cannot also press the widget underneath it.
+    #
+    # Movement matters as much as a fresh touch: a finger that lands on an
+    # already-awake screen and slides is activity, and a finger that lands and
+    # holds is activity for as long as it is down.
     on_touch:
       - lambda: |-
           ESP_LOGI("subwave.touch", "Touch down at (%d, %d)", touch.x, touch.y);
-      - script.execute: idle_arm
+          subwave_display::idle_touch();
+    on_update:
+      - lambda: subwave_display::idle_touch_move();
     on_release:
       - lambda: |-
           ESP_LOGI("subwave.touch", "Touch release");
+          subwave_display::idle_release();
 
 # WiFi is a SEPARATE ESP32-C6 on SPI, so the display and the network are
 # coupled only by the fact that they share a board.
@@ -800,6 +813,430 @@ lvgl:
                               text_font: font_body
                               text_color: 0x06101E
                               align: CENTER
+
+        # ---- idle_modal: the When Idle settings dialog ----
+        #
+        # Opened from the settings row; every control writes the same draft the
+        # idle controller reads. Controls that cannot affect the chosen behavior
+        # are hidden by ui_refresh_idle_dialog() rather than disabled: a dim
+        # percentage on a "stay on" screen is a value that does nothing, and a
+        # greyed-out control still invites a tap.
+        #
+        # The value labels are painted by the C++ from the settings the server
+        # actually holds, so the dialog cannot show a number the screen is not
+        # using. The steppers send a delta to scripts that clamp and push; the
+        # second timeout is ADDITIONAL time after the screen has dimmed, and
+        # "Never" is its zero.
+        - obj:
+            id: idle_modal
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            scrollable: false
+            bg_color: 0x000000
+            bg_opa: 82%
+            border_width: 0
+            pad_all: 0
+            radius: 0
+            hidden: true
+            clickable: true
+            on_click:
+              - script.execute: idle_dialog_close
+            widgets:
+              - obj:
+                  id: idle_modal_card
+                  align: CENTER
+                  width: 920px
+                  height: 600px
+                  scrollable: false
+                  bg_color: 0x0D1F35
+                  bg_opa: COVER
+                  border_width: 1
+                  border_color: 0x1A3050
+                  radius: 14px
+                  pad_all: 0
+                  clickable: true
+                  widgets:
+                    - label:
+                        id: idle_modal_title
+                        text: "When Idle"
+                        text_font: font_title
+                        text_color: 0xDCE8F5
+                        align: TOP_LEFT
+                        x: 40px
+                        y: 32px
+                        width: 840px
+
+                    - label:
+                        id: idle_modal_help
+                        text: "Inactivity counts from the last touch. A track change or a heartbeat never wakes the screen."
+                        text_font: font_small
+                        text_color: 0x6A8BA8
+                        align: TOP_LEFT
+                        x: 40px
+                        y: 92px
+                        width: 840px
+                        long_mode: WRAP
+
+                    - label:
+                        id: idle_modal_behavior
+                        text: "Behavior"
+                        text_font: font_body
+                        text_color: 0xDCE8F5
+                        align: TOP_LEFT
+                        x: 40px
+                        y: 150px
+                        width: 260px
+
+                    - button:
+                        id: btn_idle_stay
+                        align: TOP_LEFT
+                        x: 316px
+                        y: 146px
+                        width: 180px
+                        height: 48px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 1
+                        border_color: 0x29527A
+                        radius: 8px
+                        pad_all: 0
+                        on_click:
+                          - script.execute: { id: idle_mode_set, mode: 0 }
+                        widgets:
+                          - label:
+                              id: idle_stay_label
+                              text: "Stay on"
+                              text_font: font_small
+                              text_color: 0xDCE8F5
+                              align: CENTER
+
+                    - button:
+                        id: btn_idle_dim
+                        align: TOP_LEFT
+                        x: 508px
+                        y: 146px
+                        width: 180px
+                        height: 48px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 1
+                        border_color: 0x29527A
+                        radius: 8px
+                        pad_all: 0
+                        on_click:
+                          - script.execute: { id: idle_mode_set, mode: 1 }
+                        widgets:
+                          - label:
+                              id: idle_dim_label
+                              text: "Dim"
+                              text_font: font_small
+                              text_color: 0xDCE8F5
+                              align: CENTER
+
+                    - button:
+                        id: btn_idle_off
+                        align: TOP_LEFT
+                        x: 700px
+                        y: 146px
+                        width: 180px
+                        height: 48px
+                        bg_color: 0x1A3050
+                        bg_opa: COVER
+                        border_width: 1
+                        border_color: 0x29527A
+                        radius: 8px
+                        pad_all: 0
+                        on_click:
+                          - script.execute: { id: idle_mode_set, mode: 2 }
+                        widgets:
+                          - label:
+                              id: idle_off_label
+                              text: "Turn off"
+                              text_font: font_small
+                              text_color: 0xDCE8F5
+                              align: CENTER
+
+                    # ---- Inactivity timeout, hidden in Stay on ----
+                    - obj:
+                        id: row_idle_min
+                        align: TOP_LEFT
+                        x: 0px
+                        y: 220px
+                        width: 920px
+                        height: 48px
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        widgets:
+                          - label:
+                              id: idle_min_title
+                              text: "Inactivity timeout"
+                              text_font: font_body
+                              text_color: 0xDCE8F5
+                              align: LEFT_MID
+                              x: 40px
+                              width: 520px
+                          - button:
+                              id: btn_idle_min_down
+                              align: LEFT_MID
+                              x: 620px
+                              width: 56px
+                              height: 48px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x29527A
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - script.execute: { id: idle_min_step, delta: -1 }
+                              widgets:
+                                - label:
+                                    text: "-"
+                                    clickable: false
+                                    text_font: font_body
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+                          - label:
+                              id: idle_min_value
+                              text: "30 min"
+                              text_font: font_body
+                              text_color: 0x4E9FD4
+                              align: LEFT_MID
+                              x: 688px
+                              width: 130px
+                              text_align: CENTER
+                          - button:
+                              id: btn_idle_min_up
+                              align: LEFT_MID
+                              x: 824px
+                              width: 56px
+                              height: 48px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x29527A
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - script.execute: { id: idle_min_step, delta: 1 }
+                              widgets:
+                                - label:
+                                    text: "+"
+                                    clickable: false
+                                    text_font: font_body
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+
+                    # ---- Dim brightness, hidden unless Dim ----
+                    - obj:
+                        id: row_idle_pct
+                        align: TOP_LEFT
+                        x: 0px
+                        y: 286px
+                        width: 920px
+                        height: 48px
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        widgets:
+                          - label:
+                              id: idle_pct_title
+                              text: "Dim brightness"
+                              text_font: font_body
+                              text_color: 0xDCE8F5
+                              align: LEFT_MID
+                              x: 40px
+                              width: 520px
+                          - button:
+                              id: btn_idle_pct_down
+                              align: LEFT_MID
+                              x: 620px
+                              width: 56px
+                              height: 48px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x29527A
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - script.execute: { id: idle_pct_step, delta: -1 }
+                              widgets:
+                                - label:
+                                    text: "-"
+                                    clickable: false
+                                    text_font: font_body
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+                          - label:
+                              id: idle_pct_value
+                              text: "20%"
+                              text_font: font_body
+                              text_color: 0x4E9FD4
+                              align: LEFT_MID
+                              x: 688px
+                              width: 130px
+                              text_align: CENTER
+                          - button:
+                              id: btn_idle_pct_up
+                              align: LEFT_MID
+                              x: 824px
+                              width: 56px
+                              height: 48px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x29527A
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - script.execute: { id: idle_pct_step, delta: 1 }
+                              widgets:
+                                - label:
+                                    text: "+"
+                                    clickable: false
+                                    text_font: font_body
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+
+                    # ---- Turn off after another…, hidden unless Dim ----
+                    - obj:
+                        id: row_idle_off
+                        align: TOP_LEFT
+                        x: 0px
+                        y: 352px
+                        width: 920px
+                        height: 48px
+                        bg_opa: TRANSP
+                        border_width: 0
+                        pad_all: 0
+                        scrollable: false
+                        clickable: false
+                        widgets:
+                          - label:
+                              id: idle_off_title
+                              text: "Turn off after another"
+                              text_font: font_body
+                              text_color: 0xDCE8F5
+                              align: LEFT_MID
+                              x: 40px
+                              width: 520px
+                          - button:
+                              id: btn_idle_off_down
+                              align: LEFT_MID
+                              x: 620px
+                              width: 56px
+                              height: 48px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x29527A
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - script.execute: { id: idle_off_step, delta: -1 }
+                              widgets:
+                                - label:
+                                    text: "-"
+                                    clickable: false
+                                    text_font: font_body
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+                          - label:
+                              id: idle_off_value
+                              text: "Never"
+                              text_font: font_body
+                              text_color: 0x4E9FD4
+                              align: LEFT_MID
+                              x: 688px
+                              width: 130px
+                              text_align: CENTER
+                          - button:
+                              id: btn_idle_off_up
+                              align: LEFT_MID
+                              x: 824px
+                              width: 56px
+                              height: 48px
+                              bg_color: 0x1A3050
+                              bg_opa: COVER
+                              border_width: 1
+                              border_color: 0x29527A
+                              radius: 8px
+                              pad_all: 0
+                              on_click:
+                                - script.execute: { id: idle_off_step, delta: 1 }
+                              widgets:
+                                - label:
+                                    text: "+"
+                                    clickable: false
+                                    text_font: font_body
+                                    text_color: 0xDCE8F5
+                                    align: CENTER
+
+                    - label:
+                        id: idle_modal_note
+                        text: ""
+                        text_font: font_small
+                        text_color: 0x6A8BA8
+                        align: TOP_LEFT
+                        x: 40px
+                        y: 420px
+                        width: 840px
+                        long_mode: WRAP
+
+                    - button:
+                        id: btn_idle_done
+                        align: BOTTOM_RIGHT
+                        x: -40px
+                        y: -32px
+                        width: 180px
+                        height: 56px
+                        bg_color: 0x4E9FD4
+                        bg_opa: COVER
+                        border_width: 0
+                        radius: 8px
+                        pad_all: 0
+                        on_click:
+                          - script.execute: idle_dialog_close
+                        widgets:
+                          - label:
+                              id: idle_done_label
+                              text: "Done"
+                              text_font: font_body
+                              text_color: 0x06101E
+                              align: CENTER
+
+        # ---- wake_shield: the first gesture on a dark screen is only a wake ----
+        #
+        # A full-screen, transparent, clickable rectangle, LAST so it starts
+        # above every window, the chrome, both existing modals and the idle
+        # dialog. The controller shows it exactly while the backlight is off,
+        # re-raises it with lv_obj_move_foreground (a dialog left open can have
+        # raised itself above this object), and keeps it up for the whole gesture
+        # that wakes the screen. LVGL delivers a press to the topmost clickable
+        # object and this one has no handler, so the touch that wakes a dark
+        # screen cannot press what was underneath it.
+        #
+        # TRANSPARENT, NOT BLACK: the backlight is already off, and an opaque
+        # rectangle would cut the 800 ms fade to black to an instant cut.
+        - obj:
+            id: wake_shield
+            width: 100%
+            height: 100%
+            align: TOP_LEFT
+            scrollable: false
+            bg_opa: TRANSP
+            border_width: 0
+            pad_all: 0
+            radius: 0
+            hidden: true
+            clickable: true
 
 # ---------------------------------------------------------------------------
 # Artwork.

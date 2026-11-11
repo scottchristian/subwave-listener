@@ -65,6 +65,12 @@ for (const m of uiSrc.matchAll(/\bOBJ\((\w+)\)/g)) usedObjects.add(m[1]);
 for (const m of uiSrc.matchAll(/\bINT\((\w+)\)/g)) usedObjects.add(m[1]);
 for (const m of uiSrc.matchAll(/\bBOOL\((\w+)\)/g)) usedObjects.add(m[1]);
 for (const m of uiSrc.matchAll(/\bU32\((\w+)\)/g)) usedObjects.add(m[1]);
+// The When Idle dialog is painted through idle_widget_("name"), a runtime
+// lookup rather than the macro, because the same code styles three mode buttons
+// and hides three rows. That is lookup() by another name and must be checked
+// like every OBJ(): a name bound in YAML and never read, or read and never
+// bound, is the same silent failure either way.
+for (const m of uiSrc.matchAll(/\bidle_widget_\("(\w+)"\)/g)) usedObjects.add(m[1]);
 
 // ---- 2. what the YAML provides -----------------------------------------
 const boundObjects = new Set<string>();

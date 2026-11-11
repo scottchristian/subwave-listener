@@ -39,7 +39,11 @@ function ok(cond: boolean, name: string, extra = "") {
 
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "subwave-devices-"));
 const dbFile = path.join(tmp, "devices.db");
+const originalStatsDir = process.env.STATION_STATS_DIR;
+process.env.STATION_STATS_DIR = path.join(tmp, "station-stats");
 const cleanup = () => {
+  if (originalStatsDir === undefined) delete process.env.STATION_STATS_DIR;
+  else process.env.STATION_STATS_DIR = originalStatsDir;
   fs.rmSync(tmp, { recursive: true, force: true });
   fs.rmSync(SCHEMA, { force: true });
 };
@@ -207,6 +211,28 @@ try {
     ok(high.settings.brightness === 100, "brightness is clamped to 100");
     const low = await svc.applyDeviceSettings(after, { idleMin: -5 });
     ok(low.settings.idleMin === 1, "idle minutes is clamped to at least 1");
+
+    // The screen-off delay is the one idle value where zero means something:
+    // Never. Clamping it up to 1 would make "stays dim" unreachable from any
+    // client, and treating a missing value as 0 is what keeps a migrated row
+    // from inventing a delay.
+    ok(svc.deviceSettingsOf(after).idleOffMin === 0, "a row that never set the off delay reads as Never");
+    const offHigh = await svc.applyDeviceSettings(
+      await prisma.device.findUniqueOrThrow({ where: { id: row.id } }),
+      { idleOffMin: 300 },
+    );
+    ok(offHigh.settings.idleOffMin === 240, "the off delay is clamped to 240 minutes");
+    const offLow = await svc.applyDeviceSettings(
+      await prisma.device.findUniqueOrThrow({ where: { id: row.id } }),
+      { idleOffMin: -5 },
+    );
+    ok(offLow.settings.idleOffMin === 0, "a negative off delay becomes Never, not one minute");
+    const offNone = await prisma.device.findUniqueOrThrow({ where: { id: row.id } });
+    ok(offNone.idleOffMin === 0, "Never is persisted, so a reboot does not invent a delay");
+    const offSet = await svc.applyDeviceSettings(offNone, { idleOffMin: 30 });
+    const offRound = await prisma.device.findUniqueOrThrow({ where: { id: row.id } });
+    ok(offSet.settings.idleOffMin === 30 && offRound.idleOffMin === 30, "an off delay round-trips through the row");
+    ok(offSet.settingsRev === offNone.settingsRev + 1, "changing only the off delay still advances the revision");
 
     // Nonsense is ignored rather than stored.
     const junk = await svc.applyDeviceSettings(after, { orientation: "sideways" as never, themeMode: "chartreuse" as never });

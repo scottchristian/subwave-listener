@@ -48,6 +48,11 @@ export interface DeviceSettings {
   idleMode: IdleMode;
   idleMin: number;
   idlePct: number;
+  /**
+   * Additional minutes after dimming before the backlight goes off.
+   * 0 means never, and it is the default for firmware that predates the field.
+   */
+  idleOffMin: number;
   skipEnabled: boolean;
 }
 
@@ -119,7 +124,8 @@ export interface DeviceState {
     brightness: number;
   };
 
-  idle: { mode: IdleMode; min: number; pct: number };
+  /** `offMin` is the ADDITIONAL delay after dimming, 0 meaning never. */
+  idle: { mode: IdleMode; min: number; pct: number; offMin: number };
 
   /** The entire Skip button, decided server-side. The device renders `label`. */
   skip: {
