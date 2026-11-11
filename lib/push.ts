@@ -1,4 +1,4 @@
-import webpush from "web-push";
+import * as webpush from "web-push";
 import prisma from "@/lib/prisma";
 
 // VAPID keys: DB first (Admin card), env fallback. Changing keys orphan
