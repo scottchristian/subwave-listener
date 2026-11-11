@@ -17,8 +17,9 @@ an afternoon.
 
 ## Getting set up
 
-You need **Node.js 20.9 or later** (Next 16's floor) and a SUB/WAVE station to
-point at. A public or otherwise throwaway one is fine for development.
+You need **Node.js 20.19 or later** (Prisma 7's floor; Next 16 alone needs 20.9)
+and a SUB/WAVE station to point at. A public or otherwise throwaway one is fine
+for development.
 
 ```bash
 git clone https://github.com/scottchristian/subwave-listener.git
@@ -248,9 +249,10 @@ JWE, which is only what the cookie holds under `strategy: "jwt"`. This app uses
 real user while looking correctly closed to anonymous callers — which is a
 particularly nasty failure, because the anonymous path still works.
 
-**The Prisma CLI does not read `.env.local`.** It reads `.env` and
-`prisma/.env`. Use `set -a; . ./.env.local; set +a` first, or every Prisma
-command fails with `Environment variable not found: DATABASE_URL`.
+**The Prisma CLI reads `.env.local`, then `.env`.** `prisma.config.ts` loads
+both (first file wins), and shell environment variables win over both. Exporting
+with `set -a; . ./.env.local; set +a` is still the surest way to make the CLI and
+the app agree — it is what the deploy script does.
 
 **`file:` SQLite paths are relative to `prisma/schema.prisma`,** not the project
 root. `file:./data/app.db` lands in `prisma/data/`.

@@ -20,6 +20,7 @@ import { promises as fs } from "node:fs";
 import { createServer } from "node:http";
 import os from "node:os";
 import path from "node:path";
+import { prismaAdapter } from "../lib/prisma-adapter.ts";
 
 const run = promisify(execFile);
 const REPO = process.cwd();
@@ -87,7 +88,7 @@ try {
   const { ensureTestClient } = await import("../scripts/ensure-test-client.mjs");
   await ensureTestClient(REPO, dbUrl);
   const { PrismaClient } = await import("@prisma/client");
-  const prisma = new PrismaClient();
+  const prisma = new PrismaClient({ adapter: prismaAdapter(dbUrl) });
   const nowHobartMin = (() => {
     const p = new Intl.DateTimeFormat("en-GB", {
       timeZone: "Australia/Hobart",
@@ -120,7 +121,7 @@ try {
   await fs.writeFile(
     path.join(scratch, ".env.local"),
     [
-      `DATABASE_URL="file:./data/test.db"`,
+      `DATABASE_URL="${dbUrl}"`,
       `DB_PROVIDER=sqlite`,
       `PII_ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000001`,
       `NEXTAUTH_SECRET=scratch-secret`,

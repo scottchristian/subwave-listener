@@ -148,7 +148,7 @@ async function asyncCodeOf(fn: () => Promise<unknown>): Promise<string> {
 
 try {
   execFileSync("node", ["scripts/gen-schema.mjs", "sqlite", SCHEMA], { cwd: REPO, stdio: "pipe" });
-  execFileSync("npx", ["prisma", "db", "push", "--schema", SCHEMA, "--skip-generate"], {
+  execFileSync("npx", ["prisma", "db", "push", "--schema", SCHEMA], {
     cwd: REPO,
     stdio: "pipe",
     env: { ...process.env },
@@ -177,7 +177,9 @@ try {
     try {
       execFileSync(
         "npx",
-        ["prisma", "db", "execute", "--schema", SCHEMA, "--stdin"],
+        // db execute reads its URL from the config, not from --schema (gone in
+        // Prisma 7) — the DATABASE_URL in env is what points it at the copy.
+        ["prisma", "db", "execute", "--stdin"],
         {
           cwd: REPO,
           stdio: "pipe",

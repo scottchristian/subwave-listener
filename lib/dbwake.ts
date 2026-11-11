@@ -1,6 +1,7 @@
 // dbwake.ts - wake a hibernated database with exponential backoff
 import { PrismaClient } from "@prisma/client";
 import { providerFromEnv } from "./db-provider";
+import { prismaAdapter } from "./prisma-adapter";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes default
 const KNOCK_EVERY_MS = 10 * 1000; // 10 seconds between knocks
@@ -35,10 +36,15 @@ export function setWakeKnockForTests(knock: (() => Promise<boolean>) | null, tim
 function createWakeClient(): PrismaClient {
   const url = process.env.DATABASE_URL;
   if (!url) throw new Error("DATABASE_URL not set");
-  // Add extended connection timeout for hibernated databases
-  const wakeUrl = url.includes("connect_timeout") ? url : `${url}&connect_timeout=180`;
+  const provider = providerFromEnv(undefined, url);
+  // Extended connection timeout is a Postgres concept: `connect_timeout` is how
+  // long libpq waits for a hibernated server, and it needs a query string.
+  let wakeUrl = url;
+  if (provider === "postgresql" && !/[?&]connect_timeout=/.test(url)) {
+    wakeUrl = `${url}${url.includes("?") ? "&" : "?"}connect_timeout=180`;
+  }
   return new PrismaClient({
-    datasources: { db: { url: wakeUrl } },
+    adapter: prismaAdapter(wakeUrl, provider),
     log: process.env.NODE_ENV === "development" ? ["error"] : [],
   });
 }

@@ -83,7 +83,10 @@
   },
   "dependencies": {
     "@auth/prisma-adapter": "^2.11.3",
-    "@prisma/client": "^5.22.0",
+    "@prisma/adapter-better-sqlite3": "^7.10.1",
+    "@prisma/adapter-pg": "^7.10.1",
+    "@prisma/client": "^7.10.1",
+    "better-sqlite3": "^12.11.1",
     "next": "16.4.5",
     "next-auth": "^4.24.15",
     "pg": "^8.13.1",
@@ -98,10 +101,10 @@
     "@types/pg": "^8.11.10",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "prisma": "^5.22.0",
+    "prisma": "^7.10.1",
     "typescript": "^5"
   },
   "engines": {
-    "node": ">=20.9.0"
+    "node": ">=20.19.0"
   }
 }

@@ -16,6 +16,7 @@ import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { prismaAdapter } from "../lib/prisma-adapter.ts";
 
 const run = promisify(execFile);
 const REPO = process.cwd();
@@ -59,11 +60,11 @@ if ((await fs.readFile(hashFile, "utf8").catch(() => "")) !== hash) {
 process.env.DATABASE_URL = `file:${path.join(tmp, "main.db")}`;
 process.env.DB_PROVIDER = "sqlite";
 await run(path.join(REPO, "node_modules", ".bin", "prisma"),
-  ["db", "push", "--schema", schemaPath, "--skip-generate", "--accept-data-loss"],
+  ["db", "push", "--schema", schemaPath, "--accept-data-loss"],
   { cwd: REPO, timeout: 120000, env: process.env });
 
 const { PrismaClient } = await import("@prisma/client");
-const db = new PrismaClient();
+const db = new PrismaClient({ adapter: prismaAdapter(process.env.DATABASE_URL) });
 (globalThis as any).prisma = db;
 
 const prune = await import("../lib/session-prune.ts");

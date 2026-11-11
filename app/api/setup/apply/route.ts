@@ -307,8 +307,9 @@ async function stepDatabase(provider: string, databaseUrl: string, sqlitePath: s
     // the app down with it, and — because the app is restarted — turned a wizard
     // step into a reboot.
     //
-    // The output path goes in the generator block, not on the command line:
-    // `--output` is Prisma 6+, and this project is on 5.22.
+    // The output path goes in the generator block, not on the command line,
+    // because that is the one place both Prisma versions in this repo's history
+    // agreed on.
     const liveClient = path.join(process.cwd(), "node_modules", "@prisma", "client");
     const stagedClient = path.join(process.cwd(), "node_modules", ".prisma-client-staged");
 
@@ -368,7 +369,7 @@ async function stepDatabase(provider: string, databaseUrl: string, sqlitePath: s
       "npx",
       schemaArg(
         provider === "postgresql"
-          ? ["prisma", "db", "push", "--skip-generate", "--accept-data-loss"]
+          ? ["prisma", "db", "push", "--accept-data-loss"]
           : ["prisma", "migrate", "deploy"]
       ),
       { env, timeout: 600_000 },

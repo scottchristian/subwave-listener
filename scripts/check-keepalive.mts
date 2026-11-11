@@ -104,9 +104,11 @@ for (const junk of ["abc", "NaN", "30s", {}, [], true]) {
 
 // ---- the wake loop, against a database that is not there ----
 {
-  // Point at a port nothing is listening on: every knock fails, fast, with no
-  // socket left open and no chance of accidentally reaching a real database.
-  process.env.DATABASE_URL = "postgresql://nobody@127.0.0.1:1/nothing?connect_timeout=1";
+  // Point at a path that cannot open: every knock fails, fast, with no socket
+  // left open and no chance of accidentally reaching a real database. It stays
+  // sqlite because the wake client is built from the generated @prisma/client,
+  // and Prisma 7 requires the driver adapter to match that client's provider.
+  process.env.DATABASE_URL = "file:/nonexistent-subwave-wake/nothing.db";
   const wake = await import("../lib/dbwake.ts");
 
   let attempts = 0;

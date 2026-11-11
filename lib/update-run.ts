@@ -441,7 +441,7 @@ export async function runUpdatePipeline(appDir: string, plan: UpdatePlan): Promi
     }
     await log(`syncing ${envProvider} schema`);
     if (envProvider === "postgresql") {
-      await runStep(prismaCmd, ["db", "push", "--skip-generate", "--accept-data-loss"], appDir, 5 * 60 * 1000);
+      await runStep(prismaCmd, ["db", "push", "--accept-data-loss"], appDir, 5 * 60 * 1000);
     } else {
       try {
         await runStep(prismaCmd, ["migrate", "deploy", ...schemaArgs], appDir, 5 * 60 * 1000);
@@ -454,7 +454,7 @@ export async function runUpdatePipeline(appDir: string, plan: UpdatePlan): Promi
         // papered over by a push.
         if (!/P3005/.test((e as Error)?.message || "")) throw e;
         await log("no migration history — syncing from the datamodel instead");
-        await runStep(prismaCmd, ["db", "push", "--skip-generate", ...schemaArgs, "--accept-data-loss"], appDir, 5 * 60 * 1000);
+        await runStep(prismaCmd, ["db", "push", ...schemaArgs, "--accept-data-loss"], appDir, 5 * 60 * 1000);
       }
     }
     await runStep(prismaCmd, ["generate", ...schemaArgs], appDir, 5 * 60 * 1000);

@@ -119,9 +119,9 @@ try {
   // whole point of the cutover is that it moves; a check that only ran when the
   // repo happened to be pointing at SQLite would stop running the moment it
   // mattered most.
-  if (!fs.existsSync(SQLITE_SCHEMA)) {
-    sh("node", ["scripts/gen-schema.mjs", "sqlite", SQLITE_SCHEMA]);
-  }
+  // Regenerated every run: it is a gitignored scratch file, and a leftover copy
+  // from a previous Prisma version is a schema this check does not mean to test.
+  sh("node", ["scripts/gen-schema.mjs", "sqlite", SQLITE_SCHEMA]);
   ok(fs.existsSync(SQLITE_SCHEMA), "the sqlite schema variant is generated for the test");
 
   sh("npx", ["prisma", "migrate", "deploy", "--schema", SQLITE_SCHEMA], {

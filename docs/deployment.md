@@ -31,7 +31,7 @@ In short, before starting here you need:
 |---|---|
 | A server with a public address | **Yes** |
 | A domain name pointing at it | **Yes** |
-| Node.js 20.9 or newer on that server | **Yes** |
+| Node.js 20.19 or newer on that server | **Yes** |
 | Google sign-in credentials | **Yes** |
 | A SUB/WAVE station, already running | **Yes** |
 | An Icecast relay | Strongly recommended |
@@ -117,7 +117,7 @@ but then every command below that writes to `/etc` or starts a service needs
 ### Install Node.js
 
 Node.js is what actually runs this application. Install the current **22.x**
-release, which is comfortably above the 20.9 minimum:
+release, which is comfortably above the 20.19 minimum:
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
@@ -1138,8 +1138,9 @@ with the old one.
 
 ### "Environment variable not found: DATABASE_URL" from Prisma
 
-The Prisma tool reads `.env` and `prisma/.env`, not `.env.local`. Run
-`set -a; . ./.env.local; set +a` first.
+The Prisma tool reads `.env.local` through `prisma.config.ts`, then `.env`, and
+the shell environment wins over both. If neither file has the key, export it:
+`set -a; . ./.env.local; set +a`.
 
 ### The admin dashboard is not protected
 

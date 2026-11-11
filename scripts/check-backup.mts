@@ -17,6 +17,7 @@ import { promises as fs } from "node:fs";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { prismaAdapter } from "../lib/prisma-adapter.ts";
 
 const run = promisify(execFile);
 const REPO = process.env.TEST_REPO_ROOT || process.cwd();
@@ -94,7 +95,7 @@ try {
   process.env.DATABASE_URL = `file:${dbFile}`;
   process.env.DB_PROVIDER = "sqlite";
   await run(path.join(REPO, "node_modules", ".bin", "prisma"),
-    ["db", "push", "--schema", schemaPath, "--skip-generate", "--accept-data-loss"],
+    ["db", "push", "--schema", schemaPath, "--accept-data-loss"],
     { cwd: REPO, timeout: 120000, env: process.env });
 
   await fs.mkdir(path.join(appRoot, "data", "brand", "icons"), { recursive: true });
@@ -121,7 +122,7 @@ try {
   process.chdir(appRoot);
   const backup = await import("../lib/backup.ts");
   const { PrismaClient } = await import("@prisma/client");
-  const prisma = new PrismaClient();
+  const prisma = new PrismaClient({ adapter: prismaAdapter(process.env.DATABASE_URL) });
   // Prove the hook mapping held: this pragma succeeds on sqlite and throws on
   // postgres. Without it, a broken mapping silently tests the wrong engine —
   // which is exactly how 53 green assertions once ran against ambient state.

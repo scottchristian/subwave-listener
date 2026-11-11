@@ -20,6 +20,7 @@ import { promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { prismaAdapter } from "../lib/prisma-adapter.ts";
 
 const run = promisify(execFile);
 const REPO = process.cwd();
@@ -71,11 +72,11 @@ process.env.LITE_CONFIG_PATH = path.join(tmp, "lite-config.json");
 // The same key shape the station uses, so the HMAC path is exercised for real.
 process.env.PII_ENCRYPTION_KEY = "c".repeat(64);
 await run(path.join(REPO, "node_modules", ".bin", "prisma"),
-  ["db", "push", "--schema", schemaPath, "--skip-generate", "--accept-data-loss"],
+  ["db", "push", "--schema", schemaPath, "--accept-data-loss"],
   { cwd: REPO, timeout: 120000, env: process.env });
 
 const { PrismaClient } = await import("@prisma/client");
-const db = new PrismaClient();
+const db = new PrismaClient({ adapter: prismaAdapter(process.env.DATABASE_URL) });
 // One client shared with the module under test, so a stubbed failure is a stubbed
 // failure the module actually hits.
 (globalThis as any).prisma = db;

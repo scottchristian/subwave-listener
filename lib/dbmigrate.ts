@@ -4,13 +4,14 @@
 // drift from what the app itself uses.
 //
 // This runs in the app process, so it must be a module the Next build can
-// follow. The generated client lives outside node_modules/@prisma (Prisma 5.22
-// has no --output flag) at a fixed, gitignored path.
+// follow. The generated client lives outside node_modules/@prisma at a fixed,
+// gitignored path; the generator block below names it.
 import { existsSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import type { DbProvider } from "./db-provider";
+import { prismaAdapter } from "./prisma-adapter";
 
 const APP_DIR = process.cwd();
 export const SCHEMA_SRC = path.join(APP_DIR, "prisma", "schema.prisma");
@@ -66,8 +67,9 @@ function generateFor(provider: DbProvider): string {
   try {
     execFileSync(/* turbopackIgnore: true */ "node", [GEN_SCRIPT, provider, tmpSchema], { stdio: "pipe" });
     const raw = readFileSync(tmpSchema, "utf8");
-    // Prisma 5.22 takes the output path in the generator block; the --output
-    // flag only exists from Prisma 6.
+    // Name the output in the generator block: the cutover needs both engines'
+    // clients side by side, and the ambient @prisma/client is whichever one the
+    // running app was built for.
     writeFileSync(
       tmpSchema,
       raw.replace(
@@ -154,7 +156,7 @@ export const hash = (rows: unknown[]) =>
 export async function connectClient(provider: DbProvider, url: string): Promise<any> {
   const dir = generateFor(provider);
   const { PrismaClient } = await import(/* turbopackIgnore: true */ path.join(dir, "index.js"));
-  return new PrismaClient({ datasources: { db: { url } } });
+  return new PrismaClient({ adapter: prismaAdapter(url, provider) });
 }
 
 /** Exported so the admin UI can name a step "verify" without a second algorithm. */
@@ -321,7 +323,7 @@ export async function prepareTargetSchema(provider: DbProvider, url: string): Pr
     execFileSync(/* turbopackIgnore: true */ "node", [GEN_SCRIPT, provider, tmpSchema], { stdio: "pipe" });
     execFileSync(
       /* turbopackIgnore: true */ "npx",
-      ["prisma", "db", "push", "--schema", tmpSchema, "--skip-generate", "--accept-data-loss"],
+      ["prisma", "db", "push", "--schema", tmpSchema, "--accept-data-loss"],
       { stdio: "pipe", env: { ...process.env, DATABASE_URL: url } }
     );
   } catch (e: any) {

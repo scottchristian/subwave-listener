@@ -279,9 +279,9 @@ You install it once; it runs the application.
 
 **Why it is here.** It is the software that executes the app.
 
-**What you need.** **Version 20.9 or newer.** This is the minimum the underlying
-framework supports. It has been tested on version 20.20.2, which is what the
-reference deployment runs. Later versions should be fine.
+**What you need.** **Version 20.19 or newer.** Next 16 supports 20.9, but the
+database client (Prisma 7) needs 20.19. It has been tested on version 20.20.2,
+which is what the reference deployment runs. Later versions should be fine.
 
 ---
 
@@ -289,7 +289,7 @@ reference deployment runs. Later versions should be fine.
 
 | | Needed for | Required? |
 |---|---|---|
-| Node.js 20.9+ | running the application | **Required** |
+| Node.js 20.19+ | running the application | **Required** |
 | A SUB/WAVE station, already running | the music | **Required** |
 | Google Cloud credentials | sign-in | **Required** |
 | A server with a domain name | hosting | **Required** |
@@ -302,7 +302,7 @@ reference deployment runs. Later versions should be fine.
 You also need somewhere to run it. A small VPS is the usual answer and is what
 this is designed for: it is a tiny application that wants a public address and
 an SSL certificate, and a VPS is the easiest place to get both. Any host that can
-run Node.js 20.9 and give you a domain and a certificate will do.
+run Node.js 20.19 and give you a domain and a certificate will do.
 
 `docs/deployment.md` walks through the whole thing.
 
@@ -394,9 +394,10 @@ npx prisma migrate deploy
 npm run dev
 ```
 
-> The `set -a; . ./.env.local; set +a` line is not decoration. Next.js reads
-> `.env.local`, but the database tool reads a file called `.env` — a different
-> name — so without that line every Prisma command fails with
+> The `set -a; . ./.env.local; set +a` line is not decoration. Prisma 7 reads
+> `.env.local` through `prisma.config.ts`, but exporting first keeps the CLI and
+> the app reading exactly the same values — and it is what the deploy script
+> does. Without either, every Prisma command fails with
 > `Environment variable not found: DATABASE_URL`.
 
 `docs/deployment.md` covers both routes in full, and the manual one in more detail.

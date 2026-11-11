@@ -19,6 +19,7 @@ import { promises as fs } from "node:fs";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { prismaAdapter } from "../lib/prisma-adapter.ts";
 
 const run = promisify(execFile);
 const REPO = process.cwd();
@@ -65,11 +66,11 @@ if ((await fs.readFile(hashFile, "utf8").catch(() => "")) !== hash) {
 process.env.DATABASE_URL = `file:${path.join(tmp, "main.db")}`;
 process.env.DB_PROVIDER = "sqlite";
 await run(path.join(REPO, "node_modules", ".bin", "prisma"),
-  ["db", "push", "--schema", schemaPath, "--skip-generate", "--accept-data-loss"],
+  ["db", "push", "--schema", schemaPath, "--accept-data-loss"],
   { cwd: REPO, timeout: 120000, env: process.env });
 
 const { PrismaClient } = await import("@prisma/client");
-const db = new PrismaClient();
+const db = new PrismaClient({ adapter: prismaAdapter(process.env.DATABASE_URL) });
 
 // lib/subwave imports lib/prisma, which builds its client at module load from
 // DATABASE_URL. Importing it earlier would bind a client with no URL, every read
@@ -114,7 +115,7 @@ const urlCases: [string, string, string][] = [
   ["  https://radio.example.com  ", "https://radio.example.com/api", "surrounding spaces are ignored"],
 ];
 for (const [saved_, expected, label] of urlCases) {
-  const db2 = new PrismaClient();
+  const db2 = new PrismaClient({ adapter: prismaAdapter(process.env.DATABASE_URL) });
   await db2.setting.upsert({ where: { key: "subwaveApiUrl" }, update: { value: saved_ }, create: { key: "subwaveApiUrl", value: saved_ } });
   const cfg = await subwave.getSubwaveConfig();
   ok(cfg.apiUrl === expected, `${label} (got ${cfg.apiUrl})`);
@@ -127,7 +128,7 @@ for (const [saved_, expected, label] of urlCases) {
 
 // ---- a secret saved in the table is used, and a blank falls back to env ----
 {
-  const db3 = new PrismaClient();
+  const db3 = new PrismaClient({ adapter: prismaAdapter(process.env.DATABASE_URL) });
   await db3.setting.createMany({
     data: [
       { key: "subwaveApiUrl", value: "" },
@@ -150,7 +151,7 @@ for (const [saved_, expected, label] of urlCases) {
 
 // ---- station password has no env fallback: it must not be guessed at ----
 {
-  const db4 = new PrismaClient();
+  const db4 = new PrismaClient({ adapter: prismaAdapter(process.env.DATABASE_URL) });
   delete process.env.SUBWAVE_STREAM_URL;
   const cfg = await subwave.getSubwaveConfig();
   ok(cfg.stationPassword === "", "an unset station password is empty, never defaulted");

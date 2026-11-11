@@ -3,14 +3,13 @@ generator client {
 }
 
 // The provider here is whatever the station is CURRENTLY running on, because
-// the generated Prisma client is built from this file — a client generated
-// from the sqlite block cannot talk to Postgres even when DATABASE_URL says
-// otherwise, and every single query then fails at runtime. The cutover route
-// rewrites this block alongside DATABASE_URL and DB_PROVIDER; gen-schema.mjs
-// performs the same swap for one-off copies.
+// the generated client's types are built from this file. The cutover route
+// rewrites this block alongside DB_PROVIDER; gen-schema.mjs performs the same
+// swap for one-off copies. Since Prisma 7 the connection URL is no longer read
+// from here — prisma.config.ts holds it for the CLI, and the running client
+// gets a driver adapter built from DATABASE_URL in lib/prisma-adapter.ts.
 datasource db {
   provider = "sqlite"
-  url      = env("DATABASE_URL")
 }
 
 model Account {

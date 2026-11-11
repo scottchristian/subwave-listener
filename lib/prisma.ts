@@ -2,12 +2,57 @@ import { PrismaClient } from "@prisma/client";
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { providerFromEnv } from "./db-provider";
+import { prismaAdapter } from "./prisma-adapter";
 
-const globalForPrisma = globalThis as unknown as { prisma: PrismaClient };
+type Sweepable = {
+  __lastQueryAt?: number;
+  __sweeperStarted?: boolean;
+  __queryCounts?: Record<string, { count: number; lastAt: number }>;
+};
 
-const prisma = globalForPrisma.prisma ?? new PrismaClient();
+const globalForPrisma = globalThis as unknown as { prisma: PrismaClient & Sweepable };
 
-if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
+let client = globalForPrisma.prisma;
+
+if (!client) {
+  // Prisma 7 needs a driver adapter; the generated client is provider-agnostic.
+  // $use middleware no longer exists, so the query hook is a client extension.
+  // $allOperations also sees $queryRaw — which $use never did — so raw calls
+  // pass through untouched and the idle-hangup rule stays exactly as it was.
+  const extended = new PrismaClient({
+    adapter: prismaAdapter(process.env.DATABASE_URL),
+  }).$extends({
+    query: {
+      $allOperations({ model, operation, args, query }) {
+        if (!model) return query(args);
+        const state = client as unknown as Sweepable;
+        state.__lastQueryAt = Date.now();
+        // Per-table tally for the activity endpoint: when the dashboard says
+        // Running but nobody is here, this names the exact query that did it.
+        // Counts only — no args, no rows, nothing personal.
+        const key = `${model}.${operation}`;
+        const tally = (state.__queryCounts ??= {});
+        const slot = (tally[key] ??= { count: 0, lastAt: 0 });
+        slot.count++;
+        slot.lastAt = Date.now();
+        // ...and one line in the shared audit file, because module graphs differ
+        // per runtime (proxy, routes, instrumentation each hold their own client)
+        // while the filesystem is the same for all of them. Local append only —
+        // never the database. Trimmed on read, not on write.
+        try {
+          appendFileSync(auditPath(), `${Date.now()} ${key}\n`);
+        } catch {
+          // Observability must never break the query it observes.
+        }
+        return query(args);
+      },
+    },
+  }) as unknown as PrismaClient & Sweepable;
+  client = extended;
+  if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = extended;
+}
+
+const prisma = client;
 
 /**
  * Self-hangup: drop this client's pool after 15 quiet minutes.
@@ -15,43 +60,14 @@ if (process.env.NODE_ENV !== "production") globalForPrisma.prisma = prisma;
  * One PrismaClient per module graph means nobody else can hang up this
  * pool for us — the background loops disconnect their own instance while
  * request serving holds its sockets open forever. So every instance watches
- * itself: a $use stamp on each query, and a 5-minute interval that
+ * itself: a query-extension stamp on each call, and a 5-minute interval that
  * disconnects after 15 query-free minutes (the free plan's sleep window).
  * Unref'd so builds and tests never hang on it; keyed on the client so HMR
  * duplicates each manage themselves.
  */
 const IDLE_HANGUP_MS = 15 * 60 * 1000;
 const SWEEP_MS = 5 * 60 * 1000;
-type Sweepable = {
-  __lastQueryAt?: number;
-  __sweeperStarted?: boolean;
-  __queryCounts?: Record<string, { count: number; lastAt: number }>;
-};
 const sweepable = prisma as unknown as Sweepable;
-// Note: $use does not see $queryRaw — only the keepalive ping uses raw, and
-// it is off unless the operator arms it (in which case sleeping is not the
-// goal anyway).
-prisma.$use(async (params, next) => {
-  sweepable.__lastQueryAt = Date.now();
-  // Per-table tally for the activity endpoint: when the dashboard says
-  // Running but nobody is here, this names the exact query that did it.
-  // Counts only — no args, no rows, nothing personal.
-  const key = `${(params as any).model || "raw"}.${(params as any).action || "query"}`;
-  const tally = (sweepable.__queryCounts ??= {});
-  const slot = (tally[key] ??= { count: 0, lastAt: 0 });
-  slot.count++;
-  slot.lastAt = Date.now();
-  // ...and one line in the shared audit file, because module graphs differ
-  // per runtime (proxy, routes, instrumentation each hold their own client)
-  // while the filesystem is the same for all of them. Local append only —
-  // never the database. Trimmed on read, not on write.
-  try {
-    appendFileSync(auditPath(), `${Date.now()} ${key}\n`);
-  } catch {
-    // Observability must never break the query it observes.
-  }
-  return next(params);
-});
 
 /** Shared query audit all runtimes append to. Local disk, never the database. */
 export function auditPath(): string {

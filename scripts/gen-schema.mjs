@@ -11,9 +11,11 @@ if (!provider || !out) {
 }
 const src = fs.readFileSync(new URL("../prisma/schema.prisma", import.meta.url), "utf8");
 
+// The URL is not part of the schema any more (Prisma 7 reads it from
+// prisma.config.ts), so the swap only has to pin the provider.
 const swapped = src.replace(
   /datasource\s+db\s*\{[\s\S]*?\}/,
-  `datasource db {\n  provider = "${provider}"\n  url      = env("DATABASE_URL")\n}`
+  `datasource db {\n  provider = "${provider}"\n}`
 );
 
 if (!swapped.includes(`provider = "${provider}"`)) {

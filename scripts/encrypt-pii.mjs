@@ -19,6 +19,8 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaBetterSqlite3 } from "@prisma/adapter-better-sqlite3";
 
 const ENC_PREFIX = "e1:";
 const IDX_PREFIX = "h1:";
@@ -54,7 +56,15 @@ const isEnc = (v) => typeof v === "string" && v.startsWith(ENC_PREFIX);
 const isIdx = (v) => typeof v === "string" && v.startsWith(IDX_PREFIX);
 
 const url = process.env.DATABASE_URL || "";
-const file = url.startsWith("file:") ? path.resolve(url.replace(/^file:/, "")) : "";
+// Plain node on the deploy host cannot import TypeScript, so the two rules from
+// lib/database-url.ts and lib/prisma-adapter.ts are repeated here: a relative
+// file: URL means "relative to prisma/", and the driver adapter follows the URL.
+const fileUrl = (() => {
+  if (!url.startsWith("file:")) return url;
+  const rest = url.slice("file:".length);
+  return !rest || path.isAbsolute(rest) ? url : `file:${path.resolve(process.cwd(), "prisma", rest)}`;
+})();
+const file = fileUrl.startsWith("file:") ? path.resolve(fileUrl.replace(/^file:/, "")) : "";
 if (file && fs.existsSync(file)) {
   const backup = `${file}.bak-pii-${new Date().toISOString().replace(/[:.]/g, "-")}`;
   fs.copyFileSync(file, backup);
@@ -68,7 +78,11 @@ if (!confirm) {
   process.exit(0);
 }
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  adapter: fileUrl.startsWith("file:")
+    ? new PrismaBetterSqlite3({ url: fileUrl })
+    : new PrismaPg({ connectionString: url }),
+});
 let users = 0;
 let donations = 0;
 

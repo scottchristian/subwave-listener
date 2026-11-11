@@ -53,7 +53,7 @@ process.env.DB_PROVIDER = "sqlite";
 
 try {
   execFileSync("node", ["scripts/gen-schema.mjs", "sqlite", SCHEMA], { cwd: REPO, stdio: "pipe" });
-  execFileSync("npx", ["prisma", "db", "push", "--schema", SCHEMA, "--skip-generate"], {
+  execFileSync("npx", ["prisma", "db", "push", "--schema", SCHEMA], {
     cwd: REPO, stdio: "pipe", env: { ...process.env },
   });
   ok(fs.existsSync(dbFile), "a scratch database was built from the current schema");

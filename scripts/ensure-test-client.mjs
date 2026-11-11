@@ -41,7 +41,7 @@ export async function ensureTestClient(repoRoot, databaseUrl) {
     }
     await run(
       path.join(repoRoot, "node_modules", ".bin", "prisma"),
-      ["db", "push", "--schema", schemaPath, "--skip-generate", "--accept-data-loss"],
+      ["db", "push", "--schema", schemaPath, "--accept-data-loss"],
       {
         cwd: repoRoot,
         timeout: 120000,

@@ -10,8 +10,10 @@ export PM2_BIN="${PM2_BIN:-$(command -v pm2)}"
 # Minimal configured station. BACKEND points nowhere real: the update route's
 # listener check then returns null, which is exactly the "unknown room" path
 # the E2E asserts refuses-then-proceeds-with-confirm.
+# Absolute file: URL: a relative one is resolved against prisma/ (see
+# lib/database-url.ts), which would put the database outside the mounted data dir.
 cat > .env.local <<EOF
-DATABASE_URL="file:./data/e2e.db"
+DATABASE_URL="file:${PWD}/data/e2e.db"
 DB_PROVIDER=sqlite
 PII_ENCRYPTION_KEY=0000000000000000000000000000000000000000000000000000000000000001
 NEXTAUTH_SECRET=e2e-test-secret-not-a-real-secret
@@ -37,9 +39,10 @@ npx prisma migrate deploy --schema prisma/schema.prisma >/dev/null 2>&1
 
 # Fixed-token admin session so the driver can authenticate with a Cookie header.
 # Throwaway container, throwaway secret — this token is worthless elsewhere.
-DATABASE_URL="file:./data/e2e.db" node -e "
-const { PrismaClient } = require('@prisma/client');
-const p = new PrismaClient();
+node --input-type=module -e "
+import { PrismaClient } from '@prisma/client';
+import { PrismaBetterSqlite3 } from '@prisma/adapter-better-sqlite3';
+const p = new PrismaClient({ adapter: new PrismaBetterSqlite3({ url: process.env.DATABASE_URL }) });
 (async () => {
   const user = await p.user.upsert({
     where: { email: 'e2e@example.com' },

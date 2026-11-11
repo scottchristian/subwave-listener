@@ -1,5 +1,6 @@
 import prisma from "@/lib/prisma";
 import { providerFromEnv } from "@/lib/db-provider";
+import { prismaAdapter } from "@/lib/prisma-adapter";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 
@@ -204,7 +205,7 @@ async function liteClient(): Promise<LiteClient | null> {
   if (Date.now() < retryAfter) return null;
   try {
     const mod = await import("../prisma/lite-client/index.js");
-    const c = new mod.PrismaClient({ datasources: { db: { url: cacheDbUrl() } } });
+    const c = new mod.PrismaClient({ adapter: prismaAdapter(cacheDbUrl(), "sqlite") });
     await ensureCacheTables(c as unknown as LiteClient);
     lite = c as unknown as LiteClient;
     retryAfter = 0;

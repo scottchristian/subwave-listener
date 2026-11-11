@@ -15,6 +15,7 @@ import { promises as fs } from "node:fs";
 import crypto from "node:crypto";
 import os from "node:os";
 import path from "node:path";
+import { prismaAdapter } from "../lib/prisma-adapter.ts";
 
 const run = promisify(execFile);
 const REPO = process.env.TEST_REPO_ROOT || process.cwd();
@@ -91,11 +92,11 @@ try {
   process.env.LITE_CACHE_DB_PATH = `file:${cacheFile}`;
   process.env.LITE_CONFIG_PATH = path.join(tmpRoot, "lite-config.json");
   await run(path.join(REPO, "node_modules", ".bin", "prisma"),
-    ["db", "push", "--schema", schemaPath, "--skip-generate", "--accept-data-loss"],
+    ["db", "push", "--schema", schemaPath, "--accept-data-loss"],
     { cwd: REPO, timeout: 120000, env: process.env });
 
   const { PrismaClient } = await import("@prisma/client");
-  const pg = new PrismaClient();
+  const pg = new PrismaClient({ adapter: prismaAdapter(process.env.DATABASE_URL) });
   await pg.$queryRawUnsafe("PRAGMA database_list");
 
   // lib/prisma reuses a client left on globalThis, so hand it this one. The
