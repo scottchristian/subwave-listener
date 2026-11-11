@@ -1,6 +1,6 @@
 # Throwaway E2E station for the in-app updater test. Not a production image:
 # production deploys rsync source and builds on the VPS (see deploy.sh).
-FROM node:20-bookworm
+FROM node:26-bookworm
 
 RUN npm i -g pm2 && pm2 --version
 
