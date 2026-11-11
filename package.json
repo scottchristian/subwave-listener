@@ -98,7 +98,7 @@
     "@types/pg": "^8.11.10",
     "@types/react": "^19",
     "@types/react-dom": "^19",
-    "prisma": "^5.22.0",
+    "prisma": "^7.10.1",
     "typescript": "^5"
   },
   "engines": {
