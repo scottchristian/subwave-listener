@@ -780,6 +780,9 @@ export async function buildDeviceState(row: Device, atMs: number = Date.now()): 
       mode: (row.idleMode as IdleMode) || "dim",
       min: row.idleMin ?? 15,
       pct: row.idlePct ?? 20,
+      // 0 = never, and absent means the same for a row created before the
+      // column existed. The screen treats "never" as "dim and stay dim".
+      offMin: row.idleOffMin ?? 0,
     },
     skip,
     settingsRev: row.settingsRev,
@@ -829,6 +832,7 @@ export function deviceSettingsOf(row: Device): DeviceSettings {
     idleMode: (row.idleMode as IdleMode) || "dim",
     idleMin: row.idleMin ?? 15,
     idlePct: row.idlePct ?? 20,
+    idleOffMin: row.idleOffMin ?? 0,
     skipEnabled: row.skipEnabled !== "0",
   };
 }
@@ -866,6 +870,11 @@ export async function applyDeviceSettings(
   if (typeof patch.idlePct === "number" && Number.isFinite(patch.idlePct)) {
     next.idlePct = Math.max(1, Math.min(100, Math.round(patch.idlePct)));
   }
+  if (typeof patch.idleOffMin === "number" && Number.isFinite(patch.idleOffMin)) {
+    // Zero is a real value ("never"), not the bottom of the range: clamping it
+    // to 1 would make Never impossible to choose from any client.
+    next.idleOffMin = Math.max(0, Math.min(240, Math.round(patch.idleOffMin)));
+  }
   if (typeof patch.skipEnabled === "boolean") {
     next.skipEnabled = patch.skipEnabled;
   }
@@ -882,6 +891,7 @@ export async function applyDeviceSettings(
       idleMode: next.idleMode,
       idleMin: next.idleMin,
       idlePct: next.idlePct,
+      idleOffMin: next.idleOffMin,
       // Stored as "1"/"0", not a boolean, because this schema has to generate
       // for SQLite as well as Postgres and the other flags are strings too.
       skipEnabled: next.skipEnabled ? "1" : "0",

@@ -3,6 +3,7 @@ import { displayEmail, displayName } from "@/lib/pii";
 import { notePresence, freshPresence, liveStreams, toLivePerson, PRESENCE_WINDOW_MS } from "@/lib/presence-live";
 import { noteActivity } from "@/lib/activity";
 import { cachedSession, sessionTokenFromCookies } from "@/lib/session-cache";
+import { recordSignedIn } from "@/lib/station-activity";
 
 // Presence: who actually has the app open right now. Auth session rows live
 // for weeks after the tab closes, so they can't answer this — instead every
@@ -28,6 +29,10 @@ export async function GET(req: NextRequest) {
   // ...and the presence answer itself, same reason. The approval lookup above
   // is the only database touch on this path.
   notePresence(toLivePerson({ ...me, id: me.userId }), now.getTime());
+  // Separate persisted evidence for Admin Stats; keep the existing live answer.
+  await recordSignedIn(me.userId, now.getTime()).catch(() => {
+    console.error("STATION_ACTIVITY_PRESENCE_WRITE_FAILED");
+  });
   const fresh = freshPresence(now.getTime());
   const out: any = { signedIn: fresh.length, windowMs: PRESENCE_WINDOW_MS };
   if (me.isAdmin) {

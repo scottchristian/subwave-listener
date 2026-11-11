@@ -1,0 +1,317 @@
+.panel.panel {
+  min-width: 0;
+  width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+}
+
+.header > div {
+  flex: 1 1 16rem;
+  min-width: 0;
+}
+
+.panel .refresh {
+  width: auto;
+  min-height: 44px;
+  padding: 0.5rem 1rem;
+  font-size: 0.875rem;
+  flex-shrink: 0;
+}
+
+.note {
+  color: var(--color-text-dim);
+  font-size: 0.875rem;
+  line-height: 1.6;
+  max-width: 75ch;
+}
+
+.day {
+  margin: 1.25rem 0 0.35rem;
+  font-weight: 600;
+}
+
+.dateControls {
+  display: flex;
+  align-items: flex-end;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 1rem 0 0.5rem;
+}
+
+.dateField,
+.timelineControl {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.panel .dateButton,
+.panel .selectInput {
+  min-height: 44px;
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  background: var(--color-bg);
+  color: var(--color-text);
+  padding: 0.5rem 0.75rem;
+  font: inherit;
+  font-size: 0.875rem;
+}
+
+.panel .dateButton {
+  width: auto;
+  cursor: pointer;
+}
+
+.panel .dateButton:disabled,
+.panel .selectInput:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.panel .dateButton[aria-pressed="true"] {
+  border-color: var(--color-accent);
+}
+
+.panel .selectInput {
+  color-scheme: dark;
+}
+
+.timelineControl {
+  max-width: 22rem;
+  margin-bottom: 0.75rem;
+}
+
+.activitySection {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.activitySection h3 {
+  font-size: 1rem;
+  margin-bottom: 0.5rem;
+}
+
+.metrics.combinedMetrics {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.userTable {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  margin-top: 1.25rem;
+  font-size: 0.875rem;
+}
+
+.userTable caption {
+  text-align: left;
+  margin-bottom: 0.5rem;
+  font-weight: 600;
+}
+
+.userTable th,
+.userTable td {
+  padding: 0.75rem 0.5rem;
+  border-bottom: 1px solid var(--color-border);
+  text-align: left;
+  vertical-align: top;
+  overflow-wrap: anywhere;
+}
+
+.userTable tbody th {
+  font-weight: 400;
+}
+
+.userTable td {
+  font-variant-numeric: tabular-nums;
+}
+
+.warning {
+  margin-top: 1rem;
+  padding: 0.75rem 1rem;
+  border-left: 3px solid var(--color-accent-warm);
+  background: var(--color-bg);
+  color: var(--color-text);
+  font-size: 0.875rem;
+}
+
+.metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+.metric {
+  min-width: 0;
+  padding: 1rem;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+}
+
+.metric dt {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.value {
+  margin: 0.35rem 0;
+  color: var(--color-text);
+  font-size: 1.75rem;
+  font-weight: 600;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric[data-state="stale"] .value,
+.metric[data-state="error"] .value {
+  color: var(--color-accent-warm);
+}
+
+.coverage {
+  margin-top: 1.5rem;
+  padding-top: 1.25rem;
+  border-top: 1px solid var(--color-border);
+}
+
+.coverage h3,
+.timelineHeading {
+  margin-bottom: 0.5rem;
+  font-size: 1rem;
+}
+
+.timelineHeading {
+  margin-top: 1.5rem;
+}
+
+.timeline {
+  min-width: 0;
+}
+
+.plotRow {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.yAxis {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding: 3px 0;
+  min-width: 1.5rem;
+  max-width: 25%;
+  font-size: 0.75rem;
+  color: var(--color-text-dim);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.chart {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 160px;
+  background: var(--color-bg);
+  border-radius: 4px;
+}
+
+.timeLabels {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin: 0.35rem 0 0.5rem 2rem;
+  color: var(--color-text-dim);
+  font-size: 0.75rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.inspectLabel {
+  display: block;
+  margin-top: 1rem;
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+.timeInput {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  margin: 0;
+  accent-color: var(--color-accent);
+  cursor: pointer;
+}
+
+.panel .refresh:focus-visible,
+.panel .dateButton:focus-visible,
+.panel .selectInput:focus-visible,
+.timeInput:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 4px;
+  border-radius: 4px;
+}
+
+.inspection {
+  display: block;
+  padding: 0.75rem;
+  margin-top: 0.75rem;
+  border: 1px solid var(--color-border);
+  border-radius: 4px;
+  font-size: 0.875rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.inspection > span {
+  display: block;
+}
+
+@media (min-width: 1100px) {
+  .metrics {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 600px) {
+  .panel.panel {
+    padding: 1rem;
+  }
+}
+
+@media (max-width: 480px) {
+  .metrics,
+  .metrics.combinedMetrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .dateField {
+    flex: 1 1 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .panel .refresh,
+  .panel .dateButton,
+  .panel .selectInput {
+    transition: none;
+    transform: none;
+  }
+}

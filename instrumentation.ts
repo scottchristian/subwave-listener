@@ -69,6 +69,15 @@ export async function register() {
     console.warn("[boot] lite-cache flush scheduler not started:", message(err));
   }
 
+  if (process.env.NEXT_PHASE !== "phase-production-build") {
+    try {
+      const { startStationStatsCollector } = await import("./lib/station-stats");
+      startStationStatsCollector();
+    } catch (err) {
+      console.warn("[boot] station statistics collector not started:", message(err));
+    }
+  }
+
   try {
     // Reap stream sessions that were opened but never closed. Twice a day,
     // which is far outside the free tier's idle window — this is not a

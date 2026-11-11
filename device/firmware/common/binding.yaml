@@ -71,8 +71,8 @@ script:
           bind_object("status_line", id(status_line));
 
           // The backlight is not a widget, so it does not go in the widget table —
-          // but idle_apply() cannot reach it with id(backlight) either, because
-          // that helper only exists inside a lambda.
+          // and the idle controller in ui.cpp cannot reach it with id(backlight)
+          // either, because that helper only exists inside a lambda.
           bind_backlight(id(backlight));
 
           // ---- ----------------------------------------------------- the show list
@@ -172,6 +172,32 @@ script:
           bind_object("btn_ota_no", id(btn_ota_no));
           bind_object("ota_no_label", id(ota_no_label));
 
+          // ---- ----------------------------------- the When Idle dialog
+          // Painted by ui_refresh_idle_dialog() from the same settings the idle
+          // controller reads, so the dialog cannot display a number the screen
+          // is not using. Only the widgets that painter touches are bound; the
+          // static titles and the stepper buttons reach their scripts through
+          // YAML and are never named from C++.
+          bind_object("idle_modal", id(idle_modal));
+          bind_object("btn_idle_stay", id(btn_idle_stay));
+          bind_object("idle_stay_label", id(idle_stay_label));
+          bind_object("btn_idle_dim", id(btn_idle_dim));
+          bind_object("idle_dim_label", id(idle_dim_label));
+          bind_object("btn_idle_off", id(btn_idle_off));
+          bind_object("idle_off_label", id(idle_off_label));
+          bind_object("idle_min_value", id(idle_min_value));
+          bind_object("idle_pct_value", id(idle_pct_value));
+          bind_object("idle_off_value", id(idle_off_value));
+          bind_object("row_idle_min", id(row_idle_min));
+          bind_object("row_idle_pct", id(row_idle_pct));
+          bind_object("row_idle_off", id(row_idle_off));
+          bind_object("idle_modal_note", id(idle_modal_note));
+
+          // Shown exactly while the backlight is off, and kept up through the
+          // gesture that wakes it: the first touch on a dark screen must not
+          // also press the widget it landed on.
+          bind_object("wake_shield", id(wake_shield));
+
           // ---- ----------------------------------- presenter modal overlay
           bind_object("presenter_modal", id(presenter_modal));
           bind_object("presenter_card", id(presenter_card));
@@ -195,7 +221,7 @@ script:
           // These are `globals:`, not objects. ESPHome's own id() overload for
           // a GlobalsComponent already returns T&, so `&id(c_bg)` is an int* that
           // stays valid for the life of the program — which is what the C++ needs,
-          // because the idle deadline and the asleep flag change underneath it.
+          // because the asleep flag changes underneath it.
           //
           // ONLY THE ONES ui.cpp actually reads. window_index, window_queued,
           // art_fading, theme_is_day and device_claimed are read by YAML lambdas,
@@ -208,7 +234,6 @@ script:
           bind_int("c_rule", &id(c_rule));
           bind_int("c_accent", &id(c_accent));
           bind_bool("screen_asleep", &id(screen_asleep));
-          bind_uint32("idle_deadline_ms", &id(idle_deadline_ms));
 
           subwave_display::bind_client(id(display_client));
           id(display_client)->bind_runtime_images(
@@ -245,8 +270,8 @@ script:
       # The first state poll can land inside bind_widgets' one-second delay on a
       # fast network, so this is not a theoretical ordering.
       - lambda: subwave_display::ui_mark_ready();
-      # Arm the idle deadline LAST, after every binding exists. Calling it earlier
-      # — directly from on_boot, which is where it used to live — dereferences
-      # idle_deadline_ms and screen_asleep before bind_widgets has populated them,
-      # which is a store access fault and a reboot loop.
-      - script.execute: idle_arm
+      # Start the idle controller LAST, after every binding exists. Calling it
+      # earlier — directly from on_boot, which is where it used to live — would
+      # dereference screen_asleep and the backlight before bind_widgets has
+      # populated them, which is a store access fault and a reboot loop.
+      - script.execute: idle_boot

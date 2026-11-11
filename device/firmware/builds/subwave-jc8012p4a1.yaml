@@ -26,7 +26,7 @@ substitutions:
   # device reports it in its heartbeat, so these cannot drift: the sdkconfig
   # options in hardware.yaml write this same value into the descriptor.
   # One shared binary for every screen; bump this for every published release.
-  firmware_version: "1.15.7"
+  firmware_version: "1.15.8"
 
   # The panel is natively 800x1280 portrait and driven as 1280x800 landscape.
   # Getting this backwards is the single most common mistake with this board.
@@ -235,15 +235,17 @@ interval:
       # defined and never called, so a queued swap stayed queued forever.
       - script.execute: art_tick
       - script.execute: window_tick
-      # Backlight keepalive: re-assert the backlight every second so it can
-      # never stay off for more than one second. Uses idle_apply() which reads
-      # the current brightness setting rather than forcing 100%, so manual
-      # brightness changes are preserved.
-      - lambda: subwave_display::idle_apply(false);
       # The firmware dialog's progress bar, one step a second while it is open.
       # Does nothing (one hidden-flag read) when no dialog is showing; the
       # Settings row itself stays on the five-second tick below.
       - lambda: subwave_display::ui_tick_firmware_dialog();
+      # The idle controller's only clock. There is no forced-on keepalive any
+      # more: the policy decides between awake, dimmed and off, and this tick
+      # applies a change only when the phase or the target actually changes —
+      # so it neither fights the configured behavior nor restarts a fade that is
+      # still running. One second is enough because a wake is not polled: the
+      # touchscreen trigger calls the controller on the input itself.
+      - script.execute: idle_tick
     startup_delay: 2s
 
   - interval: 45s
@@ -255,10 +257,6 @@ interval:
 
   - interval: 5s
     then:
-      # Asked every five seconds rather than scheduled, because the deadline is
-      # re-armed by every touch and a self-rescheduling timer would have to be
-      # torn down each time.
-      - script.execute: idle_tick
       - script.execute: theme_sync
       # Kept off the touch path on purpose; see ui_refresh_cache_stats().
       - lambda: subwave_display::ui_refresh_cache_stats();
@@ -266,12 +264,11 @@ interval:
       # its snapshot. Same reason as the cache line — a tap must not wait on
       # the worker's lock.
       - lambda: subwave_display::ui_refresh_firmware_update();
-    # NOT OPTIONAL, AND NOT COSMETIC. idle_poll() dereferences screen_asleep and
-    # idle_deadline_ms, which live in the binding table that bind_widgets fills
-    # one second after boot. An interval with no startup_delay fires on the first
-    # loop after setup, which is inside that one second, so the very first tick
-    # would dereference a null pointer — a crash on every boot that looks like
-    # nothing at all in the log.
+    # NOT OPTIONAL, AND NOT COSMETIC. These painters dereference widgets that
+    # live in the binding table bind_widgets fills one second after boot. An
+    # interval with no startup_delay fires on the first loop after setup, which
+    # is inside that one second, so the very first tick would dereference a null
+    # pointer — a crash on every boot that looks like nothing at all in the log.
     startup_delay: 2s
 
   - interval: 10s

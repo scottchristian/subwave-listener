@@ -38,6 +38,8 @@ function ok(cond: boolean, name: string, extra = "") {
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "subwave-ota-"));
 const dbFile = path.join(tmp, "ota.db");
 const migratedFile = path.join(tmp, "migrated.db");
+const originalStatsDir = process.env.STATION_STATS_DIR;
+process.env.STATION_STATS_DIR = path.join(tmp, "station-stats");
 
 process.env.DATABASE_URL = `file:${dbFile}`;
 process.env.DB_PROVIDER = "sqlite";
@@ -47,6 +49,8 @@ process.env.DB_PROVIDER = "sqlite";
 process.chdir(tmp);
 
 const cleanup = () => {
+  if (originalStatsDir === undefined) delete process.env.STATION_STATS_DIR;
+  else process.env.STATION_STATS_DIR = originalStatsDir;
   process.chdir(REPO);
   fs.rmSync(tmp, { recursive: true, force: true });
   fs.rmSync(SCHEMA, { force: true });
@@ -931,6 +935,193 @@ try {
     const movedBody = await moved.json();
     ok(moved.status === 200 && movedBody.ota?.attempt?.state === "installing", "a report carried by the same heartbeat moves it");
   }
+  // ---- hostile input and the edges of each window -----------------------
+  {
+    const { NextRequest } = await import("next/server.js");
+    const route = await import("../app/api/devices/heartbeat/route.ts");
+    const stream = await import("../app/api/devices/ota/route.ts");
+
+    // A malformed request is a bounded refusal, never a 500 and never a row.
+    const d12 = await mkDevice();
+    const before12 = await attemptCount(d12.id);
+    const badRequests: [string, string, string][] = [
+      ["too short", "short", rel1!.release.id],
+      ["an illegal character", "req_bad_0001!", rel1!.release.id],
+      ["an empty id", "", rel1!.release.id],
+      ["an over-long id", "r".repeat(65), rel1!.release.id],
+      ["an illegal release id", "req_d12_0001", "not a valid id"],
+      ["an empty release id", "req_d12_0002", ""],
+    ];
+    for (const [label, requestId, releaseId] of badRequests) {
+      const res = await heartbeat(d12, { capable: true, request: { requestId, releaseId } });
+      ok(res.response?.notice === "bad_request", `${label} is a bad request`, String(res.response?.notice));
+      ok(res.response?.attempt === null, `and creates no attempt for ${label}`);
+    }
+    ok((await attemptCount(d12.id)) === before12, "hostile requests leave no rows behind");
+
+    const missingRelease = await heartbeat(d12, {
+      capable: true,
+      request: { requestId: "req_d12_0003", releaseId: "A".repeat(24) },
+    });
+    ok(missingRelease.response?.notice === "release_unavailable", "a well-formed id for a release that never existed says so");
+    ok((await attemptCount(d12.id)) === before12, "and still creates nothing");
+
+    // The unique key is (device, request id), not the request id alone: two
+    // screens racing with the same id must not collide.
+    const d13 = await mkDevice();
+    const [first, second] = await Promise.all([
+      heartbeat(d12, { capable: true, request: { requestId: "req_shared_01", releaseId: rel1!.release.id } }),
+      heartbeat(d13, { capable: true, request: { requestId: "req_shared_01", releaseId: rel1!.release.id } }),
+    ]);
+    ok(first.response?.attempt?.state === "accepted", "a shared request id is accepted on the first screen");
+    ok(second.response?.attempt?.state === "accepted", "and accepted independently on a second screen");
+    ok(first.response!.attempt!.id !== second.response!.attempt!.id, "with distinct attempt rows");
+
+    // Nothing a screen receives may echo its bearer token or the stored hash.
+    const token = tokens.get(d13.id)!;
+    const hb = await route.POST(
+      new NextRequest("http://localhost/api/devices/heartbeat", {
+        method: "POST",
+        headers: { authorization: `Bearer ${token}` },
+        body: JSON.stringify({ ota: { capable: true } }),
+      }),
+    );
+    const hbText = await hb.text();
+    ok(hb.status === 200 && !hbText.includes(token), "a heartbeat response never echoes the bearer token");
+    ok(!hbText.includes("tokenHash") && !hbText.toLowerCase().includes("authorization"), "nor the stored hash or the header");
+
+    const served = await stream.GET(
+      new NextRequest("http://localhost/api/devices/ota", { headers: { authorization: `Bearer ${token}` } }),
+    );
+    const serveText = Buffer.from(await served.arrayBuffer()).toString("latin1");
+    ok(!serveText.includes(token), "the artifact response never contains the token");
+    const serveHeaders = Array.from(served.headers.entries())
+      .map(([k, v]) => `${k}: ${v}`)
+      .join("\n")
+      .toLowerCase();
+    ok(!serveHeaders.includes("token") && !serveHeaders.includes(token.toLowerCase()), "and no header leaks it either");
+
+    // An unreadable body is still a heartbeat, and PATCH is the same endpoint.
+    const d14 = await mkDevice();
+    const malformed = await route.POST(
+      new NextRequest("http://localhost/api/devices/heartbeat", {
+        method: "POST",
+        headers: { authorization: `Bearer ${tokens.get(d14.id)}` },
+        body: "{this is not json",
+      }),
+    );
+    ok(malformed.status === 200, "an unreadable heartbeat body is still a heartbeat");
+    ok(
+      (await prisma.device.findUniqueOrThrow({ where: { id: d14.id } })).lastSeenAt !== null,
+      "and the liveness fact is still recorded",
+    );
+
+    const patched = await route.PATCH(
+      new NextRequest("http://localhost/api/devices/heartbeat", {
+        method: "PATCH",
+        headers: { authorization: `Bearer ${tokens.get(d14.id)}` },
+        body: JSON.stringify({ firmwareVer: "1.0.0", appliedRev: 2 }),
+      }),
+    );
+    ok(patched.status === 200, "PATCH is the same heartbeat");
+    ok((await prisma.device.findUniqueOrThrow({ where: { id: d14.id } })).firmwareVer === "1.0.0", "and writes the same facts");
+
+    const noBody = await route.POST(
+      new NextRequest("http://localhost/api/devices/heartbeat", {
+        method: "POST",
+        headers: { authorization: `Bearer ${tokens.get(d14.id)}` },
+      }),
+    );
+    ok(noBody.status === 200, "a heartbeat with no body at all is accepted");
+
+    // A release whose artifact vanishes after the tap is a 410 through the real
+    // route, not a short 200 a bootloader would half-flash.
+    const v3Image = buildImage({ version: "1.2.0", dataLen: 284 }).bytes;
+    const rel3 = await ota.registerSharedRelease({ bytes: v3Image, version: "1.2.0", filename: "v3.bin", uploadedById: null });
+    await ota.publishRelease(rel3.release.id);
+    await ota.withdrawRelease(rel3.release.id);
+    ok((await ota.getPublishedRelease()) === null, "withdrawing leaves nothing on offer");
+    const republished = await ota.publishRelease(rel3.release.id);
+    ok(republished.publishedAt !== null, "a withdrawn release can be published again deliberately");
+    ok((await ota.getPublishedRelease())?.version === "1.2.0", "and is on offer again");
+
+    const d15 = await mkDevice();
+    const accepted15 = await heartbeat(d15, {
+      capable: true,
+      request: { requestId: "req_d15_0001", releaseId: rel3.release.id },
+    });
+    const a15 = accepted15.response!.attempt!.id;
+    const served15 = await stream.GET(
+      new NextRequest("http://localhost/api/devices/ota", { headers: { authorization: `Bearer ${tokens.get(d15.id)}` } }),
+    );
+    ok(served15.status === 200, "the newly pinned artifact serves before it is lost");
+
+    fs.rmSync(path.join(tmp, "data", "firmware", "ota", "artifacts", `${rel3.release.sha256}.bin`));
+    const gone = await stream.GET(
+      new NextRequest("http://localhost/api/devices/ota", { headers: { authorization: `Bearer ${tokens.get(d15.id)}` } }),
+    );
+    ok(gone.status === 410, "a pinned artifact that vanished is 410, not a short 200");
+    const goneBody = await gone.json();
+    ok(typeof goneBody.error === "string" && goneBody.error.length > 0, "with a reason an operator can read");
+    ok((await ota.getPublishedRelease()) === null, "and bytes that cannot be served are not offered to anyone");
+
+    const stillPinned = await prisma.deviceOtaAttempt.findUniqueOrThrow({ where: { id: a15 } });
+    ok(stillPinned.phase === "accepted", "the attempt is not silently rewritten by a failed read");
+    ok((await ota.cancelAttempt(a15)).state === "failed", "and the operator can still end it");
+
+    // The two silence windows have an inside and an outside, not just a middle.
+    await ota.publishRelease(rel1!.release.id); // the offer the previous sections left behind
+    const d16 = await mkDevice();
+    const accepted16 = await heartbeat(d16, {
+      capable: true,
+      request: { requestId: "req_d16_0001", releaseId: rel1!.release.id },
+    });
+    const a16 = accepted16.response!.attempt!.id;
+    await heartbeat(d16, { capable: true, report: { attemptId: a16, phase: "rebooting" } });
+
+    ok(
+      (await heartbeat(d16, { capable: true, report: { phase: "installing" } })).response?.notice === "bad_report",
+      "a report with no attempt id is a bad report",
+    );
+    const rolledReport = await heartbeat(d16, {
+      capable: true,
+      report: { attemptId: a16, phase: "succeeded", bootResult: "rolled_back" },
+    });
+    ok(rolledReport.response?.notice === "bad_report", "a rolled-back boot cannot be claimed as success");
+
+    await prisma.deviceOtaAttempt.update({
+      where: { id: a16 },
+      data: { updatedAt: new Date(Date.now() - ota.REBOOT_SILENCE_MS + 5000) },
+    });
+    ok((await ota.reconcileStaleAttempts(d16.id)) === 0, "five seconds inside the reboot window is still an install");
+
+    await prisma.deviceOtaAttempt.update({
+      where: { id: a16 },
+      data: { updatedAt: new Date(Date.now() - ota.REBOOT_SILENCE_MS - 5000) },
+    });
+    ok((await ota.reconcileStaleAttempts(d16.id)) === 1, "five seconds past it is unknown");
+
+    // The running-image block stays defensive even for shapes JSON can produce.
+    ok(ota.parseInstalledInfo({ version: " 1.2.3 ", sha256: "A".repeat(64), slot: "app1" })?.version === "1.2.3",
+      "a padded version is trimmed");
+    ok(ota.parseInstalledInfo({ version: "1.2.3", sha256: `${"a".repeat(63)}\u0000` })?.sha256 === null,
+      "a digest with a stripped control byte is discarded, not shortened into a match");
+    ok(ota.parseInstalledInfo({ version: "1.2.3", sha256: "a".repeat(64), slot: ["app0"] })?.slot === null,
+      "a slot that is not a string is discarded");
+    ok(ota.parseInstalledInfo({ version: 123, sha256: 456 })?.version === null, "non-string fields are discarded");
+    ok(ota.parseInstalledInfo([])?.version === null, "an array is an object with no usable fields, not a crash");
+
+    ok(
+      (await asyncCodeOf(() => ota.publishRelease(rel3.release.id))) === "artifact_missing",
+      "publishing proves the bytes before moving the pointer",
+    );
+    ok((await ota.getPublishedRelease())?.version === "1.0.0", "and a failed publish leaves the current offer alone");
+    ok(
+      (await asyncCodeOf(() => ota.publishRelease("A".repeat(24)))) === "unknown_release",
+      "publishing a release id that does not exist is a bounded 404",
+    );
+  }
+
 } catch (e: any) {
   ok(false, "the OTA behaviour suite ran", String(e?.message || e).split("\n")[0]);
 } finally {

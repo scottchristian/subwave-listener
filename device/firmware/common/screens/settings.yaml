@@ -101,6 +101,14 @@
             - label: { id: lbl_theme, text: "Follow the sun", text_font: font_body, text_color: 0x4E9FD4, align: RIGHT_MID, x: -20px, width: 420px }
 
       # ---- Row 3: Idle Behavior ------------------------------
+      #
+      # THIS ROW OPENS A DIALOG; IT DOES NOT CYCLE A MODE. Dimming and switching
+      # off now have a timeout, a dim level and an additional off delay, and a
+      # tap that silently changed one of three modes could not set any of them.
+      # The sentence on the row and the values in the dialog are painted from
+      # the same settings the controller reads, so they cannot disagree. The
+      # label is 640px rather than 420: the sentence now names the additional
+      # delay as well, and the row title only owns the left 360.
       - obj:
           id: set_idle
           x: 0px
@@ -115,10 +123,10 @@
           scrollable: false
           clickable: true
           on_click:
-            - script.execute: idle_cycle
+            - script.execute: idle_dialog_open
           widgets:
             - label: { id: lbl_idle_title, text: "When Idle", text_font: font_body, text_color: 0xDCE8F5, align: LEFT_MID, x: 20px, width: 340px }
-            - label: { id: lbl_idle, text: "Dim, after 15 minutes", text_font: font_body, text_color: 0x4E9FD4, align: RIGHT_MID, x: -20px, width: 420px }
+            - label: { id: lbl_idle, text: "Dim after 15 min · stays dim", text_font: font_body, text_color: 0x4E9FD4, align: RIGHT_MID, x: -20px, width: 640px }
 
       # ---- Row 4: Orientation --------------------------------
       - obj:

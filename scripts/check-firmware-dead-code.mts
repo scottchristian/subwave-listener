@@ -351,12 +351,24 @@ assert(
 // ---------------------------------------------------------------------------
 const yamlAndScripts = yamlBlob;
 assert(
-  /on_touch:[\s\S]{0,400}?idle_arm/.test(yamlAndScripts),
-  "the touchscreen must fire idle_arm on touch — without it the screen cannot wake",
+  /on_touch:[\s\S]{0,400}?idle_touch\b/.test(yamlAndScripts),
+  "the touchscreen must wake the idle controller on touch — without it the screen cannot wake",
 );
 assert(
-  /interval: 5s[\s\S]{0,400}?idle_tick/.test(yamlAndScripts),
-  "an interval must drive idle_tick — without it the deadline is never noticed",
+  /on_update:[\s\S]{0,200}?idle_touch_move\b/.test(yamlAndScripts),
+  "movement while held must count as activity, or a drag leaves the screen to time out under the finger",
+);
+assert(
+  /on_release:[\s\S]{0,200}?idle_release\b/.test(yamlAndScripts),
+  "and release must end the wake-only gesture, or the shield would never come down",
+);
+assert(
+  /interval: 1s[\s\S]{0,2000}?idle_tick\b/.test(yamlAndScripts),
+  "the one-second interval must drive idle_tick — without it the timeout is never noticed",
+);
+assert(
+  !/interval: 5s[\s\S]{0,400}?idle_tick\b/.test(yamlAndScripts),
+  "the idle tick must not also run on the five-second interval — two clocks is two answers",
 );
 assert(
   /boot_windows/.test(yamlAndScripts) &&

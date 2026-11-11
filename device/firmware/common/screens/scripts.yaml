@@ -17,10 +17,9 @@
 #
 
 globals:
-  - id: idle_deadline_ms
-    type: uint32_t
-    restore_value: no
-    initial_value: '0'
+  # There is deliberately no deadline global any more. The idle controller owns
+  # its own monotonic timestamps in ui.cpp; a second copy of "when should this
+  # happen" in YAML is a second answer, and the two drift.
   - id: screen_asleep
     type: bool
     restore_value: no
@@ -47,14 +46,14 @@ script:
           auto draft = c->settings_draft();
           c->push_settings(draft);
           subwave_display::settings_refresh();
-          float v = (float) value / 100.0f;
-          auto *light = id(backlight);
-          auto call = light->make_call();
-          call.set_state(true);
-          call.set_brightness(v);
-          call.set_transition_length(800);
-          call.perform();
-          ESP_LOGI("subwave.settings", "Manual brightness set to %d%% (%.2f).", value, v);
+          // The idle controller owns the backlight. Going straight to
+          // id(backlight) here would fight it: a manual tap while dimmed would
+          // light the room to full and the next poll would dim it again, which
+          // is a visible flash. This tells the controller the new normal level;
+          // it decides what that means for the phase the screen is in, and it
+          // never raises a dimmed screen above its dim target.
+          subwave_display::idle_set_manual_brightness(value);
+          ESP_LOGI("subwave.settings", "Manual brightness set to %d%%.", value);
 
   - id: theme_cycle
     mode: single
@@ -68,14 +67,108 @@ script:
           c->push_settings(draft);
           subwave_display::settings_refresh();
 
-  - id: idle_cycle
+  # ---------------------------------------------------------------------------
+  # When Idle: the dialog and its four settings.
+  #
+  # Every handler writes the same draft the controller reads and then pushes it,
+  # so the sentence on the settings row, the values in the dialog and the phase
+  # the screen adopts are all one answer. settings_refresh() repaints both the row
+  # and (when it is open) the dialog; the controller picks up a changed mode or
+  # timeout on its next one-second tick. A settings edit is a touch, so the
+  # inactivity period has already restarted by the time any of this runs.
+  # ---------------------------------------------------------------------------
+  - id: idle_dialog_open
     mode: single
+    then:
+      - lambda: subwave_display::ui_show_idle_dialog();
+
+  - id: idle_dialog_close
+    mode: single
+    then:
+      - lambda: subwave_display::ui_hide_idle_dialog();
+
+  # 0 = stay on, 1 = dim, 2 = off. Sent as an int rather than a string because
+  # script parameters of type string are not something ESPHome accepts.
+  - id: idle_mode_set
+    mode: single
+    parameters:
+      mode: int
     then:
       - lambda: |-
           auto *c = id(display_client);
-          std::string m = c->settings().idle_mode;
-          m = (m == "stay") ? "dim" : (m == "dim") ? "off" : "stay";
-          c->settings_draft().idle_mode = m;
+          std::string next = mode == 0 ? "stay" : (mode == 2 ? "off" : "dim");
+          if (c->settings().idle_mode == next) return;
+          c->settings_draft().idle_mode = next;
+          auto draft = c->settings_draft();
+          c->push_settings(draft);
+          subwave_display::settings_refresh();
+
+  # The steppers step one minute at a time up to ten, and five above it: the
+  # short end is where people actually choose, and five-minute steps make the
+  # top of the 240-minute range reachable without an accelerator. A value the
+  # server set off that grid snaps to it on the first tap.
+  - id: idle_min_step
+    mode: single
+    parameters:
+      delta: int
+    then:
+      - lambda: |-
+          auto *c = id(display_client);
+          const int current = c->settings().idle_min;
+          int next;
+          if (delta > 0) {
+            next = current < 10 ? current + 1 : ((current / 5) + 1) * 5;
+          } else {
+            next = current <= 10 ? current - 1 : ((current - 1) / 5) * 5;
+          }
+          if (next < 1) next = 1;
+          if (next > 240) next = 240;
+          if (next == current) return;
+          c->settings_draft().idle_min = next;
+          auto draft = c->settings_draft();
+          c->push_settings(draft);
+          subwave_display::settings_refresh();
+
+  - id: idle_pct_step
+    mode: single
+    parameters:
+      delta: int
+    then:
+      - lambda: |-
+          auto *c = id(display_client);
+          const int current = c->settings().idle_pct;
+          int next = current + (delta > 0 ? 5 : -5);
+          if (next < 1) next = 1;
+          if (next > 100) next = 100;
+          if (next == current) return;
+          c->settings_draft().idle_pct = next;
+          auto draft = c->settings_draft();
+          c->push_settings(draft);
+          subwave_display::settings_refresh();
+
+  # Zero is "Never", not the bottom of a range: stepping down from one minute
+  # reaches Never, and stepping up from Never starts at five. That keeps every
+  # positive value meaningful and the off switch one tap from the smallest delay.
+  - id: idle_off_step
+    mode: single
+    parameters:
+      delta: int
+    then:
+      - lambda: |-
+          auto *c = id(display_client);
+          const int current = c->settings().idle_off_min;
+          int next;
+          if (current == 0) {
+            next = delta > 0 ? 5 : 0;
+          } else if (delta > 0) {
+            next = current < 10 ? current + 1 : ((current / 5) + 1) * 5;
+          } else {
+            next = current <= 10 ? current - 1 : ((current - 1) / 5) * 5;
+          }
+          if (next < 0) next = 0;
+          if (next > 240) next = 240;
+          if (next == current) return;
+          c->settings_draft().idle_off_min = next;
           auto draft = c->settings_draft();
           c->push_settings(draft);
           subwave_display::settings_refresh();
@@ -627,18 +720,22 @@ script:
       - lambda: subwave_display::ui_hide_firmware_prompt();
 
   # ---------------------------------------------------------------------------
-  # Idle: arm, tick, wake.
+  # Idle: boot, tick. Waking is not a script — the touchscreen triggers call the
+  # controller directly, because a script has a mode and a queue and a wake that
+  # waited its turn behind a restart would be a touch that did nothing.
   # ---------------------------------------------------------------------------
   - id: idle_tick
     mode: single
     then:
       - lambda: subwave_display::idle_poll();
 
-  # Arm the deadline. Called at boot and again on every wake.
-  - id: idle_arm
+  # Arm the controller. Called once at boot, after every binding exists, and
+  # never again: a wake is not a re-arm, and re-initialising on wake would reset
+  # the light cache and fade a screen that is already at brightness.
+  - id: idle_boot
     mode: single
     then:
-      - lambda: subwave_display::idle_touch();
+      - lambda: subwave_display::idle_init();
 
   # ---------------------------------------------------------------------------
   # Initial boot window selection.

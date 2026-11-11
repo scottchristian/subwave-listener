@@ -1,6 +1,7 @@
 "use client";
 
 import ScreensPanel from "./ScreensPanel";
+import StationStatsPanel from "./StationStatsPanel";
 
 import { useSession } from "next-auth/react";
 import { useEffect, useRef, useState } from "react";
@@ -1375,6 +1376,8 @@ export default function AdminPage() {
             })}
           </div>
         </section>
+
+        <StationStatsPanel active={activeTab === "stats"} users={users} />
 
         {/* Now Streaming */}
         <section className="card" id="section-streaming" style={activeTab === "stats" ? undefined : { display: "none" }}>

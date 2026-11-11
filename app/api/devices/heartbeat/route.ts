@@ -3,6 +3,7 @@ import prisma from "@/lib/prisma";
 import { completeRotation, deviceAuth } from "@/lib/device-auth";
 import { applyDeviceSettings, deviceSettingsOf } from "@/lib/device-service";
 import { handleOtaHeartbeat } from "@/lib/firmware-ota";
+import { recordDeviceOnline } from "@/lib/station-activity";
 
 /**
  * A screen reports in, and is told what to do.
@@ -94,7 +95,14 @@ export async function POST(req: NextRequest) {
       { status: 401, headers: { "Cache-Control": "no-store" } },
     );
   }
-  const updated = await prisma.device.findUniqueOrThrow({ where: { id: row.id } });
+  // findUnique, not findUniqueOrThrow: the row can also be deleted in flight.
+  const updated = await prisma.device.findUnique({ where: { id: row.id } });
+  if (!updated || updated.status === "revoked") {
+    return NextResponse.json(
+      { error: "This screen is not set up. Flash it again from the admin panel." },
+      { status: 401, headers: { "Cache-Control": "no-store" } },
+    );
+  }
 
   // A screen authenticating on a grace token is collecting a rotation. Mint the
   // replacement and hand it over here — the only moment after first issue that a
@@ -102,6 +110,12 @@ export async function POST(req: NextRequest) {
   // same write, so the old token dies the instant this response lands. It
   // returns null if a revocation or a completed rotation got there first.
   const rotatedToken = viaRotation ? await completeRotation(updated) : null;
+
+  // Only the successfully updated, still-nonrevoked row is online evidence.
+  // A screen remains a device, never an app listener; stats cannot break it.
+  await recordDeviceOnline(updated.id, now.getTime()).catch(() => {
+    console.error("STATION_ACTIVITY_DEVICE_WRITE_FAILED");
+  });
 
   return NextResponse.json(
     {
