@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "build": "node scripts/ensure-cache-client.mjs && node scripts/run-checks.mjs && tsc --noEmit && next build",
+    "postinstall": "prisma generate",
     "check": "npm run check:unit && npm run check:db",
     "check:activity": "node --import ./scripts/test-register.mjs scripts/check-activity.mts",
     "check:address": "node scripts/check-address-reach.mts",
@@ -106,5 +107,10 @@
   },
   "engines": {
     "node": ">=20.19.0"
+  },
+  "allowScripts": {
+    "@prisma/engines@7.10.1": true,
+    "better-sqlite3@12.11.1": true,
+    "prisma@7.10.1": true
   }
 }
