@@ -41,6 +41,12 @@ const PUBLIC = [
   // render crash to a local file. It is publicly WRITABLE, so the route caps
   // every field, truncates the entry, and stops appending at LOG_MAX_BYTES.
   { path: "/api/client-error", why: "crash reporter; writes a capped line to local disk, reads nothing" },
+  // Polled by unauthenticated browsers so the sign-in button can step aside
+  // during a deploy or a permanent database failure instead of leading to a
+  // dead end. It answers only operational state — ok, updating, or degraded
+  // with the public-safe diagnosis summary, which by construction carries no
+  // URL, hostname, or credential (see lib/db-diagnosis).
+  { path: "/api/status", why: "stations-status poll for signed-out visitors; says ok/updating/degraded and nothing secret" },
   // Wall-mounted screens. They have no browser, no session and no account, so the
   // auth gate could never answer for them — the gate would 401 every request
   // from a screen that is working perfectly. Each route authenticates itself

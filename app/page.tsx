@@ -12,6 +12,7 @@ import { STATION } from "@/lib/station";
 import { plog, setVerbose } from "@/lib/log";
 import { canSkipAsListener, parseSkipVisibility, type SkipVisibility } from "@/lib/skipvisibility";
 import { shouldHeartbeat } from "@/lib/heartbeat";
+import { useStationStatus } from "@/lib/use-station-status";
 import {
   parseStillListening,
   onPlaybackChange,
@@ -211,6 +212,9 @@ const UPCOMING_ART_PREFETCH = 3;
 
 export default function Home() {
   const { data: session, status } = useSession();
+  // Polls only matter for the unauthenticated card below; signed-in pages
+  // ignore the surface.
+  const { surface, diagnosis: statusDiagnosis } = useStationStatus();
   const [isPlaying, setIsPlaying] = useState(false);
 
   // Set the "remember me" cookie on an authenticated session.
@@ -2194,6 +2198,19 @@ export default function Home() {
           <p id="about-text-unauth" className="about-text" style={{ marginBottom: "2rem", textAlign: "center", lineHeight: "1.6" }}>
             {STATION.about}
           </p>
+          {surface === "updating" ? (
+            // deploy.sh's maintenance flag: the sign-in button is a trap
+            // mid-update — it would land on a half-replaced app.
+            <p id="signin-status-unauth" className="about-text" style={{ marginBottom: "1rem", textAlign: "center" }}>
+              The station is updating — sign-in returns in a moment.
+            </p>
+          ) : surface === "degraded" && statusDiagnosis ? (
+            // The station's own probe named a permanent database failure.
+            // Same public-safe summary the /signin card shows.
+            <p id="signin-status-unauth" className="about-text" style={{ marginBottom: "1rem", textAlign: "center" }}>
+              {statusDiagnosis.summary}
+            </p>
+          ) : (
           <button id="btn-signin" onClick={() => signIn("google")} style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "12px", backgroundColor: "#fff", color: "#1f1f1f", border: "1px solid #747775", borderRadius: "20px", height: "44px", padding: "0 16px", width: "100%", marginBottom: "1rem", fontFamily: "Roboto, Arial, sans-serif", fontSize: "15px", fontWeight: 500, cursor: "pointer" }}>
             <svg width="20" height="20" viewBox="0 0 48 48" aria-hidden="true">
               <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z"/>
@@ -2203,6 +2220,7 @@ export default function Home() {
             </svg>
             Sign in with Google
           </button>
+          )}
           {donateEnabled && donateUrl ? (
           <a id="btn-support-unauth" href={donateUrl} target="_blank" rel="noreferrer" className="donate-btn" style={{ display: "block", textAlign: "center" }}>
             {donateText}

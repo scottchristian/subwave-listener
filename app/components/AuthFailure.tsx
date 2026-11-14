@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { claimSigninAttempt, isWakingDbError, wakeStationDatabase } from "@/lib/remember-login";
 import { isRetryableDiagnosis, type DbDiagnosis } from "@/lib/db-diagnosis";
+import { useStationStatus } from "@/lib/use-station-status";
 
 // Seconds between automatic sign-in attempts while the database may be
 // waking, and how many before handing control back to the human. Each attempt
@@ -28,6 +29,13 @@ const MAX_ATTEMPTS = 30;
  * sign-in page now releases that flag on the way in; see decideAutoSignIn.
  * A permanent diagnosis is the one exception: it stops the countdown because
  * nothing the page can do will help, and leaves a manual "Try again" instead.
+ *
+ * Two station-wide overrides come from polling /api/status (see
+ * useStationStatus): while deploy.sh declares a deploy in flight the card
+ * says the station is updating and shows no button at all, and a permanent
+ * database failure turns a plain "Sign in" visit into the same diagnosis the
+ * wake loop shows — a sign-in button that can only land on a white screen is
+ * worse than none.
  */
 export default function AuthFailure({ code }: { code: string }) {
   const denied = code === "AccessDenied";
@@ -51,7 +59,17 @@ export default function AuthFailure({ code }: { code: string }) {
   // fixes that, and the copy below says so instead of counting down forever.
   const [diagnosis, setDiagnosis] = useState<DbDiagnosis | null>(null);
   const retryable = isRetryableDiagnosis(diagnosis);
-  const autoRetry = waking && retryable && !stopped && attempt < MAX_ATTEMPTS;
+  const { surface, diagnosis: statusDiagnosis, refresh } = useStationStatus();
+  const showUpdating = surface === "updating";
+  const autoRetry = waking && retryable && !stopped && attempt < MAX_ATTEMPTS && !showUpdating;
+
+  // Station-wide status, polled. Two overrides: a deploy in flight (the
+  // maintenance flag) beats everything — there is nothing to sign into
+  // mid-update — and a permanent database failure replaces the plain
+  // "Sign in" card, because that button only leads to a white screen then.
+  // The waking retry loop keeps ownership of its own diagnosis: it got
+  // there first and already stops itself for the same permanent reasons.
+  const showDegraded = surface === "degraded" && !waking && statusDiagnosis !== null;
 
   // Wake, then start one OAuth round-trip — but only if this browser has not
   // already got one in flight.
@@ -116,18 +134,36 @@ export default function AuthFailure({ code }: { code: string }) {
     <main id="main-auth-error" className="container centered-column" style={{ justifyContent: "center" }}>
       <div id="card-auth-error" className="card" style={{ maxWidth: "480px" }}>
         <h1 style={{ fontSize: "1.4rem", margin: "0 0 1rem" }}>
-          {denied
-            ? "That account can't come in"
-            : waking
-              ? retryable
-                ? "Please wait"
-                : "The station can't reach its database"
-              : "Sign in"}
+          {showUpdating
+            ? "The station is updating"
+            : denied
+              ? "That account can't come in"
+              : waking
+                ? retryable
+                  ? "Please wait"
+                  : "The station can't reach its database"
+                : showDegraded
+                  ? "The station can't reach its database"
+                  : "Sign in"}
         </h1>
-        {denied ? (
+        {showUpdating ? (
+          // deploy.sh wrote the maintenance flag: a deploy is mid-flight and
+          // the sign-in button is a trap until it finishes. No button at all.
+          <p id="about-text-updating" className="about-text" style={{ marginBottom: "2rem" }}>
+            Back in a moment — sign-in returns when it&apos;s done.
+          </p>
+        ) : denied ? (
           <p id="about-text-denied-error" className="about-text" style={{ marginBottom: "2rem" }}>
             This account is not approved for the station. If you just asked for access, the owner has not reviewed it yet —
             this screen lets you in automatically once approved. Otherwise try the account you were invited with.
+          </p>
+        ) : showDegraded ? (
+          // A plain visit, but the station's own status probe named a
+          // permanent database failure. Same message the wake loop shows;
+          // the only way out is the station being fixed, so the only button
+          // is a re-check.
+          <p id="about-text-status-diagnosis" className="about-text" style={{ marginBottom: "2rem" }}>
+            {statusDiagnosis!.summary}
           </p>
         ) : waking && !retryable && diagnosis ? (
           // The wake endpoint named a permanent reason. This is the message
@@ -162,6 +198,16 @@ export default function AuthFailure({ code }: { code: string }) {
           </p>
         )}
         <div style={{ display: "flex", gap: "0.75rem", flexWrap: "wrap" }}>
+          {showUpdating ? null : showDegraded ? (
+            <button
+              id="btn-retry-signin"
+              className="primary-btn"
+              style={{ width: "auto", background: "rgba(255,255,255,0.1)", color: "#fff" }}
+              onClick={refresh}
+            >
+              Check again
+            </button>
+          ) : (
           <button
             id="btn-retry-signin"
             className="primary-btn"
@@ -171,7 +217,8 @@ export default function AuthFailure({ code }: { code: string }) {
           >
             {denied || !waking ? "Sign in with Google" : wakingDb ? "Waking the station…" : autoRetry ? "Retry now" : "Try again"}
           </button>
-          {waking && autoRetry ? (
+          )}
+          {waking && autoRetry && !showUpdating ? (
             <button
               id="btn-stop-retry"
               className="primary-btn"
