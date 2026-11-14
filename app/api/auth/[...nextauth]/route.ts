@@ -48,7 +48,7 @@ function withWake<T extends (...args: any[]) => Promise<any>>(fn: T): T {
 
       if (isConnectionError) {
         console.log("[auth-adapter] Database connection failed — waking database...");
-        const woke = await wakeDbForRequest(15_000);
+        const { woke } = await wakeDbForRequest(15_000);
         if (!woke) {
           console.error("[auth-adapter] Failed to wake database after 15s");
           throw e;

@@ -176,10 +176,11 @@ ok(isWakingDbError("") === false, "a plain visit is not an error");
   const calls: any[] = [];
   const fakeFetch = (async (url: string, init: any) => {
     calls.push([url, init]);
-    return { ok: true } as any;
+    return { ok: true, json: async () => ({ woke: true }) } as any;
   }) as unknown as typeof fetch;
-  const woke = await wakeStationDatabase(fakeFetch);
-  ok(woke === true, "a successful wake reports true");
+  const r = await wakeStationDatabase(fakeFetch);
+  ok(r.woke === true, "a successful wake reports woke");
+  ok(r.diagnosis === null, "with no diagnosis attached");
   ok(calls.length === 1 && calls[0][0] === "/api/auth/wake-db", "and it POSTs the station's wake endpoint", calls);
   ok(calls[0][1]?.method === "POST", "with a POST", calls[0][1]);
 }
@@ -187,7 +188,8 @@ ok(isWakingDbError("") === false, "a plain visit is not an error");
   const failing = (async () => {
     throw new Error("offline");
   }) as unknown as typeof fetch;
-  ok((await wakeStationDatabase(failing)) === false, "a wake that throws reports false rather than propagating");
+  const r = await wakeStationDatabase(failing);
+  ok(r.woke === false && r.diagnosis === null, "a wake that throws reports not-woke rather than propagating");
 }
 {
   // The sign-in must still be attempted when the wake fails: the OAuth round
@@ -198,6 +200,20 @@ ok(isWakingDbError("") === false, "a plain visit is not an error");
   await wakeStationDatabase(nope).catch(() => {});
   reached = true;
   ok(reached, "a refused wake does not throw, so the caller still proceeds to sign in");
+}
+{
+  // The diagnosis is how a permanent outage says why: the endpoint's answer
+  // passes through untouched so the error page can stop retrying and explain.
+  const diagnosed = (async () => ({
+    ok: true,
+    json: async () => ({
+      woke: false,
+      diagnosis: { kind: "mismatch", summary: "built for SQLite, pointed at Postgres" },
+    }),
+  })) as unknown as typeof fetch;
+  const r = await wakeStationDatabase(diagnosed);
+  ok(r.woke === false, "a diagnosed failure reports not-woke");
+  ok(r.diagnosis?.kind === "mismatch", "and passes the diagnosis through for the page to show", r.diagnosis);
 }
 
 // ------------------------------------------- browser-wide OAuth flow claim

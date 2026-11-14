@@ -17,6 +17,7 @@
 // configuration is exactly what will not work. Env is readable regardless, and
 // the panel can still show and change the toggle while the database is down.
 import { providerFromEnv } from "./db-provider";
+import { diagnoseDbError, firstMeaningfulErrorLine } from "./db-diagnosis";
 
 export const MIN_SECONDS = 30;
 export const MAX_SECONDS = 3600;
@@ -108,9 +109,12 @@ async function poke(): Promise<void> {
     s().consecutiveFailures += 1;
     // A failed ping is usually the database waking up, or being down. Record
     // it and try again next tick rather than giving up: the whole point is to
-    // survive a suspend.
-    s().lastError = String(e?.message || e).trim().split("\n")[0].slice(0, 200);
-    console.warn(`[keepalive] ping failed (${s().consecutiveFailures}): ${s().lastError}`);
+    // survive a suspend. The line is the meaningful one, not the boilerplate
+    // first line — a sleeping-database outage was once un-diagnosable from
+    // logs because the reason sat on the "error:" line and we logged line one.
+    const diagnosis = diagnoseDbError(e?.message || e);
+    s().lastError = firstMeaningfulErrorLine(String(e?.message || e)).slice(0, 200);
+    console.warn(`[keepalive] ping failed (${s().consecutiveFailures}) [${diagnosis.kind}]: ${s().lastError}`);
   }
 }
 

@@ -10,9 +10,17 @@
  * "the session read did not succeed" as "this browser signed out".
  */
 
+import type { DbDiagnosis } from "./db-diagnosis";
+
+/** The wake endpoint's answer, client-safe. Defined here rather than imported
+ * from lib/dbwake so the client bundle never pulls the server module. */
+export type WakeOutcome = {
+  woke: boolean;
+  diagnosis: DbDiagnosis | null;
+};
+
 /** Name on the wire. Deliberately not `__Host-`: it must be readable by script, which it is either way. */
 export const REMEMBER_COOKIE = "subwave_remember";
-
 /** A year: the point is "in the past", and expiry is the janitor, not the gate. */
 export const REMEMBER_MAX_AGE_S = 365 * 24 * 60 * 60;
 
@@ -202,17 +210,24 @@ export function claimSigninAttempt(
  * Wake the station before leaning on Google. The OAuth round-trip is what the
  * station uses to pull a sleeping database up, so waking first is the difference
  * between one round-trip and thirty of them.
+ *
+ * The endpoint answers with more than a boolean: when the database cannot be
+ * reached for a PERMANENT reason (wrong engine, wrong credentials) the response
+ * carries a diagnosis safe to show a listener. The caller decides what retrying
+ * is worth — for a permanent error the honest answer is none.
  */
 export async function wakeStationDatabase(
   fetchImpl: typeof fetch = fetch,
   endpoint = "/api/auth/wake-db"
-): Promise<boolean> {
+): Promise<WakeOutcome> {
   try {
     const res = await fetchImpl(endpoint, { method: "POST" });
-    return !!res?.ok;
+    if (!res?.ok) return { woke: false, diagnosis: null };
+    const body = (await res.json().catch(() => null)) as { woke?: boolean; diagnosis?: DbDiagnosis | null } | null;
+    return { woke: body?.woke === true, diagnosis: body?.woke === false ? body?.diagnosis ?? null : null };
   } catch {
     // A failed wake is not a reason to skip the sign-in: the round-trip may
     // still succeed, and AuthFailure reports the real outcome either way.
-    return false;
+    return { woke: false, diagnosis: null };
   }
 }

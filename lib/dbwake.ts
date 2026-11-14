@@ -2,6 +2,12 @@
 import { PrismaClient } from "@prisma/client";
 import { providerFromEnv } from "./db-provider";
 import { prismaAdapter } from "./prisma-adapter";
+import {
+  diagnoseDbError,
+  firstMeaningfulErrorLine,
+  isRetryableDiagnosis,
+  type DbDiagnosis,
+} from "./db-diagnosis";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes default
 const KNOCK_EVERY_MS = 10 * 1000; // 10 seconds between knocks
@@ -28,6 +34,16 @@ export function setWakeKnockForTests(knock: (() => Promise<boolean>) | null, tim
   timeoutOverrideMs = timeoutMs ?? null;
 }
 
+/** Scheme of the configured URL — for diagnosis only, never logged whole. */
+function urlScheme(): string | undefined {
+  const url = process.env.DATABASE_URL;
+  return url ? url.trim().split(":")[0].toLowerCase() : undefined;
+}
+
+function errorText(e: unknown): string {
+  return e instanceof Error ? e.message || String(e) : String(e);
+}
+
 /**
  * Create a fresh Prisma client for wake attempts.
  * Using a fresh client ensures we don't use stale connection pools.
@@ -49,19 +65,35 @@ function createWakeClient(): PrismaClient {
   });
 }
 
-async function knock(client: PrismaClient): Promise<boolean> {
+async function knock(client: PrismaClient): Promise<{ ok: boolean; error: unknown }> {
   try {
     await client.$queryRaw`SELECT 1`;
-    return true;
-  } catch {
-    return false;
+    return { ok: true, error: null };
+  } catch (e) {
+    return { ok: false, error: e };
   }
+}
+
+/**
+ * One log line per failed knock, kind and reason together — this is the
+ * trail the owner greps after. The raw line can carry a hostname, so it is
+ * console-only; browsers get the diagnosis summary instead.
+ */
+function logKnockFailure(n: number, error: unknown): DbDiagnosis {
+  const diagnosis = diagnoseDbError(error, urlScheme());
+  console.warn(`[dbwake] knock ${n} failed [${diagnosis.kind}]: ${firstMeaningfulErrorLine(errorText(error))}`);
+  return diagnosis;
+}
+
+function logNonRetryable(diagnosis: DbDiagnosis): void {
+  console.error(`[dbwake] non-retryable database error — knocking will not fix it: ${diagnosis.summary}`);
 }
 
 export async function wakeDb(opts?: { timeoutMs?: number; onAttempt?: (n: number) => void }): Promise<boolean> {
   const timeoutMs = opts?.timeoutMs ?? timeoutOverrideMs ?? DEFAULT_TIMEOUT_MS;
   const started = Date.now();
   let n = 0;
+  let lastDiagnosis: DbDiagnosis | null = null;
   for (;;) {
     n++;
     if (knockOverride) {
@@ -69,11 +101,14 @@ export async function wakeDb(opts?: { timeoutMs?: number; onAttempt?: (n: number
     } else {
       const client = createWakeClient();
       try {
-        if (await knock(client)) return true;
+        const r = await knock(client);
+        if (r.ok) return true;
+        lastDiagnosis = logKnockFailure(n, r.error);
       } finally {
         await client.$disconnect().catch(() => {});
       }
     }
+    if (lastDiagnosis && !isRetryableDiagnosis(lastDiagnosis)) logNonRetryable(lastDiagnosis);
     opts?.onAttempt?.(n);
     if (Date.now() - started >= timeoutMs) return false;
     // Exponential backoff: start at 10s, max 60s
@@ -99,21 +134,52 @@ export function wakeDbInBackground(): Promise<boolean> {
   return backgroundLoop;
 }
 
+export type WakeOutcome = {
+  woke: boolean;
+  /** Why the last knock failed, when it did. Safe to show to a browser. */
+  diagnosis: DbDiagnosis | null;
+};
+
 /**
  * Wake the database with a short timeout, suitable for a single request path
  * that needs the database immediately. Does not share the background loop.
  * Uses a fresh Prisma client each attempt with extended connection timeout.
+ *
+ * A knock that fails with a PERMANENT error (wrong engine, wrong credentials,
+ * missing URL) ends the loop immediately: the diagnosis is returned and the
+ * caller can say why instead of sitting out the full timeout and guessing.
  */
-export async function wakeDbForRequest(timeoutMs = 10_000): Promise<boolean> {
+export async function wakeDbForRequest(timeoutMs = 10_000): Promise<WakeOutcome> {
   const started = Date.now();
-  for (let n = 1; ; n++) {
-    const client = createWakeClient();
+  let n = 0;
+  for (;;) {
+    n++;
+    let error: unknown = null;
+    let ok = false;
     try {
-      if (await knock(client)) return true;
-    } finally {
-      await client.$disconnect().catch(() => {});
+      const client = createWakeClient();
+      try {
+        const r = await knock(client);
+        ok = r.ok;
+        error = r.error;
+      } finally {
+        await client.$disconnect().catch(() => {});
+      }
+    } catch (e) {
+      // createWakeClient itself can fail (no URL) — that is a knock failure,
+      // not a reason to 500 the endpoint without a word.
+      error = e;
     }
-    if (Date.now() - started >= timeoutMs) return false;
+    if (ok) {
+      if (n > 1) console.log(`[dbwake] request wake succeeded on attempt ${n}`);
+      return { woke: true, diagnosis: null };
+    }
+    const diagnosis = logKnockFailure(n, error);
+    if (!isRetryableDiagnosis(diagnosis)) {
+      logNonRetryable(diagnosis);
+      return { woke: false, diagnosis };
+    }
+    if (Date.now() - started >= timeoutMs) return { woke: false, diagnosis };
     // Exponential backoff for request-scoped wake too
     const delay = Math.min(5_000 * Math.pow(1.5, n - 1), 30_000);
     await new Promise((r) => setTimeout(r, delay));

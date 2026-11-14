@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { signIn } from "next-auth/react";
 import { claimSigninAttempt, isWakingDbError, wakeStationDatabase } from "@/lib/remember-login";
+import { isRetryableDiagnosis, type DbDiagnosis } from "@/lib/db-diagnosis";
 
 // Seconds between automatic sign-in attempts while the database may be
 // waking, and how many before handing control back to the human. Each attempt
@@ -12,17 +13,21 @@ const RETRY_EVERY_S = 10;
 const MAX_ATTEMPTS = 30;
 
 /**
- * Failed sign-in, in the station's own words. Two genuinely different
- * failures: a rejected account is about approval, everything else here is
- * almost always the free-tier database asleep or paused — which wakes on its
- * own, so the page retries by itself instead of blaming the account.
+ * Failed sign-in, in the station's own words. Three genuinely different
+ * failures: a rejected account is about approval; a sleeping database wakes on
+ * its own, so the page retries by itself instead of blaming the account; and a
+ * permanent database failure (wrong engine, wrong credentials — the wake
+ * endpoint says which) stops the retries and says so, because a countdown
+ * against a misconfiguration counts down forever.
  *
- * This loop is the station's only bounded recovery path, so nothing else may
- * suppress it. It used to defer to a per-tab "an automatic attempt was already
- * made" flag on the sign-in page — which meant a listener whose courtesy try had
- * failed landed here and then watched a countdown that could never move, with
- * no button of their own either. The sign-in page now releases that flag on the
- * way in; see decideAutoSignIn.
+ * For everything retryable this loop is the station's only bounded recovery
+ * path, so nothing else may suppress it. It used to defer to a per-tab "an
+ * automatic attempt was already made" flag on the sign-in page — which meant a
+ * listener whose courtesy try had failed landed here and then watched a
+ * countdown that could never move, with no button of their own either. The
+ * sign-in page now releases that flag on the way in; see decideAutoSignIn.
+ * A permanent diagnosis is the one exception: it stops the countdown because
+ * nothing the page can do will help, and leaves a manual "Try again" instead.
  */
 export default function AuthFailure({ code }: { code: string }) {
   const denied = code === "AccessDenied";
@@ -35,12 +40,18 @@ export default function AuthFailure({ code }: { code: string }) {
   // countdown starts over. Stops after a few minutes with the button left
   // for the human — retrying forever behind their back is not a feature.
   const [attempt, setAttempt] = useState(0);
-  const [countdown, setCountdown] = useState(RETRY_EVERY_S);
+  // 0 so the first wake fires on mount: the diagnosis (if any) shows in
+  // seconds instead of after a ten-second countdown.
+  const [countdown, setCountdown] = useState(0);
   const [stopped, setStopped] = useState(false);
   const [wakingDb, setWakingDb] = useState(false);
-  // True when this tab stood down because another tab already owns the round-trip.
   const [waitingOnOtherTab, setWaitingOnOtherTab] = useState(false);
-  const autoRetry = waking && !stopped && attempt < MAX_ATTEMPTS;
+  // What the wake endpoint actually reported. A permanent failure (wrong
+  // database engine, wrong credentials) stops the loop: no number of attempts
+  // fixes that, and the copy below says so instead of counting down forever.
+  const [diagnosis, setDiagnosis] = useState<DbDiagnosis | null>(null);
+  const retryable = isRetryableDiagnosis(diagnosis);
+  const autoRetry = waking && retryable && !stopped && attempt < MAX_ATTEMPTS;
 
   // Wake, then start one OAuth round-trip — but only if this browser has not
   // already got one in flight.
@@ -61,11 +72,21 @@ export default function AuthFailure({ code }: { code: string }) {
     setWaitingOnOtherTab(false);
     setWakingDb(true);
     return wakeStationDatabase()
-      .catch(() => false)
-      .finally(() => {
-        setWakingDb(false);
+      .then((r) => {
+        setDiagnosis(r.diagnosis);
+        // A permanent failure makes the OAuth round-trip pointless — it would
+        // land right back here. Say why instead of sending the listener to
+        // Google and back to nowhere.
+        if (r.diagnosis && !isRetryableDiagnosis(r.diagnosis)) return false;
         void signIn("google", { callbackUrl: "/" });
-      });
+        return r.woke;
+      })
+      .catch(() => {
+        setDiagnosis(null);
+        void signIn("google", { callbackUrl: "/" });
+        return false;
+      })
+      .finally(() => setWakingDb(false));
   };
 
   useEffect(() => {
@@ -85,6 +106,7 @@ export default function AuthFailure({ code }: { code: string }) {
 
   const retryNow = () => {
     setAttempt(0);
+    setDiagnosis(null);
     setCountdown(RETRY_EVERY_S);
     setStopped(false);
     void wakeThenSignIn();
@@ -97,13 +119,22 @@ export default function AuthFailure({ code }: { code: string }) {
           {denied
             ? "That account can't come in"
             : waking
-              ? "Please wait"
+              ? retryable
+                ? "Please wait"
+                : "The station can't reach its database"
               : "Sign in"}
         </h1>
         {denied ? (
           <p id="about-text-denied-error" className="about-text" style={{ marginBottom: "2rem" }}>
             This account is not approved for the station. If you just asked for access, the owner has not reviewed it yet —
             this screen lets you in automatically once approved. Otherwise try the account you were invited with.
+          </p>
+        ) : waking && !retryable && diagnosis ? (
+          // The wake endpoint named a permanent reason. This is the message
+          // that turns an outage into a diagnosis: it says what is wrong and
+          // that waiting cannot help, instead of a countdown that goes nowhere.
+          <p id="about-text-db-diagnosis" className="about-text" style={{ marginBottom: "2rem" }}>
+            {diagnosis.summary}
           </p>
         ) : waking ? (
           // Deliberately short, and deliberately not a diagnosis. This screen is
