@@ -15,9 +15,11 @@ export type StationStatus = {
 };
 
 /**
- * What an unauthenticated surface should show right now. Polls /api/status;
- * a fetch failure yields "signin" (fail open — see presentSigninSurface), so
- * a status-endpoint hiccup never hides the button on a working station.
+ * What an unauthenticated surface should show right now. Polls /api/status.
+ * A fetch failure keeps the last verdict — a degraded card must not flash
+ * the sign-in button back mid-outage — and only a total absence of any
+ * verdict fails open to "signin", because a working station with a hidden
+ * sign-in button is worse than a broken one with a visible button.
  */
 export function useStationStatus(): StationStatus {
   const [payload, setPayload] = useState<StationStatusPayload | null>(null);
@@ -34,11 +36,12 @@ export function useStationStatus(): StationStatus {
         if (res.ok) {
           const body = (await res.json().catch(() => null)) as StationStatusPayload | null;
           setPayload(body && typeof body === "object" ? body : null);
-        } else {
-          setPayload(null);
         }
+        // A non-ok response keeps the last payload: mid-deploy 500s must not
+        // flash the sign-in button back during a known outage.
       } catch {
-        if (alive.current) setPayload(null);
+        // Same on a dead fetch — keep the last verdict. Fail open to the
+        // sign-in button only when there has never been one.
       }
       if (alive.current) timer = setTimeout(() => void poll(), POLL_MS);
     };
@@ -50,7 +53,9 @@ export function useStationStatus(): StationStatus {
   }, [tick]);
 
   const refresh = useCallback(() => {
-    setPayload(null);
+    // Keep the last payload while re-checking: a degraded card that briefly
+    // reverts to the sign-in button mid-fetch is exactly the trap this hook
+    // exists to avoid.
     setTick((t) => t + 1);
   }, []);
 
