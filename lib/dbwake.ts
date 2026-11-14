@@ -8,6 +8,7 @@ import {
   isRetryableDiagnosis,
   type DbDiagnosis,
 } from "./db-diagnosis";
+import { alertGate, endAlert, gateAlert, notifyAdmins } from "./ntfy";
 
 const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000; // 5 minutes default
 const KNOCK_EVERY_MS = 10 * 1000; // 10 seconds between knocks
@@ -85,8 +86,19 @@ function logKnockFailure(n: number, error: unknown): DbDiagnosis {
   return diagnosis;
 }
 
-function logNonRetryable(diagnosis: DbDiagnosis): void {
+function logNonRetryable(diagnosis: DbDiagnosis, line?: string): void {
   console.error(`[dbwake] non-retryable database error — knocking will not fix it: ${diagnosis.summary}`);
+  // A permanent failure pages the owner once (the gate suppresses repeats
+  // while it stands); recovery is sent by wakeDbForRequest once a knock
+  // succeeds again. The raw line is console-only, same rule as the log above.
+  const gate = gateAlert(alertGate(), "db-permanent", Date.now());
+  if (gate.send) {
+    void notifyAdmins(
+      "Database misconfigured",
+      `${diagnosis.summary}\n${line ?? ""}`,
+      { priority: 5, tags: ["rotating_light"] }
+    );
+  }
 }
 
 export async function wakeDb(opts?: { timeoutMs?: number; onAttempt?: (n: number) => void }): Promise<boolean> {
@@ -94,6 +106,7 @@ export async function wakeDb(opts?: { timeoutMs?: number; onAttempt?: (n: number
   const started = Date.now();
   let n = 0;
   let lastDiagnosis: DbDiagnosis | null = null;
+  let lastLine: string | undefined;
   for (;;) {
     n++;
     if (knockOverride) {
@@ -104,11 +117,12 @@ export async function wakeDb(opts?: { timeoutMs?: number; onAttempt?: (n: number
         const r = await knock(client);
         if (r.ok) return true;
         lastDiagnosis = logKnockFailure(n, r.error);
+        lastLine = firstMeaningfulErrorLine(errorText(r.error));
       } finally {
         await client.$disconnect().catch(() => {});
       }
     }
-    if (lastDiagnosis && !isRetryableDiagnosis(lastDiagnosis)) logNonRetryable(lastDiagnosis);
+    if (lastDiagnosis && !isRetryableDiagnosis(lastDiagnosis)) logNonRetryable(lastDiagnosis, lastLine);
     opts?.onAttempt?.(n);
     if (Date.now() - started >= timeoutMs) return false;
     // Exponential backoff: start at 10s, max 60s
@@ -172,11 +186,21 @@ export async function wakeDbForRequest(timeoutMs = 10_000): Promise<WakeOutcome>
     }
     if (ok) {
       if (n > 1) console.log(`[dbwake] request wake succeeded on attempt ${n}`);
+      // A successful knock clears an open permanent-failure alert — recovery
+      // always notifies and re-arms the gate for the next incident.
+      if (alertGate().has("db-permanent")) {
+        endAlert(alertGate(), "db-permanent");
+        void notifyAdmins(
+          "Database reachable again",
+          "The database answers again — the permanent-failure alert is cleared.",
+          { priority: 3, tags: ["white_check_mark"] }
+        );
+      }
       return { woke: true, diagnosis: null };
     }
     const diagnosis = logKnockFailure(n, error);
     if (!isRetryableDiagnosis(diagnosis)) {
-      logNonRetryable(diagnosis);
+      logNonRetryable(diagnosis, firstMeaningfulErrorLine(errorText(error)));
       return { woke: false, diagnosis };
     }
     if (Date.now() - started >= timeoutMs) return { woke: false, diagnosis };

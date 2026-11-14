@@ -18,6 +18,7 @@
 // the panel can still show and change the toggle while the database is down.
 import { providerFromEnv } from "./db-provider";
 import { diagnoseDbError, firstMeaningfulErrorLine } from "./db-diagnosis";
+import { alertGate, endAlert, gateAlert, notifyAdmins } from "./ntfy";
 
 export const MIN_SECONDS = 30;
 export const MAX_SECONDS = 3600;
@@ -101,10 +102,26 @@ async function poke(): Promise<void> {
   s().totalPings += 1;
   try {
     const ms = await ping();
+    const hadFailures = s().consecutiveFailures > 0;
     s().lastOkAt = Date.now();
     s().lastError = null;
     s().consecutiveFailures = 0;
     console.log(`[keepalive] database pinged in ${ms}ms`);
+    // The database is back after at least one failed ping: close the open
+    // "unreachable" alert. Recovery always notifies and re-arms the gate.
+    if (hadFailures) {
+      endAlert(alertGate(), "db-unreachable");
+      // A permanent failure (wrong engine, rejected credentials) can be fixed
+      // server-side without a restart; the ping answering is the all-clear
+      // for that page too. Guarded: endAlert always sends, and there is no
+      // recovery to announce for a failure that never paged.
+      if (alertGate().has("db-permanent")) endAlert(alertGate(), "db-permanent");
+      void notifyAdmins(
+        "Database reachable again",
+        "The keep-alive ping answers again after one or more failures.",
+        { priority: 3, tags: ["white_check_mark"] }
+      );
+    }
   } catch (e: any) {
     s().consecutiveFailures += 1;
     // A failed ping is usually the database waking up, or being down. Record
@@ -115,6 +132,18 @@ async function poke(): Promise<void> {
     const diagnosis = diagnoseDbError(e?.message || e);
     s().lastError = firstMeaningfulErrorLine(String(e?.message || e)).slice(0, 200);
     console.warn(`[keepalive] ping failed (${s().consecutiveFailures}) [${diagnosis.kind}]: ${s().lastError}`);
+    // Page the owner when the outage BEGINS (first consecutive failure), not
+    // on every tick of it — the gate suppresses repeats inside the cooldown.
+    if (s().consecutiveFailures === 1) {
+      const gate = gateAlert(alertGate(), "db-unreachable", Date.now());
+      if (gate.send) {
+        void notifyAdmins(
+          "Database unreachable",
+          `Keep-alive ping failed [${diagnosis.kind}]: ${s().lastError}`,
+          { priority: 4, tags: ["warning"] }
+        );
+      }
+    }
   }
 }
 

@@ -7,6 +7,7 @@ import { pushToAdmins } from "@/lib/push";
 import { enc, dec, idx, displayName } from "@/lib/pii";
 import { dropSessionCache } from "@/lib/session-cache";
 import { wakeDbForRequest } from "@/lib/dbwake";
+import { alertGate, gateAlert, notifyAdmins } from "@/lib/ntfy";
 
 
 // Prisma stores no plaintext address, so every adapter entry point that
@@ -51,6 +52,16 @@ function withWake<T extends (...args: any[]) => Promise<any>>(fn: T): T {
         const { woke } = await wakeDbForRequest(15_000);
         if (!woke) {
           console.error("[auth-adapter] Failed to wake database after 15s");
+          // Sign-ins are failing right now — page the owner, but at most once
+          // per cooldown: every sign-in attempt would otherwise notify again.
+          const gate = gateAlert(alertGate(), "wake-failed", Date.now());
+          if (gate.send) {
+            void notifyAdmins(
+              "Sign-in database wake failed",
+              "The database did not wake within the 15s sign-in budget — sign-ins are failing.",
+              { priority: 4, tags: ["warning"] }
+            );
+          }
           throw e;
         }
         console.log("[auth-adapter] Database woke up — retrying operation");

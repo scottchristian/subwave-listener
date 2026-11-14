@@ -266,6 +266,7 @@ export default function AdminPage() {
     if (status !== "authenticated" || !(session?.user as any)?.isAdmin) return;
     if (activeTab !== "system") return;
     loadUpdateStatus(true);
+    loadAlerts();
   }, [activeTab, status, session]);
 
   useEffect(() => {
@@ -595,6 +596,106 @@ export default function AdminPage() {
   // same pattern as the channel radio: a preference, not a form.
   const [updateNotify, setUpdateNotify] = useState(false);
   const [updateNotifyMsg, setUpdateNotifyMsg] = useState("");
+  // ntfy admin alerts (db down, deploys, …). Topic and token are write-only:
+  // the API reports set-or-not, never the values, so the inputs start blank
+  // and a non-blank entry means "replace".
+  type AlertsStatus = {
+    enabled: boolean;
+    topicSet: boolean;
+    baseUrl: string;
+    hasToken: boolean;
+    lastSentAt: number | null;
+    lastError: string | null;
+  };
+  const [alertsStatus, setAlertsStatus] = useState<AlertsStatus | null>(null);
+  const [alertsOn, setAlertsOn] = useState(false);
+  const [alertsTopic, setAlertsTopic] = useState("");
+  const [alertsToken, setAlertsToken] = useState("");
+  const [alertsBaseUrl, setAlertsBaseUrl] = useState("");
+  const [alertsMsg, setAlertsMsg] = useState("");
+  const [alertsBusy, setAlertsBusy] = useState(false);
+  const [alertsTestBusy, setAlertsTestBusy] = useState(false);
+
+  const loadAlerts = async () => {
+    try {
+      const res = await fetch("/api/admin/alerts", { cache: "no-store" });
+      const d = await res.json().catch(() => null);
+      if (!res.ok || !d) return;
+      setAlertsStatus(d);
+      setAlertsOn(d.enabled === true);
+      setAlertsBaseUrl(d.baseUrl || "https://ntfy.sh");
+    } catch {
+      // a station mid-restart answers nothing — the next open gets it
+    }
+  };
+
+  const saveAlerts = async () => {
+    setAlertsBusy(true);
+    setAlertsMsg("");
+    // Optimistic, like the update-notify toggle: reflect the intent, put it
+    // back if the save fails. Topic/token are only sent when non-blank:
+    // blank means "keep what is saved".
+    const prev = alertsStatus;
+    setAlertsStatus((s) => (s ? { ...s, enabled: alertsOn } : s));
+    try {
+      const res = await fetch("/api/admin/alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          enabled: alertsOn,
+          baseUrl: alertsBaseUrl,
+          ...(alertsTopic.trim() ? { topic: alertsTopic.trim() } : {}),
+          ...(alertsToken ? { token: alertsToken } : {}),
+        }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "could not save");
+      setAlertsStatus(d);
+      setAlertsTopic("");
+      setAlertsToken("");
+      setAlertsMsg("Saved.");
+    } catch (e) {
+      setAlertsStatus(prev);
+      setAlertsMsg(`Could not save: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setAlertsBusy(false);
+    }
+  };
+
+  const clearAlertsToken = async () => {
+    setAlertsBusy(true);
+    setAlertsMsg("");
+    try {
+      const res = await fetch("/api/admin/alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: "" }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "could not clear");
+      setAlertsStatus(d);
+      setAlertsToken("");
+      setAlertsMsg("Token cleared.");
+    } catch (e) {
+      setAlertsMsg(`Could not clear token: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setAlertsBusy(false);
+    }
+  };
+
+  const testAlerts = async () => {
+    setAlertsTestBusy(true);
+    setAlertsMsg("");
+    try {
+      const res = await fetch("/api/admin/alerts/test", { method: "POST" });
+      const d = await res.json().catch(() => ({}));
+      setAlertsMsg(res.ok ? "Test sent — check your phone." : `Test failed: ${d.error || "unknown error"}`);
+    } catch {
+      setAlertsMsg("Test failed: no response.");
+    } finally {
+      setAlertsTestBusy(false);
+    }
+  };
   // Clock face for every time in the app. Account-wide like the player's —
   // the toggle below writes the same preference the top menu writes.
   const [hour12, setHour12] = useState<boolean>(() => defaultHour12());
@@ -2245,6 +2346,114 @@ export default function AdminPage() {
                 {updateNotifyMsg ? (
                   <div id="update-notify-msg" style={{ marginTop: "0.5rem", fontSize: "0.875rem", color: "var(--color-accent)" }}>
                     {updateNotifyMsg}
+                  </div>
+                ) : null}
+              </div>
+
+              <div
+                id="section-alerts"
+                style={{
+                  marginTop: "0.75rem", padding: "0.85rem 1rem", borderRadius: "8px",
+                  border: "1px solid var(--color-border)", fontSize: "0.9rem",
+                }}
+              >
+                <label className="check" style={{ fontSize: "0.9rem", fontWeight: 600 }}>
+                  <input
+                    id="input-alerts-enabled"
+                    type="checkbox"
+                    checked={alertsOn}
+                    disabled={!alertsTopic.trim() && !alertsStatus?.topicSet}
+                    onChange={(e) => setAlertsOn(e.target.checked)}
+                  />
+                  Alert me on my phone when the station needs me
+                </label>
+                <div style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                  Push via an ntfy topic: permanent database failures, the database going down or coming back,
+                  sign-in wake failures, and deploys. Subscribe to the topic in the ntfy app, then save it here.
+                </div>
+                <div style={{ marginTop: "0.6rem", display: "flex", alignItems: "flex-end", gap: "0.75rem", flexWrap: "wrap" }}>
+                  <label style={{ fontSize: "0.8rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                    Topic
+                    <input
+                      id="input-alerts-topic"
+                      type="text"
+                      value={alertsTopic}
+                      onChange={(e) => setAlertsTopic(e.target.value)}
+                      placeholder={alertsStatus?.topicSet ? "set — enter a new one to replace" : "e.g. causewayfm-alerts-9f3k2"}
+                      autoComplete="off"
+                      style={{ width: "260px", padding: "0.5rem", borderRadius: "8px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text)", fontFamily: "inherit" }}
+                    />
+                  </label>
+                  <label style={{ fontSize: "0.8rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+                    Access token (optional)
+                    <input
+                      id="input-alerts-token"
+                      type="password"
+                      value={alertsToken}
+                      onChange={(e) => setAlertsToken(e.target.value)}
+                      placeholder={alertsStatus?.hasToken ? "leave blank to keep" : "only for protected topics"}
+                      autoComplete="new-password"
+                      style={{ width: "220px", padding: "0.5rem", borderRadius: "8px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text)", fontFamily: "inherit" }}
+                    />
+                  </label>
+                  <button
+                    id="btn-alerts-save"
+                    className="primary-btn"
+                    style={{ width: "auto", padding: "0.55rem 1.1rem" }}
+                    disabled={alertsBusy || (!alertsTopic.trim() && !alertsStatus?.topicSet)}
+                    onClick={saveAlerts}
+                  >
+                    {alertsBusy ? "Saving…" : "Save"}
+                  </button>
+                  <button
+                    id="btn-alerts-test"
+                    className="primary-btn"
+                    style={{ width: "auto", padding: "0.55rem 1.1rem", background: "rgba(255,255,255,0.1)", color: "#fff" }}
+                    disabled={alertsTestBusy || !alertsStatus?.enabled}
+                    onClick={testAlerts}
+                  >
+                    {alertsTestBusy ? "Sending…" : "Send test notification"}
+                  </button>
+                  {alertsStatus?.hasToken ? (
+                    <button
+                      id="btn-alerts-clear-token"
+                      className="primary-btn"
+                      style={{ width: "auto", padding: "0.55rem 1.1rem", background: "rgba(255,255,255,0.1)", color: "#fff" }}
+                      disabled={alertsBusy}
+                      onClick={clearAlertsToken}
+                    >
+                      Clear token
+                    </button>
+                  ) : null}
+                </div>
+                <details style={{ marginTop: "0.5rem", fontSize: "0.85rem" }}>
+                  <summary style={{ cursor: "pointer", color: "var(--color-muted)" }}>Advanced</summary>
+                  <label style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.25rem", maxWidth: "340px" }}>
+                    ntfy server URL
+                    <input
+                      id="input-alerts-base-url"
+                      type="text"
+                      value={alertsBaseUrl}
+                      onChange={(e) => setAlertsBaseUrl(e.target.value)}
+                      placeholder="https://ntfy.sh"
+                      autoComplete="off"
+                      style={{ padding: "0.5rem", borderRadius: "8px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text)", fontFamily: "inherit" }}
+                    />
+                  </label>
+                </details>
+                <div id="alerts-status" style={{ marginTop: "0.5rem", fontSize: "0.8rem", color: "var(--color-muted)" }}>
+                  {alertsStatus ? (
+                    alertsStatus.enabled
+                      ? <>Configured — alerts go to the saved topic{alertsStatus.lastSentAt ? `, last sent ${new Date(alertsStatus.lastSentAt).toLocaleString()}` : " — none sent yet"}.</>
+                      : alertsStatus.topicSet
+                        ? "Topic saved, alerts off — tick the box and save to switch them on."
+                        : "Not configured — enter a topic to begin."
+                  ) : "Loading…"}
+                  {alertsStatus?.lastError ? <> Last error: {alertsStatus.lastError}.</> : null}
+                </div>
+                {alertsMsg ? (
+                  <div id="alerts-msg" style={{ marginTop: "0.5rem", fontSize: "0.875rem", color: "var(--color-accent)" }}>
+                    {alertsMsg}
                   </div>
                 ) : null}
               </div>
