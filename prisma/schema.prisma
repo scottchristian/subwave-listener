@@ -71,6 +71,8 @@ model User {
   pushSubscriptions PushSubscription[]
   presenceHeartbeat PresenceHeartbeat?
   skillRuns      SkillRun[]
+  phoneContact   PhoneContact?
+  phoneVerification PhoneVerification?
   // Screens this person set up, and screens whose firmware they uploaded.
   // Audit only — never read in an authorisation branch. SetNull, not Cascade,
   // so removing a staff account does not brick a wall display.
@@ -483,4 +485,86 @@ model DeviceOtaAttempt {
   @@index([deviceId, createdAt])
   @@index([releaseId])
   @@index([phase])
+}
+
+// ---------------------------------------------------------------- text line
+
+/// A listener's phone, proven by a code they read on it. One per account.
+///
+/// Unlinking DELETES this row, and every message, bell and reminder row hangs
+/// off it with Cascade — that cascade IS the erasure promise made in the
+/// confirm copy ("your entire text history is permanently deleted").
+model PhoneContact {
+  id         String    @id @default(cuid())
+  userId     String    @unique
+  phone      String    @unique // E.164; the webhook matches inbound on it
+  createdAt  DateTime  @default(now())
+  verifiedAt DateTime?
+  // Written by an inbound STOP. Cleared only by re-enabling a bell in the app,
+  // which is the documented way back — never by an inbound START.
+  optedOutAt DateTime?
+
+  user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  messages   TextMessage[]
+  showAlerts ShowAlert[]
+  reminders  ShowReminder[]
+}
+
+/// An in-flight verification code. Replaced on every "Get my code"; deleted on
+/// verify, unlink, or when a newer send lands. The code is stored as an HMAC,
+/// never in the clear, and expires quickly.
+model PhoneVerification {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  phone     String
+  codeHash  String
+  attempts  Int      @default(0)
+  createdAt DateTime @default(now())
+  expiresAt DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+/// One bubble, inbound or outbound. `providerId` is Linq's message id and is
+/// unique so an at-least-once webhook redelivery cannot duplicate a row.
+model TextMessage {
+  id         String   @id @default(cuid())
+  contactId  String
+  direction  String // "in" | "out"
+  body       String
+  providerId String?  @unique
+  createdAt  DateTime @default(now())
+
+  contact PhoneContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([contactId, createdAt])
+}
+
+/// A show this listener asked to be reminded about, chosen in the Shows panel.
+model ShowAlert {
+  id        String   @id @default(cuid())
+  contactId String
+  showId    String
+  createdAt DateTime @default(now())
+
+  contact PhoneContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([contactId, showId])
+  @@index([showId])
+}
+
+/// A claimed reminder send. The unique slot key is what stops a minute-by-
+/// minute scheduler from texting the same person twice for the same showing,
+/// including across the DST fold where two local hours share a wall-clock name.
+model ShowReminder {
+  id        String   @id @default(cuid())
+  contactId String
+  showId    String
+  slotKey   String // station-local YYYY-MM-DDTHH:00
+  sentAt    DateTime @default(now())
+
+  contact PhoneContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@unique([contactId, slotKey])
+  @@index([showId])
 }

@@ -8,6 +8,7 @@ import LikeButton from "@/app/components/LikeButton";
 import LikedSongsPanel from "@/app/components/LikedSongsPanel";
 import SkillsPanel from "@/app/components/SkillsPanel";
 import SchedulePanel from "@/app/components/SchedulePanel";
+import PhonePanel, { type PhoneView } from "@/app/components/PhonePanel";
 import { STATION } from "@/lib/station";
 import { plog, setVerbose } from "@/lib/log";
 import { canSkipAsListener, parseSkipVisibility, type SkipVisibility } from "@/lib/skipvisibility";
@@ -364,6 +365,11 @@ export default function Home() {
   // Schedule popup from the account menu. Mounts fresh each open, so the
   // day always starts on today.
   const [showSchedule, setShowSchedule] = useState(false);
+  // Phone link panel from the account menu. The label flips to "Manage phone"
+  // once a number is linked, so the status read is cached here.
+  const [showPhone, setShowPhone] = useState(false);
+  const [phoneView, setPhoneView] = useState<PhoneView | null>(null);
+  const [bellError, setBellError] = useState("");
   // Clock face for every time in the app. Account-wide (saved to the server),
   // falling back to the device locale until the user chooses.
   const [hour12, setHour12] = useState<boolean>(() => defaultHour12());
@@ -427,8 +433,42 @@ export default function Home() {
     });
   };
 
+  const loadPhone = async () => {
+    try {
+      const res = await fetch("/api/phone");
+      if (res.ok) setPhoneView(await res.json());
+    } catch {
+      // Leave the last known state; the panel re-reads when it opens.
+    }
+  };
+
+  const toggleShowBell = async (showId: string, next: boolean) => {
+    setBellError("");
+    // Optimistic: the bell answers the tap, and a failure is reverted from the
+    // server read below rather than guessed at here.
+    setPhoneView((v) =>
+      v
+        ? { ...v, showIds: next ? [...new Set([...v.showIds, showId])] : v.showIds.filter((id) => id !== showId) }
+        : v
+    );
+    try {
+      const res = await fetch("/api/phone/alerts", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ showId, enabled: next }),
+      });
+      if (!res.ok) throw new Error(String(res.status));
+      const fresh = await fetch("/api/phone");
+      if (fresh.ok) setPhoneView(await fresh.json());
+    } catch {
+      setBellError("Couldn't update that reminder. Try again.");
+      await loadPhone();
+    }
+  };
+
   const openUserMenu = () => {
     setUserMenuOpen(true);
+    if (session?.user && phoneView === null) void loadPhone();
     // Measured after the open flag commits, so the menu exists in the DOM and its
     // real height is available. Measuring before this renders gives offsetHeight 0,
     // so the flip-above logic silently does nothing on the first open and the menu
@@ -2463,7 +2503,8 @@ export default function Home() {
                   <button id="btn-save-my-nickname" onClick={saveMyNickname} className="primary-btn" style={{ width: "auto", padding: "0.5rem 0.75rem", fontSize: "0.8rem" }}>Save</button>
                 </div>
                 <button id="btn-liked-songs" ref={el => { stepRefs.current[8] = el; }} onClick={() => { setUserMenuOpen(false); setShowLikes(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer", position: tourStep === 8 ? "relative" : "static", zIndex: tourStep === 8 ? 1000 : 1 }}>Liked Songs</button>
-                <button id="btn-shows" onClick={() => { setUserMenuOpen(false); setShowSchedule(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>Shows</button>
+                <button id="btn-shows" onClick={() => { setUserMenuOpen(false); setBellError(""); setShowSchedule(true); if (phoneView === null) void loadPhone(); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>Shows</button>
+                <button id="btn-phone" onClick={() => { setUserMenuOpen(false); setShowPhone(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>{phoneView?.linked ? "Manage phone" : "Link your phone"}</button>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.75rem", padding: "0.6rem 0.75rem" }}>
                   <span style={{ fontSize: "0.95rem", color: "var(--color-text)" }}>Time format</span>
                   <span role="group" aria-label="Time format" style={{ display: "inline-flex", borderRadius: "8px", overflow: "hidden", border: "1px solid var(--color-border)" }}>
@@ -3198,6 +3239,20 @@ export default function Home() {
             resolveAvatar={getAvatarSrc}
             onHost={(pick) => { setShowSchedule(false); setShowHost(pick); }}
             onClose={() => setShowSchedule(false)}
+            bellShowIds={phoneView?.showIds ?? []}
+            canRemind={phoneView === null ? undefined : !!phoneView.linked}
+            bellError={bellError}
+            onToggleBell={(showId, next) => void toggleShowBell(showId, next)}
+            onNeedPhone={() => { setShowSchedule(false); setShowPhone(true); }}
+          />
+        </div>
+      )}
+      {showPhone && (
+        <div id="phone-overlay-bg" onClick={() => setShowPhone(false)} className="overlay-bg-enter" style={{ position: "fixed", inset: 0, backgroundColor: "rgba(0,0,0,0.7)", zIndex: 2000, overflowY: "auto", padding: "2rem 1rem" }}>
+          <PhonePanel
+            initial={phoneView}
+            onChanged={setPhoneView}
+            onClose={() => setShowPhone(false)}
           />
         </div>
       )}

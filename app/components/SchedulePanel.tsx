@@ -31,6 +31,10 @@ const fmtHour = (h: number, hour12: boolean) => {
  * ("Monday → Thursday"); arrows jump run to run, opening lands on the run
  * holding the station's today. Tapping a show accordions its presenters;
  * tapping a presenter opens their character card via onHost.
+ *
+ * Each show also carries its reminder bell. A bell needs a linked phone, so
+ * without one the control routes to the phone panel rather than silently
+ * doing nothing.
  */
 export default function SchedulePanel({
   scheduleData,
@@ -38,12 +42,23 @@ export default function SchedulePanel({
   resolveAvatar,
   onHost,
   onClose,
+  bellShowIds = [],
+  canRemind,
+  bellError = "",
+  onToggleBell,
+  onNeedPhone,
 }: {
   scheduleData: any;
   hour12: boolean;
   resolveAvatar: (path: string) => string;
   onHost: (pick: ScheduleHostPick) => void;
   onClose: () => void;
+  bellShowIds?: string[];
+  /** undefined while the link status is unknown — bells wait rather than guess. */
+  canRemind?: boolean;
+  bellError?: string;
+  onToggleBell?: (showId: string, next: boolean) => void;
+  onNeedPhone?: () => void;
 }) {
   const [dayOffset, setDayOffset] = useState(0);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -191,6 +206,16 @@ export default function SchedulePanel({
             ›
           </button>
         </div>
+        {canRemind === false && (
+          <p style={{ fontSize: "0.8rem", color: "var(--color-muted)", margin: "0 0 0.75rem", lineHeight: 1.45 }}>
+            Link your phone to get a text 15 minutes before a show starts.
+          </p>
+        )}
+        {bellError && (
+          <p role="alert" style={{ fontSize: "0.85rem", color: "#ff6b6b", margin: "0 0 0.75rem" }}>
+            {bellError}
+          </p>
+        )}
         <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
           {slots.map((slot, i) => {
             const show = slot.showId ? showById(slot.showId) : null;
@@ -212,6 +237,7 @@ export default function SchedulePanel({
               .map((id: string) => personaById(id))
               .filter((p: any) => p && p.name);
             const hostNames = hosts.map((p: any) => p.name).join(", ");
+            const reminderOn = bellShowIds.includes(show.id);
             return (
               <div
                 key={i}
@@ -221,28 +247,74 @@ export default function SchedulePanel({
                   border: live ? "1px solid rgba(78,159,212,0.55)" : "1px solid transparent",
                 }}
               >
-                <button
-                  type="button"
-                  onClick={() => setExpanded(open ? null : key)}
-                  aria-expanded={open}
-                  aria-label={`${show.name}, ${fmtHour(slot.from, hour12)} to ${fmtHour(slot.to, hour12)}${live ? ", on air now" : ""}`}
-                  style={{ display: "flex", alignItems: "center", gap: "0.75rem", width: "100%", padding: "0.6rem 0.75rem", background: "none", border: "none", cursor: "pointer", color: "inherit", font: "inherit", textAlign: "left" }}
-                >
-                  <span style={{ fontSize: "0.85rem", color: "var(--color-muted)", minWidth: "6.5rem" }}>
-                    {fmtHour(slot.from, hour12)} – {fmtHour(slot.to, hour12)}
-                  </span>
-                  <span style={{ flex: 1, minWidth: 0 }}>
-                    <span style={{ display: "block", fontSize: "0.95rem", fontWeight: 700 }}>
-                      {live ? "● " : ""}{show.name}
+                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                  <button
+                    type="button"
+                    onClick={() => setExpanded(open ? null : key)}
+                    aria-expanded={open}
+                    aria-label={`${show.name}, ${fmtHour(slot.from, hour12)} to ${fmtHour(slot.to, hour12)}${live ? ", on air now" : ""}`}
+                    style={{ display: "flex", alignItems: "center", gap: "0.75rem", flex: 1, minWidth: 0, padding: "0.6rem 0.25rem 0.6rem 0.75rem", background: "none", border: "none", cursor: "pointer", color: "inherit", font: "inherit", textAlign: "left" }}
+                  >
+                    <span style={{ fontSize: "0.85rem", color: "var(--color-muted)", minWidth: "6.5rem" }}>
+                      {fmtHour(slot.from, hour12)} – {fmtHour(slot.to, hour12)}
                     </span>
-                    {hostNames ? (
-                      <span style={{ display: "block", fontSize: "0.85rem", color: "#ff4d4d" }}>{hostNames}</span>
-                    ) : null}
-                  </span>
-                  <span aria-hidden="true" style={{ color: "var(--color-muted)", transition: "transform 0.2s ease", transform: open ? "rotate(180deg)" : "none" }}>
-                    ▾
-                  </span>
-                </button>
+                    <span style={{ flex: 1, minWidth: 0 }}>
+                      <span style={{ display: "block", fontSize: "0.95rem", fontWeight: 700 }}>
+                        {live ? "● " : ""}{show.name}
+                      </span>
+                      {hostNames ? (
+                        <span style={{ display: "block", fontSize: "0.85rem", color: "#ff4d4d" }}>{hostNames}</span>
+                      ) : null}
+                    </span>
+                    <span aria-hidden="true" style={{ color: "var(--color-muted)", transition: "transform 0.2s ease", transform: open ? "rotate(180deg)" : "none" }}>
+                      ▾
+                    </span>
+                  </button>
+                  {canRemind !== undefined && (
+                  <button
+                    type="button"
+                    id={`btn-remind-${show.id}`}
+                    aria-pressed={reminderOn}
+                    aria-label={reminderOn ? `Stop reminders for ${show.name}` : `Remind me before ${show.name} by text`}
+                    title={
+                      canRemind
+                        ? reminderOn
+                          ? "Reminders on — text me 15 minutes before"
+                          : "Text me 15 minutes before this show"
+                        : "Link your phone to get text reminders"
+                    }
+                    onClick={() => {
+                      if (!canRemind) {
+                        onNeedPhone?.();
+                        return;
+                      }
+                      onToggleBell?.(show.id, !reminderOn);
+                    }}
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "0.3rem",
+                      flexShrink: 0,
+                      marginRight: "0.5rem",
+                      padding: "0.3rem 0.55rem",
+                      borderRadius: "999px",
+                      border: reminderOn ? "1px solid var(--color-accent)" : "1px solid var(--color-border)",
+                      background: reminderOn ? "var(--color-accent)" : "transparent",
+                      color: reminderOn ? "#fff" : "var(--color-muted)",
+                      fontSize: "0.72rem",
+                      fontWeight: 600,
+                      cursor: "pointer",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    <svg aria-hidden="true" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 9-3 9h18s-3-2-3-9" />
+                      <path d="M13.7 21a2 2 0 0 1-3.4 0" />
+                    </svg>
+                    {reminderOn ? "On" : canRemind ? "Remind" : "Link"}
+                  </button>
+                  )}
+                </div>
                 {open && (
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.6rem", padding: "0.25rem 0.75rem 0.75rem 7.25rem" }}>
                     {hosts.length === 0 && (

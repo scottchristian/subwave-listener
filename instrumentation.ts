@@ -76,6 +76,14 @@ export async function register() {
     } catch (err) {
       console.warn("[boot] station statistics collector not started:", message(err));
     }
+    try {
+      // Show reminders are a claim-then-send tick: one text per opted-in
+      // listener per showing, decided from the host's weekly grid.
+      const { startReminderScheduler } = await import("./lib/textline");
+      startReminderScheduler();
+    } catch (err) {
+      console.warn("[boot] show reminder scheduler not started:", message(err));
+    }
   }
 
   try {

@@ -54,6 +54,12 @@ const PUBLIC = [
   // uses decides what a screen may do. None of it reads a cookie or touches the
   // presence map; check-device-isolation.mts fails the build if that changes.
   { path: "/api/devices", why: "wall screen self-authenticates with a bearer token; no session exists to check" },
+  // Linq delivers inbound texts here from the internet, so it cannot present a
+  // session. Opening it does not make it public: the route verifies the
+  // Standard Webhooks HMAC over the raw body against LINQ_WEBHOOK_SECRET,
+  // refuses a signature older than five minutes, and refuses everything when
+  // the secret is absent.
+  { path: "/api/linq", why: "Linq webhook delivery; the route verifies the signed raw body before parsing it" },
 ];
 
 const isPublic = (pathname: string) =>
