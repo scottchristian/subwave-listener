@@ -11,6 +11,7 @@ import { APP_VERSION, REPO_URL } from "@/lib/version";
 import type { BackupSummary } from "@/lib/backup";
 import type { UpdateJob } from "@/lib/update";
 import DatabasePanel from "./DatabasePanel";
+import TextlinePanel from "./TextlinePanel";
 import CollapsibleSection from "./CollapsibleSection";
 import HeaderToggle from "./HeaderToggle";
 import { shouldHeartbeat } from "@/lib/heartbeat";
@@ -1892,6 +1893,8 @@ export default function AdminPage() {
             {musicMsg && <div id="music-test-msg" style={{ color: "var(--color-accent)", fontSize: "0.875rem" }}>{musicMsg}</div>}
           </div>
         </CollapsibleSection>
+
+        <TextlinePanel hidden={activeTab !== "services"} />
 
         {/* Donations. Under Stats, not Services — this is a readout of money
             taken, not a station service you configure. The Support Button

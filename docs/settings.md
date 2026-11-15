@@ -11,6 +11,7 @@ whether it takes effect immediately or needs a restart.
 - [Google sign-in](#google-sign-in)
 - [Push notifications](#push-notifications)
 - [Music links](#music-links)
+- [Text line](#text-line)
 - [Skills](#skills)
 - [Settings that are not in the dashboard](#settings-that-are-not-in-the-dashboard)
 
@@ -403,6 +404,65 @@ links are always exact and never need credentials.
 dashboard](https://developer.spotify.com/dashboard) and paste the client ID and
 secret here. Five minutes, no billing, and no redirect URL to configure — it uses
 a server-to-server token, so nothing ever opens in a browser.
+
+---
+
+## Text line
+
+**What it does.** Gives your listeners a real iMessage/SMS number. They link
+their phone from the Account menu (proven with a six-digit code), text requests
+and shout-outs to the station, and switch on reminders for individual shows.
+Inbound texts land in the admin inbox, and reminders carry a link straight back
+to the station.
+
+**Do you need it?** No. Without it the Account menu has no phone entry, the show
+schedule has no reminder bells, and the inbox stays empty.
+
+**You sign up on your own computer, not on the server.** The Linq CLI creates
+the account and the number; nothing in this application does that. On a machine
+with Node 22 or later:
+
+```bash
+npm install -g @linqapp/cli@latest
+linq signup --email you@example.com          # emails a six-digit code
+linq signup --email you@example.com --code 123456 --name "Your Name"
+linq tokens show                             # prints the API key
+```
+
+Then, still on your own computer (or in the
+[Linq dashboard](https://dashboard.linqapp.com)), add a webhook subscription
+for `message.received` pointing at:
+
+```
+https://your-station-address/api/linq/webhook
+```
+
+The Services → Text Line panel shows this URL with a Copy button, so you can
+paste it from there. Creating the subscription gives you its signing secret,
+which starts `whsec_`.
+
+**Then copy the two values over in whichever way suits you:**
+
+- **The dashboard.** Services → Text Line, paste the API key and the signing
+  secret, tick *Turn on the text line*, and save. The panel never shows the
+  values back — it says “✓ saved” instead.
+- **The configuration file.** Add `LINQ_ENABLED="1"`, `LINQ_API_KEY="…"` and
+  `LINQ_WEBHOOK_SECRET="whsec_…"` to `.env.local` on the server. A dashboard
+  save overwrites these the next time it saves.
+
+**When it applies.** Immediately. A dashboard save writes the same values to
+the configuration file and into the running process, so there is nothing to
+restart.
+
+**The free tier is inbound-first.** On Linq's free Shared Line a number must
+text the station once before the station can text it — including the
+verification code and show reminders. Up to 20 contacts. A paid line removes
+the restriction.
+
+**What the dashboard will not tell you.** The API key and signing secret are
+never returned by the panel, logged, or included in errors. If one is lost,
+generate a new key with `linq tokens create` or find the secret in the Linq
+dashboard, and paste it in again.
 
 ---
 
