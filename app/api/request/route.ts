@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../auth/[...nextauth]/route";
 import prisma from "@/lib/prisma";
-import { getSubwaveConfig, subwaveAdminAuth } from "@/lib/subwave";
+import { getSubwaveConfig } from "@/lib/subwave";
 
 
 
@@ -59,16 +59,11 @@ export async function POST(req: Request) {
     // from Admin → Sub/Wave Server settings).
     const cfg = await getSubwaveConfig();
     console.log("Forwarding request to Subwave Host:", { track, name: name || "Anonymous Listener" });
-    // Every web request arrives at the host from this one server address. The
-    // admin credentials let the host trust the id below as this listener's
-    // bucket, so one listener's 60s cooldown does not refuse the next one's.
-    const auth = subwaveAdminAuth(cfg);
     const res = await fetch(`${cfg.apiUrl}/request`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
         "x-station-auth": cfg.stationPassword,
-        ...(auth ? { authorization: auth, "x-request-client": user.id } : {}),
       },
       body: JSON.stringify({
         text: track,

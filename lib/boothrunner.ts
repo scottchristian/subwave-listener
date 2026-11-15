@@ -1,11 +1,13 @@
 import prisma from "./prisma";
-import { getSubwaveConfig, subwaveAdminAuth } from "./subwave";
+import { getSubwaveConfig } from "./subwave";
 import { sendText } from "./linq";
 import {
   BOOTH_ACK,
   BOOTH_BUSY,
+  ackNamesWait,
   boothTimeoutSec,
   composeBoothReply,
+  forecastWaitSec,
 } from "./booth";
 
 // Forwards a texted request to the booth and tells the listener what happened.
@@ -127,8 +129,7 @@ async function runSend(
   now: number
 ) {
   const cfg = await getSubwaveConfig();
-  const auth = subwaveAdminAuth(cfg);
-  if (!cfg.apiUrl || !auth) {
+  if (!cfg.apiUrl || !cfg.stationPassword) {
     // Nothing to text either: the station cannot reach its own booth, and that
     // is an operator problem, not the listener's.
     await settle(row.id, "failed", "Sub/Wave is not configured, so the request could not be sent.");
@@ -154,12 +155,8 @@ async function runSend(
     res = await (opts.fetchImpl || fetch)(`${cfg.apiUrl}/request`, {
       method: "POST",
       headers: {
-        authorization: auth,
         "content-type": "application/json",
-        // The host counts each listener separately only for an admin-
-        // authenticated caller; this id is what keeps two listeners off one
-        // cooldown.
-        "x-request-client": row.contactId,
+        "x-station-auth": cfg.stationPassword,
       },
       body: JSON.stringify({ text: row.body, name: row.name }),
       signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
@@ -226,17 +223,25 @@ async function runPoll(
   if (data.status === "pending") return;
 
   if (data.status === "resolved") {
-    const reply = composeBoothReply(data);
+    // The host reports the queued track but no forecast, so the time comes from
+    // its public queue state. When the host's own ack already names a wait,
+    // there is nothing to add and no reason to ask.
+    const ack = typeof data.ack === "string" ? data.ack : "";
+    const waitSec = ackNamesWait(ack)
+      ? null
+      : await forecastWaitSec({
+          apiUrl: cfg.apiUrl,
+          track: data.track,
+          fetchImpl: opts.fetchImpl,
+          now,
+        });
+    const reply = composeBoothReply({ ack: data.ack, track: data.track, waitSec });
     const sent = await tell(row, reply, opts);
-    const waitSec = typeof data.waitSec === "number" ? Math.round(data.waitSec) : null;
-    const waitNoticeSec =
-      typeof data.waitNoticeSec === "number" ? Math.round(data.waitNoticeSec) : null;
     await prisma.textlineRequest.update({
       where: { id: row.id },
       data: {
         status: sent ? "replied" : "failed",
         waitSec,
-        waitNoticeSec,
         repliedAt: new Date(now),
         error: sent ? null : "the follow-up text could not be sent",
       },

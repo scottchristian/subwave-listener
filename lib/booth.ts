@@ -42,27 +42,83 @@ export function formatWaitPhrase(waitSec: number): string {
   return `${min} minute${min === 1 ? "" : "s"}`;
 }
 
+/** The host's ack already says how long the wait is ("about 10 minutes away"). */
+export function ackNamesWait(ack: string | null | undefined): boolean {
+  return typeof ack === "string" && /\babout\s+\d+\s+(second|minute|hour)/i.test(ack);
+}
+
+/** What GET /request/:id reports for the queued track. */
+export type BoothTrack = { title?: unknown; artist?: unknown } | null | undefined;
+
 /**
- * The one follow-up text: the booth's own ack, plus a time when the ack did not
- * already name one. The host reports `waitNoticeSec` as the amount it embedded,
- * so this never repeats "about 6 minutes… in the next 6 minutes".
+ * Seconds until the queued track starts, read from the host's public queue
+ * state. Null when the track is not in `upcoming` (unmeasured timing, gone, or
+ * the state fetch failed) — the caller then says nothing about time rather than
+ * guessing.
+ */
+export async function forecastWaitSec(input: {
+  apiUrl: string | null;
+  track: BoothTrack;
+  fetchImpl?: typeof fetch;
+  now?: number;
+  timeoutMs?: number;
+}): Promise<number | null> {
+  const title = typeof input.track?.title === "string" ? input.track.title.trim().toLowerCase() : "";
+  if (!title || !input.apiUrl) return null;
+
+  let res: Response;
+  try {
+    res = await (input.fetchImpl || fetch)(`${input.apiUrl}/state`, {
+      signal: AbortSignal.timeout(input.timeoutMs ?? 5_000),
+      cache: "no-store",
+    });
+  } catch {
+    return null;
+  }
+  if (!res.ok) return null;
+  const snap: any = await res.json().catch(() => null);
+  const upcoming: any[] = Array.isArray(snap?.upcoming) ? snap.upcoming : [];
+
+  const artist =
+    typeof input.track?.artist === "string" ? input.track.artist.trim().toLowerCase() : "";
+  // The host allows a queue to hold the same track twice; the last match is
+  // the copy just pushed.
+  let idx = -1;
+  for (let i = 0; i < upcoming.length; i++) {
+    const item = upcoming[i];
+    if (typeof item?.title !== "string" || item.title.trim().toLowerCase() !== title) continue;
+    if (artist) {
+      const itemArtist = typeof item.artist === "string" ? item.artist.trim().toLowerCase() : "";
+      if (itemArtist !== artist) continue;
+    }
+    idx = i;
+  }
+  if (idx < 0) return null;
+
+  const airsAt = Date.parse(upcoming[idx]?.airsAt);
+  if (!Number.isFinite(airsAt)) return null;
+  const sec = Math.round((airsAt - (input.now ?? Date.now())) / 1000);
+  // Anything this close is "coming up"; a countdown would only be stale by the
+  // time the text lands.
+  return sec >= 15 ? sec : null;
+}
+
+/**
+ * The one follow-up text: the booth's own ack, plus a time when neither the ack
+ * nor the caller already named one. `waitSec` is computed by us from the public
+ * queue state, so this never repeats "about 6 minutes… in the next 6 minutes".
  */
 export function composeBoothReply(data: {
   ack?: unknown;
   track?: unknown;
   waitSec?: unknown;
-  waitNoticeSec?: unknown;
 }): string {
   const ack = typeof data.ack === "string" ? data.ack.trim() : "";
   const hasTrack = !!data.track && typeof data.track === "object";
   const waitSec =
     typeof data.waitSec === "number" && Number.isFinite(data.waitSec) ? data.waitSec : null;
-  const noticed =
-    typeof data.waitNoticeSec === "number" && Number.isFinite(data.waitNoticeSec)
-      ? data.waitNoticeSec
-      : null;
   const eta =
-    waitSec !== null && noticed === null && hasTrack
+    waitSec !== null && hasTrack && !ackNamesWait(ack)
       ? `You should hear it in the next ${formatWaitPhrase(waitSec)}.`
       : "";
   if (ack && eta) return `${ack} ${eta}`;

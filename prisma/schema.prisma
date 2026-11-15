@@ -559,8 +559,13 @@ model TextlineRequest {
   hostId        String?   @unique
   /// queued | sending | accepted | replied | failed
   status        String    @default("queued")
-  /// Seconds until it airs, and the amount the host already wrote into its ack.
+  /// Seconds until it airs, as this worker forecast it from the host's public
+  /// queue state (GET /api/state); null when the forecast was unknown or the
+  /// host's ack already named a wait itself.
   waitSec       Int?
+  /// Retired: briefly recorded how much wait the host's ack embedded. The host
+  /// reports no forecast, and the column stays only because db push refuses to
+  /// drop one from an already-deployed database.
   waitNoticeSec Int?
   /// Why the follow-up was what it was (host refusal, timeout, send error).
   error         String?

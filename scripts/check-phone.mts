@@ -464,6 +464,7 @@ try {
     ["subwaveApiUrl", "http://host.test:7700"],
     ["subwaveAdminUser", "admin"],
     ["subwaveAdminPass", "secret"],
+    ["stationPassword", "station-secret"],
   ] as const) {
     await prisma.setting.upsert({ where: { key }, update: { value }, create: { key, value } });
   }
@@ -471,13 +472,16 @@ try {
   await prisma.textlineRequest.deleteMany();
   const hostCalls: { url: string; init: any }[] = [];
   let hostReply: { status: number; body: any } = { status: 202, body: { success: true, requestId: "req-1" } };
+  let stateReply: { status: number; body: any } = { status: 200, body: { current: null, upcoming: [] } };
   const fakeFetch: any = async (url: any, init: any = {}) => {
     hostCalls.push({ url: String(url), init });
-    return new Response(JSON.stringify(hostReply.body), {
-      status: hostReply.status,
+    const reply = String(url).endsWith("/api/state") ? stateReply : hostReply;
+    return new Response(JSON.stringify(reply.body), {
+      status: reply.status,
       headers: { "content-type": "application/json" },
     });
   };
+  const stateCalls = () => hostCalls.filter((c) => c.url.endsWith("/api/state")).length;
   const lastSent = () => sent[sent.length - 1];
   const lastRow = () =>
     prisma.textlineRequest.findFirst({ orderBy: [{ createdAt: "desc" }, { id: "desc" }] });
@@ -506,13 +510,10 @@ try {
   ok(post!.url === "http://host.test:7700/api/request", "to the configured API address");
   const headers = new Headers(post!.init.headers);
   ok(
-    headers.get("x-request-client") === contact!.id,
-    "the host buckets the request by this listener, not the server's address"
+    headers.get("x-station-auth") === "station-secret",
+    "the request carries the station password the host already accepts"
   );
-  ok(
-    headers.get("authorization") === "Basic " + Buffer.from("admin:secret").toString("base64"),
-    "...with the admin credentials that make that id trustworthy"
-  );
+  ok(headers.get("authorization") === null, "...and no admin credentials the host would have to trust");
   ok(JSON.parse(post!.init.body).text === "Play something from The Cure", "the text itself is forwarded");
   ok(JSON.parse(post!.init.body).name === "Anonymous Listener", "...under the account's nickname, or Anonymous Listener");
 
@@ -527,8 +528,18 @@ try {
       success: true,
       ack: "On it — your track is coming up.",
       track: { title: "Lullaby", artist: "The Cure" },
-      waitSec: 240,
-      waitNoticeSec: null,
+    },
+  };
+  // The host reports the track but no forecast; the listener reads its public
+  // queue state for the time.
+  stateReply = {
+    status: 200,
+    body: {
+      current: { title: "Pictures of You", artist: "The Cure", duration: 400 },
+      upcoming: [
+        { title: "Friday I'm in Love", artist: "The Cure", duration: 220, airsAt: new Date(at1 + 5000 + 180_000).toISOString() },
+        { title: "Lullaby", artist: "The Cure", duration: 260, airsAt: new Date(at1 + 5000 + 240_000).toISOString() },
+      ],
     },
   };
   await boothrunner.runBoothTick({ now: at1 + 5000, send, fetchImpl: fakeFetch });
@@ -536,10 +547,12 @@ try {
     lastSent().body === "On it — your track is coming up. You should hear it in the next 4 minutes.",
     "the booth's answer is relayed with the ETA"
   );
+  ok(stateCalls() === 1, "the ETA comes from the host's public queue state");
   stored = await prisma.textlineRequest.findUnique({ where: { id: row1!.id } });
   ok(stored!.status === "replied" && stored!.waitSec === 240, "and the row records the wait");
 
-  // When the host's ack already names a time, it is not said twice.
+  // When the host's ack already names a time, it is not said twice — and the
+  // state is not even fetched.
   const at2 = at1 + 2 * 60_000;
   await addText("Anything by Queen", at2, "booth-2");
   hostReply = { status: 202, body: { requestId: "req-2" } };
@@ -547,10 +560,27 @@ try {
   const clause = " There's a fair bit queued ahead of it — about 10 minutes away.";
   hostReply = {
     status: 200,
-    body: { status: "resolved", ack: "Queued it." + clause, track: { title: "X", artist: "Y" }, waitSec: 600, waitNoticeSec: 600 },
+    body: { status: "resolved", ack: "Queued it." + clause, track: { title: "X", artist: "Y" } },
   };
+  const stateCallsBeforeAck = stateCalls();
   await boothrunner.runBoothTick({ now: at2 + 5000, send, fetchImpl: fakeFetch });
   ok(lastSent().body === "Queued it." + clause, "an ack that already names a time is not given a second ETA");
+  ok(stateCalls() === stateCallsBeforeAck, "...and the queue state is not fetched for it");
+
+  // Queue state unreachable: the ack still goes out, with no time invented.
+  const at2b = at2 + 60_000;
+  await addText("Anything by Blur", at2b, "booth-2b");
+  hostReply = { status: 202, body: { requestId: "req-2b" } };
+  stateReply = { status: 200, body: { current: null, upcoming: [] } };
+  await boothrunner.runBoothTick({ now: at2b, send, fetchImpl: fakeFetch });
+  hostReply = {
+    status: 200,
+    body: { status: "resolved", ack: "Queued it.", track: { title: "Song 2", artist: "Blur" } },
+  };
+  stateReply = { status: 503, body: {} };
+  await boothrunner.runBoothTick({ now: at2b + 5000, send, fetchImpl: fakeFetch });
+  ok(lastSent().body === "Queued it.", "an unreachable queue state drops the ETA, never the ack");
+  stateReply = { status: 200, body: { current: null, upcoming: [] } };
 
   // A refusal is the booth answering: ack first, then the host's own copy.
   const at3 = at2 + 2 * 60_000;
@@ -705,7 +735,7 @@ try {
   );
 
   // A station that cannot reach its own booth must not pretend it did.
-  await prisma.setting.delete({ where: { key: "subwaveAdminPass" } });
+  await prisma.setting.delete({ where: { key: "stationPassword" } });
   const at10 = at9 + 3 * 60_000;
   const unconfigured = await addText("Play some AC/DC", at10, "booth-10");
   const beforeCfg = sent.length;
@@ -717,9 +747,9 @@ try {
     "...and the row says why"
   );
   await prisma.setting.upsert({
-    where: { key: "subwaveAdminPass" },
-    update: { value: "secret" },
-    create: { key: "subwaveAdminPass", value: "secret" },
+    where: { key: "stationPassword" },
+    update: { value: "station-secret" },
+    create: { key: "stationPassword", value: "station-secret" },
   });
 
   // A STOP between queueing and sending wins: no ack, no follow-up.
@@ -873,11 +903,45 @@ try {
     "an ack without a time gets the ETA appended"
   );
   ok(
-    booth.composeBoothReply({ ack: "Queued. About 5 minutes away.", track: {}, waitSec: 300, waitNoticeSec: 300 }) ===
+    booth.composeBoothReply({ ack: "Queued. About 5 minutes away.", track: {}, waitSec: 300 }) ===
       "Queued. About 5 minutes away.",
     "an ack that already names a time is left alone"
   );
   ok(booth.composeBoothReply({}) === "The DJ has your message.", "no booth copy still says something true");
+
+  ok(
+    booth.ackNamesWait("There's a fair bit queued ahead of it — about 10 minutes away."),
+    "an ack naming minutes is recognised"
+  );
+  ok(!booth.ackNamesWait("On it — your track is coming up."), "...and one without a time is not");
+
+  const stateAt = (upcoming: any[], now = 0) =>
+    booth.forecastWaitSec({
+      apiUrl: "http://host.test:7700/api",
+      track: { title: "Lullaby", artist: "The Cure" },
+      now,
+      fetchImpl: (async () =>
+        new Response(JSON.stringify({ upcoming }), { status: 200 })) as any,
+    });
+  const ahead = (sec: number, title = "Lullaby", artist = "The Cure") => ({
+    title,
+    artist,
+    airsAt: new Date(sec * 1000).toISOString(),
+  });
+  ok((await stateAt([ahead(60), ahead(240)])) === 240, "a duplicate in the queue forecasts from the newest copy");
+  ok((await stateAt([ahead(120, "Lullaby", "Someone Else")])) === null, "a same-title track by another artist is not ours");
+  ok((await stateAt([{ title: "Lullaby", artist: "The Cure" }])) === null, "unmeasured timing forecasts nothing");
+  ok((await stateAt([ahead(5)])) === null, "a track this close is 'coming up', not a countdown");
+  ok(
+    (await booth.forecastWaitSec({
+      apiUrl: "http://host.test:7700/api",
+      track: { title: "Lullaby", artist: "The Cure" },
+      fetchImpl: (async () => {
+        throw new Error("unreachable");
+      }) as any,
+    })) === null,
+    "an unreachable queue state forecasts nothing"
+  );
 
   // ---------------------------------------------------------------- unlink
   const before = {
