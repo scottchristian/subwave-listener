@@ -103,7 +103,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "prisma": "^7.10.1",
-    "typescript": "^5"
+    "typescript": "^7"
   },
   "engines": {
     "node": ">=20.19.0"
