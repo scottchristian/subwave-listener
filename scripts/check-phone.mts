@@ -154,82 +154,74 @@ try {
     return { ok: true, id: `m${sent.length}`, chatId: "c1" };
   };
 
-  // The bind code is only sent to a number that has just texted the station:
-  // the free Shared Line cannot open a conversation, so the inbound is the
-  // proof that one exists.
-  const noProof = await textline.startLink("u1", "0408 344 123", { defaultCountry: "+61", send });
-  ok(noProof.ok === false && noProof.code === "no_inbound", "a number that has not texted the station is refused");
-  ok(
-    noProof.ok === false && /haven't received a text/i.test(noProof.message),
-    "...and the copy says to send the text first"
-  );
-  ok(sent.length === 0, "...without sending anything");
+  // Step one only remembers the number. The bind code is a reply to the
+  // listener's text, so nothing is sent until that text arrives.
+  const invalid = await textline.beginLink("u1", "hello", { defaultCountry: "+61" });
+  ok(invalid.ok === false && invalid.code === "invalid_phone", "a number that cannot be parsed is refused");
 
-  await prisma.textlineInbound.create({ data: { phone: "+61408344123" } });
-  await prisma.textlineInbound.create({ data: { phone: "+14088265855" } });
-
-  failNext = "send failed (network)";
-  const failedSend = await textline.startLink("u1", "0408 344 123", { defaultCountry: "+61", send });
-  ok(failedSend.ok === false && failedSend.code === "send_failed", "a failed send is reported as such");
+  const began = await textline.beginLink("u1", "0408 344 123", { defaultCountry: "+61" });
+  ok(began.ok === true, "entering a number starts the link");
+  ok(sent.length === 0, "...without texting anything yet");
+  const awaiting = await prisma.phoneVerification.findUnique({ where: { userId: "u1" } });
   ok(
-    !/check the number/i.test(failedSend.ok === false ? failedSend.message : ""),
-    "...without blaming the number, which is not what a network failure means"
+    !!awaiting && awaiting.phone === "+61408344123" && awaiting.codeHash === "",
+    "the pending row carries the E.164 number and no code yet"
   );
-  ok(
-    (await prisma.phoneVerification.findUnique({ where: { userId: "u1" } })) === null,
-    "...and leaves no pending code, so no code box is shown"
-  );
+  const waitingStatus = await textline.phoneStatus("u1");
+  ok(waitingStatus.awaitingText && !waitingStatus.codeSentAt, "status says the link is waiting for its text");
 
-  // A line-side refusal (reputation, permissions, international plan) is not
-  // fixed by re-typing the number, so the copy must not imply it is.
-  await prisma.user.create({ data: { id: "u0" } });
-  failNext = "send failed (403 2027)";
-  const blocked = await textline.startLink("u0", "0408 344 123", { defaultCountry: "+61", send });
-  ok(blocked.ok === false && blocked.code === "send_failed", "a 403 from Linq is a send failure");
+  // One waiting link per number: a second account cannot arm the same phone.
+  await prisma.user.create({ data: { id: "u2" } });
+  const stolen = await textline.beginLink("u2", "0408 344 123", { defaultCountry: "+61" });
+  ok(stolen.ok === false && stolen.code === "phone_taken", "a number another account is already linking is refused");
+
+  // Only a text from the entered number releases the code.
+  await textline.handleInbound({ phone: "+61400000000", body: "Hi", providerId: "bind-other" }, { send });
+  ok(sent.length === 0, "a text from another number gets no code");
+  await textline.handleInbound({ phone: "+61408344123", body: "STOP", providerId: "bind-stop" }, { send });
+  ok(sent.length === 0, "STOP from a waiting number is not treated as a bind request");
   ok(
-    blocked.ok === false && /can't send right now/i.test(blocked.message),
-    "...and blames the line, not the number",
-    blocked.ok === false ? blocked.message : blocked
+    (await prisma.phoneVerification.findUnique({ where: { userId: "u1" } }))!.codeHash === "",
+    "...and leaves the link waiting"
   );
 
-  failNext = "send failed (403)";
-  const bare = await textline.startLink("u0", "0408 344 123", { defaultCountry: "+61", send });
-  ok(
-    bare.ok === false && !/add your number|text the station/i.test(bare.message),
-    "a 403 without a Linq code is not mislabelled as an allowlist refusal"
-  );
-
-  failNext = "send failed (403 2024)";
-  const stopped = await textline.startLink("u0", "0408 344 123", { defaultCountry: "+61", send });
-  ok(
-    stopped.ok === false && /asked the station to stop/i.test(stopped.message),
-    "a carrier opt-out tells the listener to text the station once"
-  );
-
-  const started = await textline.startLink("u1", "0408 344 123", { defaultCountry: "+61", send });
-  ok(started.ok === true, "a successful send starts the link");
-  const sentCount = sent.length;
-
-  const t0 = Date.now();
-  const tooSoon = await textline.startLink("u1", "0408 344 123", { defaultCountry: "+61", send, now: t0 });
-  ok(tooSoon.ok === false && tooSoon.code === "too_soon", "a second code inside the cooldown is refused");
-  ok(sent.length === sentCount, "...and no extra text goes out");
-
-  const resent = await textline.startLink("u1", "0408 344 123", {
-    defaultCountry: "+61", send, now: t0 + textline.CODE_RESEND_MS,
-  });
-  ok(resent.ok === true, "a code is allowed again once the cooldown passes");
-
-  const pending = await prisma.phoneVerification.findUnique({ where: { userId: "u1" } });
-  ok(!!pending && pending.phone === "+61408344123", "the pending row carries the E.164 number");
+  const inbound = await textline.handleInbound({ phone: "+61408344123", body: "Hi", providerId: "bind-1" }, { send });
+  ok(inbound.handled === true, "the waiting number's text is handled");
+  ok(sent.length === 1 && sent[0].to === "+61408344123", "the station texts the bind code back to that number");
   const code = String(sent[sent.length - 1].body.match(/\b(\d{6})\b/)?.[1] || "");
   ok(/^\d{6}$/.test(code), "the code is six digits in the message");
-  ok(!pending!.codeHash.includes(code), "the code is stored as a hash, never in the clear");
+  const pending = await prisma.phoneVerification.findUnique({ where: { userId: "u1" } });
+  ok(
+    !!pending && pending.phone === "+61408344123" && !pending.codeHash.includes(code),
+    "the code is stored as a hash, never in the clear"
+  );
+  const codeStatus = await textline.phoneStatus("u1");
+  ok(codeStatus.codeSentAt !== null && !codeStatus.awaitingText, "status moves the panel to the code step");
+
+  await textline.handleInbound({ phone: "+61408344123", body: "did that work?", providerId: "bind-2" }, { send });
+  ok(sent.length === 1, "a second text does not send a second code");
+
+  await textline.handleInbound({ phone: "+61408344123", body: "Hi", providerId: "bind-1" }, { send });
+  ok(sent.length === 1, "a redelivered text cannot send another code");
+
+  // A failed code send leaves the number armed, so the next text retries.
+  await prisma.user.create({ data: { id: "u4" } });
+  const armed = await textline.beginLink("u4", "0408 555 123", { defaultCountry: "+61" });
+  ok(armed.ok === true, "another number can wait for its text");
+  failNext = "send failed (403 2008)";
+  const failed = await textline.handleInbound({ phone: "+61408555123", body: "Hi", providerId: "bind-fail" }, { send });
+  ok(failed.handled === true && sent.length === 1, "a failed code send sends nothing");
+  ok(
+    (await prisma.phoneVerification.findUnique({ where: { userId: "u4" } }))!.codeHash === "",
+    "...and leaves the link waiting"
+  );
+  await textline.handleInbound({ phone: "+61408555123", body: "Hi again", providerId: "bind-fail-2" }, { send });
+  ok(sent.length === 2, "...so the next text sends the code");
 
   // A listener who picks another country keeps that country's code: the
   // station's timezone is only the default, not the rule.
   await prisma.user.create({ data: { id: "u3" } });
-  const usStart = await textline.startLink("u3", "408 826 5855", { defaultCountry: "+1", send });
+  const usStart = await textline.beginLink("u3", "408 826 5855", { defaultCountry: "+1" });
   ok(usStart.ok === true, "a number under a picked country starts its link");
   ok(
     (await prisma.phoneVerification.findUnique({ where: { userId: "u3" } }))!.phone === "+14088265855",
@@ -248,6 +240,11 @@ try {
   const welcome = sent[sent.length - 1];
   ok(welcome.to === "+61408344123" && /linked/i.test(welcome.body), "a welcome text is sent after verification");
   ok((await prisma.textMessage.count({ where: { contactId: contact!.id, direction: "out" } })) === 1, "...and recorded in the thread");
+
+  const relink = await textline.beginLink("u1", "0408 344 123", { defaultCountry: "+61" });
+  ok(relink.ok === false && relink.code === "already_linked", "a linked account cannot start another link");
+  const taken = await textline.beginLink("u4", "0408 344 123", { defaultCountry: "+61" });
+  ok(taken.ok === false && taken.code === "phone_taken", "a number linked to another account is refused");
 
   const status = await textline.phoneStatus("u1");
   ok(status.linked && status.phone === "+61408344123", "status reports the linked number");
@@ -468,23 +465,6 @@ try {
   ok(
     (await stationTextNumber({ fetchImpl: numberFetch, now: tn + 1000 })) === "+61400111222" && lookups.length === 1,
     "...and reused instead of looked up again"
-  );
-
-  await prisma.user.create({ data: { id: "u5" } });
-  failNext = "send failed (403 2008)";
-  const refused = await textline.startLink("u5", "0408 344 123", { defaultCountry: "+61", send });
-  ok(
-    refused.ok === false && /\+61400111222/.test(refused.message) && /texted it first/i.test(refused.message),
-    "an inbound-first refusal names the line to text first"
-  );
-
-  // 2015 is "no eligible sending line". The inbound gate has already proved a
-  // chat exists, so this is the fleet, not the listener's missing text.
-  failNext = "send failed (409 2015)";
-  const noLine = await textline.startLink("u5", "0408 344 123", { defaultCountry: "+61", send });
-  ok(
-    noLine.ok === false && /can't send right now/i.test(noLine.message),
-    "a no-eligible-line refusal after the inbound gate blames the line"
   );
 
   const deadFetch: any = async () => ({ ok: false, json: async () => ({}) });

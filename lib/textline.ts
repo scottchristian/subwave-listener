@@ -16,23 +16,21 @@ import crypto from "node:crypto";
 import prisma from "./prisma";
 import { STATION } from "./station";
 import { isOptOut, normalizePhone } from "./phone";
-import { readLinqConfig, sendText, stationTextNumber, type SendResult } from "./linq";
+import { readLinqConfig, sendText, type SendResult } from "./linq";
 import { listenerCount } from "./update-run";
 import { fetchStationSchedule, type ScheduleShow, type StationSchedule } from "./station-schedule";
 
 export const LINK_CODE_TTL_MS = 10 * 60 * 1000;
 export const MAX_CODE_ATTEMPTS = 5;
 export const REMINDER_LEAD_MIN = 15;
-/** One code a minute per account: each send is a real SMS to a real number. */
-export const CODE_RESEND_MS = 60 * 1000;
 /**
- * How recent the listener's first text must be. The free Shared Line cannot
- * open a conversation, so the bind code is only sent after a text from that
- * number proves the chat exists. Long enough to type the number in the app,
- * short enough that an old text is not proof.
+ * How long an entered number stays armed for its first text. Nothing is sent
+ * when the number is entered; the bind code goes out when a text from that
+ * number arrives. Long enough to switch apps and send, short enough that a
+ * number typed once is not still armed tomorrow.
  */
-export const INBOUND_PROOF_MS = 30 * 60 * 1000;
-/** Proof rows are pruned here; nothing older is ever consulted. */
+export const AWAIT_TEXT_MS = 30 * 60 * 1000;
+/** Inbound records are pruned here; they answer "did the text reach us?". */
 const INBOUND_KEEP_MS = 24 * 60 * 60 * 1000;
 
 /**
@@ -74,14 +72,15 @@ export function reminderBody(showName: string, minutes: number, stationName: str
 }
 
 /**
- * Step one: send a code, and only then remember that a verification is
- * pending. A failed send leaves no pending row, so the UI never shows a code
- * box for a code nobody received.
+ * Step one: remember the number, and send nothing. The bind code goes out in
+ * handleInbound when a text from this number arrives — the number has to be
+ * on file first so the text can be matched to the account it belongs to, and
+ * on the free Shared Line the inbound is the whole trigger.
  */
-export async function startLink(
+export async function beginLink(
   userId: string,
   rawPhone: string,
-  opts: { defaultCountry: string; send?: Send; now?: number }
+  opts: { defaultCountry: string; now?: number }
 ): Promise<LinkResult> {
   const phone = normalizePhone(rawPhone, opts.defaultCountry);
   if (!phone) return fail("invalid_phone", "That doesn't look like a phone number. Try 0408 344 123 or +61 408 344 123.");
@@ -93,69 +92,31 @@ export async function startLink(
   if (other) return fail("phone_taken", "That number is already linked to another account.");
 
   const now = opts.now ?? Date.now();
-  const pendingRow = await prisma.phoneVerification.findUnique({ where: { userId }, select: { createdAt: true } });
-  if (pendingRow && now - pendingRow.createdAt.getTime() < CODE_RESEND_MS) {
-    return fail("too_soon", "We've just sent a code. Give it a minute, then try again.");
-  }
 
-  // The free Shared Line cannot start a conversation: a text from this number
-  // is what proves the chat exists and authorises the bind code. Proof older
-  // than a day is pruned here — this is its only reader, so no timer is needed.
-  await prisma.textlineInbound
-    .deleteMany({ where: { receivedAt: { lt: new Date(now - INBOUND_KEEP_MS) } } })
-    .catch(() => {});
-  const proof = await prisma.textlineInbound.findFirst({
-    where: { phone, receivedAt: { gte: new Date(now - INBOUND_PROOF_MS) } },
-    select: { id: true },
+  // One waiting link per number: two accounts armed for the same phone would
+  // each text a different code in answer to the same inbound text.
+  const elsewhere = await prisma.phoneVerification.findFirst({
+    where: { phone, userId: { not: userId }, expiresAt: { gt: new Date(now) } },
+    select: { userId: true },
   });
-  if (!proof) {
-    return fail(
-      "no_inbound",
-      "We haven't received a text from that number yet. Send the text, wait a few seconds, then try again."
-    );
+  if (elsewhere) {
+    return fail("phone_taken", "Someone is already linking that number. If it's yours, try again in a few minutes.");
   }
 
-  const code = sixDigits();
-  const send = opts.send || sendText;
-  const res = await send(phone, `${code} is your ${STATION.name} bind code. It expires in 10 minutes.`);
-  if (!res.ok) {
-    // Status and trace id only — the provider's body can echo the recipient.
-    console.warn("[textline] code send failed:", res.error, res.traceId ? `trace ${res.traceId}` : "");
-    if (/not configured/.test(res.error)) {
-      return fail("send_failed", "The station's text line isn't switched on. Ask the station owner to turn it on.");
-    }
-    const [, , linqCode = ""] = res.error.match(/\((\d{3})(?:\s+(\d{4}))?\)/) ?? [];
-    // 2024 is Linq's own opt-out: any further send is rejected until that
-    // person texts the line again. Never retry it, and never override it here.
-    if (linqCode === "2024") {
-      return fail("send_failed", "That number has asked the station to stop texting. Text the station once to start again, then try this again.");
-    }
-    // Line-side refusals (reputation, permissions, international plan, and
-    // 2015 "no eligible sending line" — the inbound gate above already proved
-    // a chat exists, so this is the fleet): the owner fixing the line helps.
-    if (["2006", "2015", "2027", "2032", "4008"].includes(linqCode)) {
-      return fail("send_failed", "The station's text line can't send right now. Try again later, and let the station owner know if it keeps failing.");
-    }
-    // 2008 is "recipient not allowed". A sandbox account and the free Shared
-    // Line are inbound-first, so no registration step lets the line text a
-    // number that has not texted it; on a Shared Line the owner also adds the
-    // number (20 max) in the Linq CLI before that inbound can arrive.
-    if (linqCode === "2008") {
-      const line = await stationTextNumber();
-      return fail(
-        "send_failed",
-        line
-          ? `The station's line can only text numbers that have texted it first. Text the station at ${line}, then try again — on the free Shared Line the owner also has to add your number, so ask if it still fails.`
-          : "The station's line can only text numbers that have texted it first. Text the station once, then try again — on the free Shared Line the owner also has to add your number, so ask if it still fails."
-      );
-    }
-    return fail("send_failed", "We couldn't send the code just now. Wait a minute and try again.");
+  const pending = await prisma.phoneVerification.findUnique({
+    where: { userId },
+    select: { phone: true, codeHash: true, expiresAt: true },
+  });
+  // Re-entering the same number while its code is still valid keeps that code:
+  // the listener is on the code step, not starting over.
+  if (pending && pending.phone === phone && pending.codeHash && pending.expiresAt.getTime() > now) {
+    return { ok: true };
   }
 
   await prisma.phoneVerification.upsert({
     where: { userId },
-    create: { userId, phone, codeHash: hashCode(code), expiresAt: new Date(now + LINK_CODE_TTL_MS) },
-    update: { phone, codeHash: hashCode(code), attempts: 0, createdAt: new Date(now), expiresAt: new Date(now + LINK_CODE_TTL_MS) },
+    create: { userId, phone, codeHash: "", expiresAt: new Date(now + AWAIT_TEXT_MS) },
+    update: { phone, codeHash: "", attempts: 0, createdAt: new Date(now), expiresAt: new Date(now + AWAIT_TEXT_MS) },
   });
   return { ok: true };
 }
@@ -175,16 +136,16 @@ export async function verifyLink(
   if (!/^\d{6}$/.test(code)) return fail("invalid_code", "Enter the six digits from the message.");
 
   const pending = await prisma.phoneVerification.findUnique({ where: { userId } });
-  if (!pending) return fail("no_code", "There's no code waiting. Tap Get my code first.");
+  if (!pending) return fail("no_code", "There's no code waiting. Enter your number and text us to get one.");
 
   const now = opts.now ?? Date.now();
   if (pending.expiresAt.getTime() < now) {
     await prisma.phoneVerification.deleteMany({ where: { userId } });
-    return fail("expired", "That code has expired. Tap Get my code to send a new one.");
+    return fail("expired", "That code has expired. Enter your number again and text us for a new one.");
   }
   if (pending.attempts >= MAX_CODE_ATTEMPTS) {
     await prisma.phoneVerification.deleteMany({ where: { userId } });
-    return fail("too_many", "Too many tries. Tap Get my code to send a new one.");
+    return fail("too_many", "Too many tries. Enter your number again and text us for a new one.");
   }
 
   const expected = Buffer.from(pending.codeHash, "hex");
@@ -235,6 +196,8 @@ export type PhoneStatus = {
   codeSentAt: string | null;
   /** Where the pending code went; the panel names it when a code step is resumed. */
   pendingPhone: string | null;
+  /** The number is on file and the panel is waiting for its text. */
+  awaitingText: boolean;
   messages: { id: string; direction: string; body: string; createdAt: string }[];
 };
 
@@ -248,16 +211,23 @@ export async function phoneStatus(userId: string): Promise<PhoneStatus> {
         messages: { orderBy: { createdAt: "desc" }, take: 100 },
       },
     }),
-    prisma.phoneVerification.findUnique({ where: { userId }, select: { createdAt: true, phone: true } }),
+    prisma.phoneVerification.findUnique({
+      where: { userId },
+      select: { createdAt: true, phone: true, codeHash: true, expiresAt: true },
+    }),
   ]);
+  // An expired pending row is no pending row: the panel goes back to step one
+  // instead of showing a code box for a code that can no longer be used.
+  const live = pending && pending.expiresAt.getTime() > Date.now() ? pending : null;
   return {
     available: readLinqConfig().enabled,
     linked: !!contact?.verifiedAt,
     phone: contact?.phone ?? null,
     optedOut: !!contact?.optedOutAt,
     showIds: contact?.showAlerts.map((a) => a.showId) ?? [],
-    codeSentAt: pending?.createdAt.toISOString() ?? null,
-    pendingPhone: pending?.phone ?? null,
+    codeSentAt: live?.codeHash ? live.createdAt.toISOString() : null,
+    pendingPhone: live?.phone ?? null,
+    awaitingText: !!live && !live.codeHash,
     messages: (contact?.messages ?? [])
       .slice()
       .reverse()
@@ -301,9 +271,9 @@ export type InboundEvent = {
 };
 
 /**
- * An inbound text. Unknown numbers are ignored (no contact, no reply): the
- * line only answers people who linked in the app. STOP records the opt-out,
- * clears every bell, and sends exactly one confirmation.
+ * An inbound text. A number entered in the app but not yet linked gets its
+ * bind code back; any other unknown number is ignored. STOP from a linked
+ * number records the opt-out, clears every bell, and sends one confirmation.
  */
 export async function handleInbound(
   evt: InboundEvent,
@@ -314,22 +284,60 @@ export async function handleInbound(
   const body = String(evt.body || "").trim();
   if (!phone || !body) return { handled: false };
 
-  // Proof of a real, reachable number, recorded before we decide whether we
-  // know who sent it — sign-up needs it for numbers with no contact yet.
-  // providerId is unique, so an at-least-once redelivery adds nothing.
+  const now = new Date(opts.now ?? Date.now());
+
+  // Proof that a text reached the line, one row per delivery — this is what
+  // answers "did their text ever arrive?". providerId is unique, so an
+  // at-least-once redelivery adds nothing; old rows are pruned here because
+  // this is their only writer.
+  await prisma.textlineInbound
+    .deleteMany({ where: { receivedAt: { lt: new Date(now.getTime() - INBOUND_KEEP_MS) } } })
+    .catch(() => {});
   await prisma.textlineInbound
     .create({ data: { phone, providerId: evt.providerId ?? null } })
     .catch(() => null);
 
   const contact = await prisma.phoneContact.findUnique({ where: { phone }, select: { id: true, optedOutAt: true } });
-  if (!contact) return { handled: false };
+  if (!contact) {
+    // A number entered in the app is waiting for its bind code, and this text
+    // is what releases it: the station cannot open the conversation itself.
+    // Claim the row before sending so two deliveries of one text cannot text
+    // two different codes.
+    const waiting = isOptOut(body)
+      ? null
+      : await prisma.phoneVerification.findFirst({
+          where: { phone, codeHash: "", expiresAt: { gt: now } },
+          select: { userId: true },
+        });
+    if (!waiting) return { handled: false };
+
+    const code = sixDigits();
+    const claim = await prisma.phoneVerification.updateMany({
+      where: { userId: waiting.userId, codeHash: "", expiresAt: { gt: now } },
+      data: { codeHash: hashCode(code), attempts: 0, createdAt: now, expiresAt: new Date(now.getTime() + LINK_CODE_TTL_MS) },
+    });
+    if (claim.count !== 1) return { handled: true };
+
+    const res = await (opts.send || sendText)(phone, `${code} is your ${STATION.name} bind code. It expires in 10 minutes.`);
+    if (!res.ok) {
+      // No code reached the phone, so the link stays armed for the next text.
+      // The listener only knows that nothing came back.
+      await prisma.phoneVerification
+        .updateMany({
+          where: { userId: waiting.userId, codeHash: hashCode(code) },
+          data: { codeHash: "", expiresAt: new Date(now.getTime() + AWAIT_TEXT_MS) },
+        })
+        .catch(() => {});
+      console.warn("[textline] bind code send failed:", res.error, res.traceId ? `trace ${res.traceId}` : "");
+    }
+    return { handled: true };
+  }
 
   if (evt.providerId) {
     const seen = await prisma.textMessage.findUnique({ where: { providerId: evt.providerId }, select: { id: true } });
     if (seen) return { handled: true };
   }
 
-  const now = new Date(opts.now ?? Date.now());
   // Timestamps come from `now`, not the database clock, so the offline-reply
   // throttle below agrees with the same clock the caller reasons about.
   const log = (direction: string, text: string, providerId: string | null = null) =>

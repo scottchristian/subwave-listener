@@ -2,16 +2,18 @@ import { NextResponse } from "next/server";
 import { requireUser } from "@/lib/listener-auth";
 import { stationDialCode } from "@/lib/station-schedule";
 import { dialForCountry } from "@/lib/countries";
-import { startLink } from "@/lib/textline";
+import { beginLink } from "@/lib/textline";
 import { linkErrorStatus } from "../status";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
 /**
- * Send a code. A country the panel offered is used as given; otherwise the
- * code comes from the station's own timezone, so a listener who never touches
- * the picker still links the phone they actually hold.
+ * Remember the number the listener will text from. Nothing is sent here: the
+ * bind code goes out when that number's text arrives. A country the panel
+ * offered is used as given; otherwise the code comes from the station's own
+ * timezone, so a listener who never touches the picker still links the phone
+ * they actually hold.
  */
 export async function POST(req: Request) {
   const me = await requireUser();
@@ -32,7 +34,7 @@ export async function POST(req: Request) {
     );
   }
 
-  const result = await startLink(me.id, phone, { defaultCountry: country });
+  const result = await beginLink(me.id, phone, { defaultCountry: country });
   if (!result.ok) return NextResponse.json(result, { status: linkErrorStatus(result.code) });
   return NextResponse.json({ ok: true });
 }

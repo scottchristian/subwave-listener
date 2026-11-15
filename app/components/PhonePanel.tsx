@@ -13,13 +13,19 @@ export type PhoneView = {
   showIds: string[];
   codeSentAt: string | null;
   pendingPhone?: string | null;
+  /** The number is on file; the panel waits for its text before the code exists. */
+  awaitingText?: boolean;
   messages: { id: string; direction: string; body: string; createdAt: string }[];
   defaultCountry?: string;
-  /** The station's own line: the number the listener has to text first. */
+  /** The station's own line: the number the listener has to text. */
   textNumber?: string | null;
 };
 
-type Step = "textfirst" | "number" | "code" | "manage";
+type Step = "number" | "wait" | "code" | "manage";
+
+/** Where the panel opens, from the server's state alone. */
+const stepFor = (view: PhoneView | null): Step =>
+  view?.linked ? "manage" : view?.codeSentAt ? "code" : view?.awaitingText ? "wait" : "number";
 
 const fmtTime = (iso: string) => {
   const d = new Date(iso);
@@ -28,12 +34,12 @@ const fmtTime = (iso: string) => {
     : "";
 };
 
-/** E.164 in the shape the listener typed it: +61 408 344 123. */
-
 /**
- * Link a phone, then live with it: the code flow only advances after a send
- * the server confirmed, and the manage view puts Unlink ABOVE the thread —
- * removing the number is the primary action on that screen, not a footnote.
+ * Link a phone in the order the free line allows: the number is entered here,
+ * then the listener texts the station, then the station texts the bind code
+ * back. The wait step polls because that reply is a text the browser cannot
+ * observe. The manage view puts Unlink ABOVE the thread — removing the number
+ * is the primary action on that screen, not a footnote.
  */
 export default function PhonePanel({
   initial,
@@ -45,14 +51,11 @@ export default function PhonePanel({
   onClose: () => void;
 }) {
   const [view, setView] = useState<PhoneView | null>(initial);
-  const [step, setStep] = useState<Step>(() =>
-    initial?.linked ? "manage" : initial?.codeSentAt ? "code" : "textfirst"
-  );
+  const [step, setStep] = useState<Step>(() => stepFor(initial));
   const [number, setNumber] = useState("");
   // Null means "not chosen yet": the station's own country is the default, and
   // switching it re-groups whatever digits are already in the field.
   const [countryPick, setCountryPick] = useState<string | null>(null);
-  const [sentTo, setSentTo] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -63,7 +66,7 @@ export default function PhonePanel({
   const apply = useCallback(
     (next: PhoneView) => {
       setView(next);
-      setStep(next.linked ? "manage" : next.codeSentAt ? "code" : "textfirst");
+      setStep(stepFor(next));
       setError("");
       onChanged(next);
     },
@@ -93,6 +96,15 @@ export default function PhonePanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // While waiting for the listener's text, ask the server whether the code
+  // has gone out. Nothing else advances this step: the reply is a text, not
+  // a request the panel can see arriving.
+  useEffect(() => {
+    if (step !== "wait") return;
+    const timer = setInterval(() => void refresh(), 4000);
+    return () => clearInterval(timer);
+  }, [step, refresh]);
+
   const post = async (path: string, body: Record<string, unknown>) => {
     setBusy(true);
     setError("");
@@ -116,15 +128,14 @@ export default function PhonePanel({
     }
   };
 
-  const getCode = async () => {
+  const saveNumber = async () => {
     const fresh = await post("/api/phone/start", {
       phone: number,
       ...(countryPick ? { country: countryPick } : {}),
     });
     if (!fresh) return;
-    setSentTo(number.trim());    setCode("");
+    setCode("");
     await refresh();
-    setStep("code");
   };
 
   const verify = async () => {
@@ -139,10 +150,8 @@ export default function PhonePanel({
     if (!fresh) return;
     setConfirming(false);
     setNumber("");
-    setSentTo("");
     setCode("");
     await refresh();
-    setStep("textfirst");
   };
 
   const shell = (body: React.ReactNode) => (
@@ -288,7 +297,7 @@ export default function PhonePanel({
     return shell(
       <>
         <p style={{ fontSize: "0.95rem", lineHeight: 1.5, margin: "0 0 1rem" }}>
-          Enter the 6-digit bind code we sent to <strong>{sentTo || formatIntlPhone(view.pendingPhone ?? "") || "your phone"}</strong>.
+          Enter the 6-digit bind code we sent to <strong>{formatIntlPhone(view.pendingPhone ?? "") || "your phone"}</strong>.
         </p>
         {errorLine}
         <label htmlFor="input-phone-code" style={{ display: "block", fontSize: "0.85rem", color: "var(--color-muted)", marginBottom: "0.35rem" }}>
@@ -322,18 +331,22 @@ export default function PhonePanel({
         >
           Use a different number
         </button>
+        <p style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginBottom: 0, lineHeight: 1.45 }}>
+          The code expires in 10 minutes. Message rates may apply.
+        </p>
       </>
     );
   }
 
-  if (step === "textfirst") {
+  if (step === "wait") {
     const line = view.textNumber || "";
     const sms = textLink(line);
     return shell(
       <>
-        <p style={{ fontSize: "1.05rem", fontWeight: 600, margin: "0 0 0.5rem" }}>Text us first</p>
+        <p style={{ fontSize: "1.05rem", fontWeight: 600, margin: "0 0 0.5rem" }}>Now text the station</p>
         <p style={{ fontSize: "0.95rem", lineHeight: 1.5, margin: "0 0 1rem" }}>
-          To confirm you&apos;re texting from a real number, we need you to text us first.
+          Text us from <strong>{formatIntlPhone(view.pendingPhone ?? "") || "your number"}</strong>. We&apos;ll reply with
+          your bind code.
         </p>
         {sms ? (
           <a
@@ -356,23 +369,40 @@ export default function PhonePanel({
               marginBottom: "0.75rem",
             }}
           >
-            Tap here to text {formatIntlPhone(line)}
+            Tap to text {formatIntlPhone(line)}
           </a>
         ) : (
           <p style={{ fontSize: "0.9rem", color: "var(--color-muted)", marginBottom: "0.75rem" }}>
             The station&apos;s number isn&apos;t available right now. Try again in a minute.
           </p>
         )}
-        <button
-          id="btn-text-sent"
-          onClick={() => { setStep("number"); setError(""); }}
-          className="primary-btn"
-          style={{ width: "100%", marginBottom: "0.6rem" }}
+        <p
+          id="phone-waiting"
+          role="status"
+          style={{ fontSize: "0.9rem", color: "var(--color-accent)", margin: "0 0 0.35rem" }}
         >
-          I&apos;ve sent the text
+          Waiting for your text&hellip;
+        </p>
+        <button
+          id="btn-phone-different-number"
+          onClick={() => { setStep("number"); setError(""); }}
+          style={{ display: "block", width: "100%", padding: "0.5rem", background: "none", border: "none", color: "var(--color-muted)", fontSize: "0.85rem", cursor: "pointer" }}
+        >
+          Use a different number
         </button>
-        <p style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginBottom: 0, lineHeight: 1.45 }}>
-          On the free Shared Line the station owner also has to add your number in Linq (up to 20).
+        <p
+          style={{
+            fontSize: "0.8rem",
+            lineHeight: 1.45,
+            color: "#d8c39a",
+            margin: "0.75rem 0 0",
+            padding: "0.7rem 0.8rem",
+            borderRadius: "10px",
+            border: "1px solid rgba(200,167,106,0.35)",
+            background: "rgba(200,167,106,0.08)",
+          }}
+        >
+          Nothing back? The station owner may need to add your number to the text line first.
         </p>
       </>
     );
@@ -387,10 +417,10 @@ export default function PhonePanel({
   return shell(
     <>
       <p style={{ fontSize: "1.05rem", fontWeight: 600, margin: "0 0 0.5rem" }}>
-        Which number did you text from?
+        What&apos;s your phone number?
       </p>
       <p style={{ fontSize: "0.9rem", color: "var(--color-muted)", lineHeight: 1.5, margin: "0 0 1rem" }}>
-        Enter it so we can confirm it&apos;s you and your account. We&apos;ll text you a bind code back.
+        Enter the number you&apos;ll text us from. Your bind code goes to this number.
       </p>
       {errorLine}
       <label htmlFor="select-phone-country" style={{ display: "block", fontSize: "0.85rem", color: "var(--color-muted)", marginBottom: "0.35rem" }}>
@@ -430,23 +460,16 @@ export default function PhonePanel({
         style={{ marginBottom: "1rem" }}
       />
       <button
-        id="btn-get-phone-code"
-        onClick={getCode}
+        id="btn-phone-next"
+        onClick={saveNumber}
         disabled={busy || number.replace(/\D/g, "").length < 6}
         className="primary-btn"
         style={{ width: "100%", marginBottom: "0.6rem", opacity: busy || number.replace(/\D/g, "").length < 6 ? 0.6 : 1 }}
       >
-        {busy ? "Sending…" : "Send my bind code"}
-      </button>
-      <button
-        id="btn-text-station-again"
-        onClick={() => { setStep("textfirst"); setError(""); }}
-        style={{ display: "block", width: "100%", padding: "0.5rem", background: "none", border: "none", color: "var(--color-muted)", fontSize: "0.85rem", cursor: "pointer" }}
-      >
-        Text the station again
+        {busy ? "Saving…" : "Next"}
       </button>
       <p style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginBottom: 0, lineHeight: 1.45 }}>
-        We&apos;ll text a 6-digit bind code to confirm it&apos;s yours. Message rates may apply.
+        We&apos;ll text a 6-digit bind code once you&apos;ve texted us from this number. Message rates may apply.
       </p>
     </>
   );
