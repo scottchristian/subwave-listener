@@ -93,6 +93,7 @@
     "@prisma/adapter-pg": "^7.10.1",
     "@prisma/client": "^7.10.1",
     "better-sqlite3": "^12.11.1",
+    "libphonenumber-js": "^1.13.16",
     "next": "16.4.5",
     "next-auth": "^4.24.15",
     "pg": "^8.13.1",

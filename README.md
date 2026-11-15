@@ -286,9 +286,12 @@ sign up with Linq's CLI on your own computer, paste the API key into
 Services → Text Line, and press **Set up webhook**.
 
 **What you need.** A Linq account and API key. The free
-[Shared Line](https://linqapp.com) is limited: each listener's number must be on
-the line's contact list (20 max, added in the Linq CLI), and they have to text
-the station before it can text them. A paid dedicated line has neither limit.
+[Shared Line](https://linqapp.com) works inbound-first: each listener's number
+has to be on the line's contact list (20 max, `linq contacts add +61…` in the
+Linq CLI) and has to text the station once before the station can text it.
+Adding a number only lets it text in — it does not unlock outbound. When a code
+send is refused, the listener sees the station's own number and can text it
+first. A paid dedicated line sends first contact directly, with no list.
 
 **If you leave it out.** The phone entry and reminder bells do not appear.
 Nothing else changes. `docs/settings.md#text-line` has the steps.

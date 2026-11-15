@@ -60,10 +60,14 @@ export async function sendText(to: string, body: string, opts: SendOptions = {})
       headers: {
         "Content-Type": "application/json",
         Authorization: `Bearer ${cfg.apiKey}`,
-        ...(opts.idempotencyKey ? { "Idempotency-Key": opts.idempotencyKey } : {}),
       },
       body: JSON.stringify({
-        message: { parts: [{ type: "text", value: body }] },
+        // Linq reads idempotency_key inside the message object, not as a
+        // header; a header would leave every retry able to send twice.
+        message: {
+          parts: [{ type: "text", value: body }],
+          ...(opts.idempotencyKey ? { idempotency_key: opts.idempotencyKey } : {}),
+        },
         to: [to],
         ...(opts.overrideOptout ? { override_optout: true } : {}),
       }),
@@ -135,6 +139,41 @@ export function verifyWebhookSignature(
     if (got.length === expected.length && crypto.timingSafeEqual(got, expected)) return true;
   }
   return false;
+}
+
+// ------------------------------------------------------- station line number
+//
+// Linq onboards a new contact inbound-first: the recipient texts the line
+// before the line can text them, so the number that shows a listener where to
+// start is worth having. Looked up once and cached — available_number is not
+// a per-send call.
+
+const NUMBER_CACHE_MS = 10 * 60 * 1000;
+let numberCache: { at: number; number: string } | null = null;
+
+/** The station's own line as E.164, or null when it can't be known. */
+export async function stationTextNumber(
+  opts: { fetchImpl?: typeof fetch; now?: number } = {}
+): Promise<string | null> {
+  const now = opts.now ?? Date.now();
+  if (numberCache && now - numberCache.at < NUMBER_CACHE_MS) return numberCache.number;
+  const cfg = readLinqConfig();
+  if (!cfg.enabled) return null;
+  try {
+    const res = await (opts.fetchImpl || fetch)(`${cfg.apiBase}/available_number`, {
+      headers: { Authorization: `Bearer ${cfg.apiKey}` },
+      signal: AbortSignal.timeout(ADMIN_TIMEOUT_MS),
+    });
+    if (!res.ok) return null;
+    const data: any = await res.json().catch(() => null);
+    const digits = String(data?.phone_number ?? "").replace(/[^\d+]/g, "");
+    const number = digits.startsWith("+") ? digits : digits ? `+${digits}` : "";
+    if (!/^\+\d{8,15}$/.test(number)) return null;
+    numberCache = { at: now, number };
+    return number;
+  } catch {
+    return null;
+  }
 }
 
 // ------------------------------------------------------- webhook subscriptions

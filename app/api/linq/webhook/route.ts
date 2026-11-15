@@ -54,6 +54,7 @@ export async function POST(req: Request) {
     body,
     providerId: data.id || data.message?.id || null,
     isGroup: Boolean(data.chat?.is_group ?? data.is_group),
+    chatHealth: data.chat?.health_status?.status ?? null,
   });
   return NextResponse.json({ ok: true });
 }

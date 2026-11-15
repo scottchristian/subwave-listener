@@ -79,7 +79,8 @@ try {
 
   const { default: prisma } = await import("../lib/prisma.ts");
   const { normalizePhone, dialCodeForTimezone, isOptOut, formatPhoneInput } = await import("../lib/phone.ts");
-  const { verifyWebhookSignature } = await import("../lib/linq.ts");
+  const { dialForCountry, isKnownDialCode, isoForDial } = await import("../lib/countries.ts");
+  const { verifyWebhookSignature, stationTextNumber, sendText } = await import("../lib/linq.ts");
   const textline = await import("../lib/textline.ts");
 
   // ---------------------------------------------------------------- pure
@@ -94,23 +95,37 @@ try {
   ok(dialCodeForTimezone("Pacific/Auckland") === "+64", "Auckland maps to +64");
   ok(dialCodeForTimezone("Mars/Olympus") === "", "an unknown zone is never guessed");
 
+  ok(dialForCountry("AU") === "+61" && dialForCountry("nz") === "+64", "the country picker maps regions to dial codes");
+  ok(dialForCountry("ZZ") === null, "a region the picker never offered is refused");
+  ok(isKnownDialCode("+61") && !isKnownDialCode("+999"), "only offered dial codes are known");
+  ok(isoForDial("+61") === "AU" && isoForDial("+64") === "NZ", "a dial code maps back to a region for formatting");
+  ok(isoForDial("+1") === "US", "a shared dial code maps to its main region");
+  ok(isoForDial("") === null, "no dial code means no formatting guess");
+
   ok(isOptOut("STOP") && isOptOut("UNSUBSCRIBE") && isOptOut("QUIT"), "standard opt-out words are honoured");
   ok(isOptOut("OPT OUT") && isOptOut("opt-out") && isOptOut(" Opt  Out "), "OPT OUT tolerates casing and spacing");
+  ok(
+    isOptOut("stop texting me") && isOptOut("Please stop messaging me.") && isOptOut("Don't text me"),
+    "a clear stop request is honoured even without the keyword"
+  );
+  ok(!isOptOut("stop texting me the playlist"), "...but only when the whole message is the request");
   ok(!isOptOut("stop"), "lower-case stop is a song named stop, not an opt-out");
   ok(!isOptOut("please STOP the music"), "opt-out is the whole message, not a word in one");
 
   // ----------------------------------------------------------- formatting
-  ok(formatPhoneInput("0408826585", "+61") === "0408 826 585", "a national number is grouped 4-3-3");
-  ok(formatPhoneInput("0408 826 585", "+61") === "0408 826 585", "re-formatting is idempotent");
-  ok(formatPhoneInput("04086", "+61") === "0408 6", "a partial number groups as far as it goes");
-  ok(formatPhoneInput("(04) 0834-4123", "+61") === "0408 344 123", "punctuation is replaced by spaces");
-  ok(formatPhoneInput("408826585", "+61") === "408 826 585", "a mobile typed without the trunk zero groups 3-3-3");
-  ok(formatPhoneInput("+61 408 826 585", "+61") === "408 826 585", "the station's own code is left to the prefix chip");
-  ok(formatPhoneInput("4088265855", "+1") === "408 826 5855", "US numbers group 3-3-4");
-  ok(formatPhoneInput("07911123456", "+44") === "07911 123456", "UK numbers group 5-6");
-  ok(formatPhoneInput("+1 408 826 5855", "+61") === "+1 408 826 5855", "another country's number is never rearranged");
-  ok(formatPhoneInput("", "+61") === "" && formatPhoneInput("+", "+61") === "+", "empty and lone plus survive");
-  ok(normalizePhone(formatPhoneInput("0408826585", "+61"), "+61") === "+61408826585", "the formatted value still normalizes — spaces are ignored");
+  ok(formatPhoneInput("0408826585", "AU") === "0408 826 585", "an Australian mobile groups 4-3-3");
+  ok(formatPhoneInput("0408 826 585", "AU") === "0408 826 585", "re-formatting is idempotent");
+  ok(formatPhoneInput("04086", "AU") === "0408 6", "a partial number groups as far as it goes");
+  ok(formatPhoneInput("(04) 0834-4123", "AU") === "0408 344 123", "punctuation is replaced by spaces");
+  ok(formatPhoneInput("408826585", "AU") === "408 826 585", "a number without the trunk zero is still grouped");
+  ok(formatPhoneInput("4088265855", "US") === "(408) 826-5855", "a US number groups in its own shape");
+  ok(formatPhoneInput("07911123456", "GB") === "07911 123456", "a UK number groups 5-6");
+  ok(formatPhoneInput("021555123", "NZ") === "021 555 123", "a New Zealand mobile groups 3-3-3");
+  ok(formatPhoneInput("+1 408 826 5855", "AU") === "+1 408 826 5855", "another country's number is never rearranged");
+  ok(formatPhoneInput("+61 408 826 585", "AU") === "+61 408 826 585", "an international number is formatted as international");
+  ok(formatPhoneInput("", "AU") === "" && formatPhoneInput("+", "AU") === "+", "empty and lone plus survive");
+  ok(normalizePhone(formatPhoneInput("0408826585", "AU"), "+61") === "+61408826585", "the formatted value still normalizes — spaces are ignored");
+  ok(normalizePhone(formatPhoneInput("021555123", "NZ"), "+64") === "+6421555123", "a picked country's number round-trips to E.164");
 
   // ---------------------------------------------------------------- link
   await prisma.user.create({ data: { id: "u1" } });
@@ -139,15 +154,30 @@ try {
     "...and leaves no pending code, so no code box is shown"
   );
 
-  // A shared-line policy refusal is the one failure a listener can act on.
+  // A line-side refusal (reputation, permissions, international plan) is not
+  // fixed by re-typing the number, so the copy must not imply it is.
   await prisma.user.create({ data: { id: "u0" } });
   failNext = "send failed (403 2027)";
   const blocked = await textline.startLink("u0", "0408 344 123", { defaultCountry: "+61", send });
   ok(blocked.ok === false && blocked.code === "send_failed", "a 403 from Linq is a send failure");
   ok(
-    blocked.ok === false && /add your number/i.test(blocked.message),
-    "...and says the owner has to add the number on a shared line",
+    blocked.ok === false && /can't send right now/i.test(blocked.message),
+    "...and blames the line, not the number",
     blocked.ok === false ? blocked.message : blocked
+  );
+
+  failNext = "send failed (403)";
+  const bare = await textline.startLink("u0", "0408 344 123", { defaultCountry: "+61", send });
+  ok(
+    bare.ok === false && !/add your number|text the station/i.test(bare.message),
+    "a 403 without a Linq code is not mislabelled as an allowlist refusal"
+  );
+
+  failNext = "send failed (403 2024)";
+  const stopped = await textline.startLink("u0", "0408 344 123", { defaultCountry: "+61", send });
+  ok(
+    stopped.ok === false && /asked the station to stop/i.test(stopped.message),
+    "a carrier opt-out tells the listener to text the station once"
   );
 
   const started = await textline.startLink("u1", "0408 344 123", { defaultCountry: "+61", send });
@@ -169,6 +199,16 @@ try {
   const code = String(sent[sent.length - 1].body.match(/\b(\d{6})\b/)?.[1] || "");
   ok(/^\d{6}$/.test(code), "the code is six digits in the message");
   ok(!pending!.codeHash.includes(code), "the code is stored as a hash, never in the clear");
+
+  // A listener who picks another country keeps that country's code: the
+  // station's timezone is only the default, not the rule.
+  await prisma.user.create({ data: { id: "u3" } });
+  const usStart = await textline.startLink("u3", "408 826 5855", { defaultCountry: "+1", send });
+  ok(usStart.ok === true, "a number under a picked country starts its link");
+  ok(
+    (await prisma.phoneVerification.findUnique({ where: { userId: "u3" } }))!.phone === "+14088265855",
+    "...and is stored with that country's code, not the station's"
+  );
 
   const missed = code === "111111" ? "222222" : "111111";
   const wrong = await textline.verifyLink("u1", missed, { send });
@@ -262,6 +302,24 @@ try {
     "and the scheduler sees the slot again"
   );
 
+  // Linq can mark a chat OPTED_OUT without our keyword matching. That is the
+  // carrier's STOP too: record it, drop the bells, and send no second courtesy.
+  const beforeHealth = sent.length;
+  const health = await textline.handleInbound(
+    { phone: "+61408344123", body: "still there?", providerId: "in-health", chatHealth: "OPTED_OUT" },
+    { send, now }
+  );
+  ok(
+    health.handled === true && sent.length === beforeHealth,
+    "an OPTED_OUT chat health is recorded without another text"
+  );
+  ok(
+    !!(await prisma.phoneContact.findUnique({ where: { userId: "u1" } }))!.optedOutAt,
+    "...and marks the contact opted out"
+  );
+  ok((await prisma.showAlert.count({ where: { contactId: contact!.id } })) === 0, "...and clears the bells");
+  await textline.setShowAlert("u1", "s1", true);
+
   // ---------------------------------------------------------------- unlink
   const before = {
     messages: await prisma.textMessage.count({ where: { contactId: contact!.id } }),
@@ -316,6 +374,61 @@ try {
     verifyWebhookSignature("", payload, { id: "evt-1", timestamp: ts, signature: good }) === false,
     "no secret refuses everything"
   );
+
+  // ---------------------------------------------------------- station number
+  // Onboarding is inbound-first, so a policy refusal should name the line the
+  // listener can text. The lookup is cached: it is not a per-send call.
+  process.env.LINQ_ENABLED = "true";
+  process.env.LINQ_API_KEY = "test-api-key";
+  const lookups: string[] = [];
+  const numberFetch: any = async (url: string) => {
+    lookups.push(String(url));
+    return { ok: true, json: async () => ({ phone_number: "+61400111222" }) };
+  };
+  const tn = Date.now();
+  ok(
+    (await stationTextNumber({ fetchImpl: numberFetch, now: tn })) === "+61400111222",
+    "the station's own line is read from Linq"
+  );
+  ok(
+    (await stationTextNumber({ fetchImpl: numberFetch, now: tn + 1000 })) === "+61400111222" && lookups.length === 1,
+    "...and reused instead of looked up again"
+  );
+
+  await prisma.user.create({ data: { id: "u5" } });
+  failNext = "send failed (403 2008)";
+  const refused = await textline.startLink("u5", "0408 344 123", { defaultCountry: "+61", send });
+  ok(
+    refused.ok === false && /\+61400111222/.test(refused.message) && /texted it first/i.test(refused.message),
+    "an inbound-first refusal names the line to text first"
+  );
+
+  const deadFetch: any = async () => ({ ok: false, json: async () => ({}) });
+  ok(
+    (await stationTextNumber({ fetchImpl: deadFetch, now: tn + 11 * 60 * 1000 })) === null,
+    "a failed lookup is null, never a broken message"
+  );
+
+  const wire: { headers: any; body: any }[] = [];
+  const capture: any = async (_url: string, init: any) => {
+    wire.push({ headers: init.headers, body: JSON.parse(init.body) });
+    return { ok: true, text: async () => JSON.stringify({ chat_id: "c9", message: { id: "m9" } }) };
+  };
+  const sentOne = await sendText("+61400111222", "hello", {
+    idempotencyKey: "reminder-c1-2026-06-15T15:00",
+    overrideOptout: true,
+    fetchImpl: capture,
+  });
+  ok(sentOne.ok === true, "a send succeeds against the capture");
+  ok(
+    wire[0].body.message.idempotency_key === "reminder-c1-2026-06-15T15:00",
+    "the idempotency key rides inside the message body"
+  );
+  ok(!wire[0].headers["Idempotency-Key"], "...not as an HTTP header Linq ignores");
+  ok(wire[0].body.override_optout === true, "the one-shot opt-out override stays top-level");
+
+  delete process.env.LINQ_ENABLED;
+  delete process.env.LINQ_API_KEY;
 } finally {
   await cleanup();
 }

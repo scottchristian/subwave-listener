@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { STATION } from "@/lib/station";
 import { formatPhoneInput } from "@/lib/phone";
+import { COUNTRIES, isoForDial, type Country } from "@/lib/countries";
 
 export type PhoneView = {
   available: boolean;
@@ -53,11 +54,16 @@ export default function PhonePanel({
     initial?.linked ? "manage" : initial?.codeSentAt ? "code" : "number"
   );
   const [number, setNumber] = useState("");
+  // Null means "not chosen yet": the station's own country is the default, and
+  // switching it re-groups whatever digits are already in the field.
+  const [countryPick, setCountryPick] = useState<string | null>(null);
   const [sentTo, setSentTo] = useState("");
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState(false);
+  const dial = countryPick ?? view?.defaultCountry ?? "";
+  const iso = countryPick ?? isoForDial(view?.defaultCountry ?? "");
 
   const apply = useCallback(
     (next: PhoneView) => {
@@ -116,7 +122,10 @@ export default function PhonePanel({
   };
 
   const getCode = async () => {
-    const fresh = await post("/api/phone/start", { phone: number });
+    const fresh = await post("/api/phone/start", {
+      phone: number,
+      ...(countryPick ? { country: countryPick } : {}),
+    });
     if (!fresh) return;
     setSentTo(number.trim());    setCode("");
     await refresh();
@@ -322,33 +331,54 @@ export default function PhonePanel({
     );
   }
 
+  // Countries sharing the station's dial code come first: a listener abroad
+  // still gets the station's own country at the top, then everything else.
+  const sameDial = dial ? COUNTRIES.filter((c) => c.dial === dial) : [];
+  const otherDial = COUNTRIES.filter((c) => !sameDial.includes(c));
+  const optionLabel = (c: Country) => `${c.flag} ${c.name} (${c.dial})`.trim();
+
   return shell(
     <>
       <p style={{ fontSize: "0.95rem", lineHeight: 1.5, margin: "0 0 1rem" }}>
         Link your phone to get show reminders by text, and to text the station requests and shout-outs.
       </p>
       {errorLine}
+      <label htmlFor="select-phone-country" style={{ display: "block", fontSize: "0.85rem", color: "var(--color-muted)", marginBottom: "0.35rem" }}>
+        Country
+      </label>
+      <select
+        id="select-phone-country"
+        value={countryPick ?? ""}
+        onChange={(e) => {
+          const next = e.target.value || null;
+          setCountryPick(next);
+          setNumber((n) => formatPhoneInput(n, next ?? isoForDial(view.defaultCountry || "")));
+        }}
+        className="input-field"
+        style={{ marginBottom: "0.75rem" }}
+      >
+        <option value="">{dial ? `Station's country (${dial})` : "Choose your country"}</option>
+        {sameDial.map((c) => (
+          <option key={c.code} value={c.code}>{optionLabel(c)}</option>
+        ))}
+        {otherDial.map((c) => (
+          <option key={c.code} value={c.code}>{optionLabel(c)}</option>
+        ))}
+      </select>
       <label htmlFor="input-phone-number" style={{ display: "block", fontSize: "0.85rem", color: "var(--color-muted)", marginBottom: "0.35rem" }}>
         Mobile number
       </label>
-      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
-        {view.defaultCountry ? (
-          <span style={{ flexShrink: 0, padding: "0.75rem", borderRadius: "8px", background: "rgba(255,255,255,0.07)", border: "1px solid var(--color-border)", fontSize: "0.9rem", color: "var(--color-muted)" }}>
-            {view.defaultCountry}
-          </span>
-        ) : null}
-        <input
-          id="input-phone-number"
-          type="tel"
-          inputMode="tel"
-          autoComplete="tel"
-          value={number}
-          onChange={(e) => setNumber(formatPhoneInput(e.target.value, view.defaultCountry))}
-          placeholder="0408 344 123"
-          className="input-field"
-          style={{ flex: 1, minWidth: 0, marginBottom: 0 }}
-        />
-      </div>
+      <input
+        id="input-phone-number"
+        type="tel"
+        inputMode="tel"
+        autoComplete="tel"
+        value={number}
+        onChange={(e) => setNumber(formatPhoneInput(e.target.value, iso))}
+        placeholder={iso === "AU" ? "0408 344 123" : "Mobile number"}
+        className="input-field"
+        style={{ marginBottom: "1rem" }}
+      />
       <button
         id="btn-get-phone-code"
         onClick={getCode}

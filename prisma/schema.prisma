@@ -500,8 +500,9 @@ model PhoneContact {
   phone      String    @unique // E.164; the webhook matches inbound on it
   createdAt  DateTime  @default(now())
   verifiedAt DateTime?
-  // Written by an inbound STOP. Cleared only by re-enabling a bell in the app,
-  // which is the documented way back — never by an inbound START.
+  // Written by an inbound STOP or Linq's OPTED_OUT chat health. Cleared only
+  // by re-enabling a bell in the app, which is the documented way back — never
+  // by an inbound START.
   optedOutAt DateTime?
 
   user       User           @relation(fields: [userId], references: [id], onDelete: Cascade)

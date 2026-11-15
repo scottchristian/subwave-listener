@@ -220,10 +220,10 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
           </button>
         </div>
         <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", lineHeight: 1.5 }}>
-          Linq&rsquo;s free Shared Line is limited: it only messages numbers on its contact list
-          (up to 20, added in Linq with <code>linq contacts add +61…</code>), and a number has
-          to text the station before the station can text it a code or a reminder. A paid
-          dedicated line removes both limits.
+          Linq&rsquo;s free Shared Line works inbound-first: a number has to be on its contact list
+          (up to 20, added in Linq with <code>linq contacts add +61…</code>) and has to text the
+          station once before the station can text it a code or a reminder. Adding it only lets it
+          text in. A paid dedicated line removes both limits.
         </div>
         <div id="textline-status" style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>
           {status ? (

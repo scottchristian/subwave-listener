@@ -459,11 +459,14 @@ the configuration file and into the running process, so there is nothing to
 restart.
 
 **The free tier has two limits.** On Linq's free
-[Shared Line](https://linqapp.com) a number must be on the line's contact list
-(up to 20, added with `linq contacts add +61…` in the Linq CLI) before the
-station can message it, and it must text the station once before the station
-can text it — including the verification code and show reminders. A paid
-dedicated line removes both limits.
+[Shared Line](https://linqapp.com) a number has to be on the line's contact list
+(up to 20, added with `linq contacts add +61…` in the Linq CLI) and has to text
+the station once before the station can text it — including the verification
+code and show reminders. Adding a number only lets it text in; it does not
+unlock outbound. So the first code send to a new number is refused, and the
+listener is shown the station's own number to text first. The panel cannot add
+contacts for you: there is no Partner API for the list, so use the CLI. A paid
+dedicated line has neither limit.
 
 **What the dashboard will not tell you.** The API key and signing secret are
 never returned by the panel, logged, or included in errors. If the key is

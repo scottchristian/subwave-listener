@@ -7,6 +7,8 @@
  * same number, and the second is what Linq accepts.
  */
 
+import { AsYouType, type CountryCode } from "libphonenumber-js/min";
+
 /** Dial code for a station timezone. Unknown places return "" — never guess. */
 const DIAL_CODES: Record<string, string> = {
   "australia/sydney": "+61",
@@ -89,8 +91,6 @@ export function normalizePhone(raw: string, defaultCountry?: string | null): str
   return s.length >= 8 && s.length <= 15 ? "+" + s : null;
 }
 
-const digitsIn = (s: string) => s.replace(/\D/g, "");
-
 /** Join digits into the given chunk sizes; a partial tail becomes its own chunk. */
 function grouped(digits: string, sizes: number[]): string {
   const out: string[] = [];
@@ -105,49 +105,42 @@ function grouped(digits: string, sizes: number[]): string {
 }
 
 /**
- * What the listener sees while typing: "0408826585" becomes "0408 826 585".
+ * What the listener sees while typing, in their country's own shape:
+ * "0408826585" (AU) becomes "0408 826 585", "021555123" (NZ) "021 555 123",
+ * "4088265855" (US) "(408) 826-5855". `iso` is the country the picker shows.
  *
- * Cosmetic only. Spaces are discarded by normalizePhone, so the returned
- * string is always safe to submit as typed, and every keystroke re-groups
- * from the digits alone rather than patching spaces into what was there.
- *
- * The station's own code is never repeated inside the field — the panel shows
- * it as a fixed prefix — so a pasted "+61 408 826 585" reads as "408 826 585".
- * A number from any other country is left exactly as typed: guessing where its
- * country code ends is how a digit gets moved into the wrong place.
+ * Cosmetic only. Spaces and punctuation are discarded by normalizePhone, so
+ * the returned string is safe to submit as typed. A number that already
+ * carries a country code is formatted as international; one from another
+ * country is left as typed.
  */
-export function formatPhoneInput(raw: string, defaultCountry?: string | null): string {
+export function formatPhoneInput(raw: string, iso?: string | null): string {
   const input = String(raw ?? "");
   if (!input.trim()) return "";
-  const cc = digitsIn(String(defaultCountry || ""));
-  const plus = input.trimStart().startsWith("+");
-  let digits = digitsIn(input);
-  if (!digits) return plus ? "+" : "";
-  if (plus) {
-    if (!cc || !digits.startsWith(cc)) return input;
-    digits = digits.slice(cc.length);
-  }
-  if (cc === "1") {
-    return digits.length > 10 && digits.startsWith("1")
-      ? grouped(digits, [1, 3, 3, 4])
-      : grouped(digits, [3, 3, 4]);
-  }
-  if (cc === "44" && digits.startsWith("0")) return grouped(digits, [5, 6]);
-  if (digits.startsWith("0")) return grouped(digits, [4, 3, 3]);
-  return grouped(digits, [3, 3, 3]);
+  const formatted = new AsYouType((iso || undefined) as CountryCode | undefined).input(input);
+  // AsYouType leaves a national number it can't classify untouched. Grouping
+  // bare digits in threes keeps them readable without moving a digit — the
+  // server still completes the country code.
+  if (formatted === input && /^\d{6,}$/.test(input)) return grouped(input, [3, 3, 3]);
+  return formatted;
 }
 
 /**
  * The carrier opt-out keywords. Standard ones must be the WHOLE message and
  * exactly the spelled token; OPT OUT is the exception and tolerates casing,
- * spacing and hyphens. Anything else is an ordinary request.
- */const OPT_OUT_EXACT = new Set(["STOP", "UNSUBSCRIBE", "OPTOUT", "CANCEL", "END", "QUIT"]);
+ * spacing and hyphens. A clear "stop texting me" counts too — Linq's own
+ * guidance puts conversational stop requests in the code's hands.
+ */
+const OPT_OUT_EXACT = new Set(["STOP", "UNSUBSCRIBE", "OPTOUT", "CANCEL", "END", "QUIT"]);
+const STOP_REQUEST =
+  /^(?:please\s+)?(?:stop\s+(?:texting|messaging|contacting)\s+me|(?:do\s+not|don'?t)\s+(?:text|message|contact)\s+me)(?:\s+please)?\s*[.!]*$/i;
 
 export function isOptOut(body: string): boolean {
   const text = String(body || "").trim();
   if (!text) return false;
   if (OPT_OUT_EXACT.has(text)) return true;
-  return /^opt[\s-]*out$/i.test(text);
+  if (/^opt[\s-]*out$/i.test(text)) return true;
+  return STOP_REQUEST.test(text);
 }
 
 /** Six digits, nothing else. */

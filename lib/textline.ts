@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 import prisma from "./prisma";
 import { STATION } from "./station";
 import { isOptOut, normalizePhone } from "./phone";
-import { readLinqConfig, sendText, type SendResult } from "./linq";
+import { readLinqConfig, sendText, stationTextNumber, type SendResult } from "./linq";
 import { fetchStationSchedule, type ScheduleShow, type StationSchedule } from "./station-schedule";
 
 export const LINK_CODE_TTL_MS = 10 * 60 * 1000;
@@ -89,12 +89,28 @@ export async function startLink(
     if (/not configured/.test(res.error)) {
       return fail("send_failed", "The station's text line isn't switched on. Ask the station owner to turn it on.");
     }
-    // 403/409/2027 are the shared line's policy refusals: a free Linq line
-    // only messages numbers it has allowed, and only after they text first.
-    if (/\((?:403|409|2027)\b/.test(res.error)) {
+    const [, , linqCode = ""] = res.error.match(/\((\d{3})(?:\s+(\d{4}))?\)/) ?? [];
+    // 2024 is Linq's own opt-out: any further send is rejected until that
+    // person texts the line again. Never retry it, and never override it here.
+    if (linqCode === "2024") {
+      return fail("send_failed", "That number has asked the station to stop texting. Text the station once to start again, then try this again.");
+    }
+    // Line-side refusals (reputation, permissions, international plan): the
+    // listener can only wait, and the owner fixing the line is what helps.
+    if (["2006", "2027", "2032", "4008"].includes(linqCode)) {
+      return fail("send_failed", "The station's text line can't send right now. Try again later, and let the station owner know if it keeps failing.");
+    }
+    // 2008 is "recipient not allowed". A sandbox account and the free Shared
+    // Line are inbound-first, so no registration step lets the line text a
+    // number that has not texted it; on a Shared Line the owner also adds the
+    // number (20 max) in the Linq CLI before that inbound can arrive.
+    if (linqCode === "2008") {
+      const line = await stationTextNumber();
       return fail(
         "send_failed",
-        "The text line can't message that number yet. On Linq's free shared line the station owner has to add your number first — ask them, then try again."
+        line
+          ? `The station's line can only text numbers that have texted it first. Text the station at ${line}, then try again — on the free Shared Line the owner also has to add your number, so ask if it still fails.`
+          : "The station's line can only text numbers that have texted it first. Text the station once, then try again — on the free Shared Line the owner also has to add your number, so ask if it still fails."
       );
     }
     return fail("send_failed", "We couldn't send the code just now. Wait a minute and try again.");
@@ -244,6 +260,8 @@ export type InboundEvent = {
   body: string;
   providerId?: string | null;
   isGroup?: boolean;
+  /** The chat's health_status from the webhook; OPTED_OUT is the carrier's own STOP. */
+  chatHealth?: string | null;
 };
 
 /**
@@ -269,7 +287,12 @@ export async function handleInbound(evt: InboundEvent, opts: { send?: Send; now?
   const log = (direction: string, text: string, providerId: string | null = null) =>
     prisma.textMessage.create({ data: { contactId: contact.id, direction, body: text, providerId } }).catch(() => null);
 
-  if (isOptOut(body)) {
+  // A keyword STOP and Linq marking the chat OPTED_OUT are the same promise.
+  // Only the keyword gets our single courtesy reply: Linq records an override
+  // per use, so a carrier-only opt-out must not add a second text.
+  const keywordOptOut = isOptOut(body);
+  const carrierOptOut = String(evt.chatHealth || "").toUpperCase() === "OPTED_OUT";
+  if (keywordOptOut || carrierOptOut) {
     const first = !contact.optedOutAt;
     if (first) {
       await prisma.$transaction([
@@ -278,7 +301,7 @@ export async function handleInbound(evt: InboundEvent, opts: { send?: Send; now?
       ]);
     }
     await log("in", body, evt.providerId ?? null);
-    if (first) {
+    if (first && keywordOptOut) {
       const reply = `You're unsubscribed from ${STATION.name} show alerts. Turn them back on any time in the app's Shows screen.`;
       const res = await (opts.send || sendText)(phone, reply, { overrideOptout: true });
       if (res.ok) await log("out", reply, res.id || null);
@@ -449,6 +472,13 @@ export async function runReminders(deps: ReminderDeps = {}): Promise<{ sent: num
           .catch(() => {});
         sent++;
       } else {
+        // The claim is released so a transient failure retries next tick —
+        // except a 2024, which is the carrier's opt-out and would just be
+        // rejected again. Record it, drop the bells, and stop.
+        if (/ 2024\)/.test(res.error)) {
+          await prisma.phoneContact.update({ where: { id: contact.id }, data: { optedOutAt: new Date(now) } }).catch(() => {});
+          await prisma.showAlert.deleteMany({ where: { contactId: contact.id } }).catch(() => {});
+        }
         await prisma.showReminder.delete({ where: { id: claim.id } }).catch(() => {});
         failed++;
         console.warn("[textline] reminder send failed:", res.error);
