@@ -2374,15 +2374,20 @@ export default function AdminPage() {
                 <div style={{ marginTop: "0.6rem", display: "flex", alignItems: "flex-end", gap: "0.75rem", flexWrap: "wrap" }}>
                   <label style={{ fontSize: "0.8rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
                     Topic
-                    <input
-                      id="input-alerts-topic"
-                      type="text"
-                      value={alertsTopic}
-                      onChange={(e) => setAlertsTopic(e.target.value)}
-                      placeholder={alertsStatus?.topicSet ? "set — enter a new one to replace" : "e.g. causewayfm-alerts-9f3k2"}
-                      autoComplete="off"
-                      style={{ width: "260px", padding: "0.5rem", borderRadius: "8px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text)", fontFamily: "inherit" }}
-                    />
+                    <span style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+                      <input
+                        id="input-alerts-topic"
+                        type="text"
+                        value={alertsTopic}
+                        onChange={(e) => setAlertsTopic(e.target.value)}
+                        placeholder={alertsStatus?.topicSet ? "set — enter a new one to replace" : "e.g. causewayfm-alerts-9f3k2"}
+                        autoComplete="off"
+                        style={{ width: "260px", padding: "0.5rem", borderRadius: "8px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text)", fontFamily: "inherit" }}
+                      />
+                      {alertsStatus?.topicSet ? (
+                        <span style={{ color: "#34d399", fontSize: "0.8rem", fontWeight: 600, whiteSpace: "nowrap" }}>✓ saved</span>
+                      ) : null}
+                    </span>
                   </label>
                   <label style={{ fontSize: "0.8rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
                     Access token (optional)
