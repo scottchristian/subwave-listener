@@ -84,8 +84,8 @@ export async function startLink(
   const send = opts.send || sendText;
   const res = await send(phone, `${code} is your ${STATION.name} code. It expires in 10 minutes.`);
   if (!res.ok) {
-    // Status only — the provider's body can echo the recipient.
-    console.warn("[textline] code send failed:", res.error);
+    // Status and trace id only — the provider's body can echo the recipient.
+    console.warn("[textline] code send failed:", res.error, res.traceId ? `trace ${res.traceId}` : "");
     if (/not configured/.test(res.error)) {
       return fail("send_failed", "The station's text line isn't switched on. Ask the station owner to turn it on.");
     }
@@ -111,6 +111,19 @@ export async function startLink(
         line
           ? `The station's line can only text numbers that have texted it first. Text the station at ${line}, then try again — on the free Shared Line the owner also has to add your number, so ask if it still fails.`
           : "The station's line can only text numbers that have texted it first. Text the station once, then try again — on the free Shared Line the owner also has to add your number, so ask if it still fails."
+      );
+    }
+    // 2015 on a send with no `from` means no eligible sending line. On the
+    // free Shared Line that is the inbound-first rule with no chat yet; on a
+    // dedicated line it is a fleet restriction only the owner can clear. The
+    // listener's first move is the same either way, and waiting is not it.
+    if (linqCode === "2015") {
+      const line = await stationTextNumber();
+      return fail(
+        "send_failed",
+        line
+          ? `The station's text line can't start a new conversation right now. Text the station at ${line} first, then try again — if it still fails, the station owner needs to check the line in Linq.`
+          : "The station's text line can't start a new conversation right now. Text the station once first, then try again — if it still fails, the station owner needs to check the line in Linq."
       );
     }
     return fail("send_failed", "We couldn't send the code just now. Wait a minute and try again.");
@@ -481,7 +494,7 @@ export async function runReminders(deps: ReminderDeps = {}): Promise<{ sent: num
         }
         await prisma.showReminder.delete({ where: { id: claim.id } }).catch(() => {});
         failed++;
-        console.warn("[textline] reminder send failed:", res.error);
+        console.warn("[textline] reminder send failed:", res.error, res.traceId ? `trace ${res.traceId}` : "");
       }
     }
   }

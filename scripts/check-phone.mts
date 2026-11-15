@@ -403,6 +403,16 @@ try {
     "an inbound-first refusal names the line to text first"
   );
 
+  // 2015 is "no eligible sending line": waiting does not clear it, so the copy
+  // must not tell the listener to come back later.
+  failNext = "send failed (409 2015)";
+  const noLine = await textline.startLink("u5", "0408 344 123", { defaultCountry: "+61", send });
+  ok(
+    noLine.ok === false && /\+61400111222/.test(noLine.message) && /new conversation/i.test(noLine.message),
+    "a no-eligible-line refusal names the line to text first"
+  );
+  ok(noLine.ok === false && !/wait a minute/i.test(noLine.message), "...and does not say to wait");
+
   const deadFetch: any = async () => ({ ok: false, json: async () => ({}) });
   ok(
     (await stationTextNumber({ fetchImpl: deadFetch, now: tn + 11 * 60 * 1000 })) === null,
@@ -426,6 +436,18 @@ try {
   );
   ok(!wire[0].headers["Idempotency-Key"], "...not as an HTTP header Linq ignores");
   ok(wire[0].body.override_optout === true, "the one-shot opt-out override stays top-level");
+
+  const refusedFetch: any = async () => ({
+    ok: false,
+    status: 409,
+    text: async () => JSON.stringify({ code: "2015", trace_id: "trace_abc123" }),
+  });
+  const refusedSend = await sendText("+61400111222", "hello", { fetchImpl: refusedFetch });
+  ok(
+    refusedSend.ok === false && refusedSend.error === "send failed (409 2015)" &&
+      refusedSend.traceId === "trace_abc123",
+    "a failed send keeps Linq's trace id for support"
+  );
 
   delete process.env.LINQ_ENABLED;
   delete process.env.LINQ_API_KEY;

@@ -37,7 +37,8 @@ export function readLinqConfig(): LinqConfig {
 
 export type SendResult =
   | { ok: true; id: string; chatId: string | null }
-  | { ok: false; error: string };
+  /** traceId is Linq's request id — safe to log, and what support asks for. */
+  | { ok: false; error: string; traceId?: string };
 
 export type SendOptions = {
   /** One courtesy confirmation after an opt-out; Linq records every use. */
@@ -74,18 +75,21 @@ export async function sendText(to: string, body: string, opts: SendOptions = {})
       signal: AbortSignal.timeout(SEND_TIMEOUT_MS),
     });
     const text = await res.text().catch(() => "");
-    if (!res.ok) {
-      // Keep the status and Linq's error code; the body can echo the number.
-      let code = "";
-      try {
-        code = String(JSON.parse(text)?.error?.code ?? JSON.parse(text)?.code ?? "");
-      } catch {}
-      return { ok: false, error: `send failed (${res.status}${code ? ` ${code}` : ""})` };
-    }
     let parsed: any = null;
     try {
       parsed = JSON.parse(text);
     } catch {}
+    if (!res.ok) {
+      // Keep the status, Linq's error code and its trace id — never the rest,
+      // since the body can echo the recipient.
+      const code = String(parsed?.error?.code ?? parsed?.code ?? "");
+      const traceId = String(parsed?.trace_id ?? "");
+      return {
+        ok: false,
+        error: `send failed (${res.status}${code ? ` ${code}` : ""})`,
+        ...(traceId ? { traceId } : {}),
+      };
+    }
     return {
       ok: true,
       id: String(parsed?.message?.id || ""),
