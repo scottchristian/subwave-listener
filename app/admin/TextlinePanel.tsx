@@ -28,7 +28,7 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
   const [status, setStatus] = useState<Status | null>(null);
   const [on, setOn] = useState(false);
   const [key, setKey] = useState("");
-  const [msg, setMsg] = useState("");
+  const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
   const [busy, setBusy] = useState<"save" | "setup" | null>(null);
   const [copied, setCopied] = useState(false);
 
@@ -51,7 +51,7 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
 
   const save = async () => {
     setBusy("save");
-    setMsg("");
+    setMsg(null);
     const prev = status;
     setStatus((s) => (s ? { ...s, enabled: on } : s));
     try {
@@ -67,10 +67,10 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
       if (!res.ok) throw new Error(d.error || "could not save");
       setStatus(d);
       setKey("");
-      setMsg("Saved.");
+      setMsg({ kind: "ok", text: "Saved." });
     } catch (e) {
       setStatus(prev);
-      setMsg(`Could not save: ${(e as Error)?.message || "unknown error"}`);
+      setMsg({ kind: "error", text: `Could not save: ${(e as Error)?.message || "unknown error"}` });
     } finally {
       setBusy(null);
     }
@@ -78,7 +78,7 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
 
   const setupWebhook = async () => {
     setBusy("setup");
-    setMsg("");
+    setMsg(null);
     try {
       const res = await fetch("/api/admin/textline/config", {
         method: "POST",
@@ -92,9 +92,9 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
       if (!res.ok) throw new Error(d.error || "could not set up the webhook");
       setStatus(d);
       setKey("");
-      setMsg("Webhook set up — the signing secret is saved and Linq will deliver inbound texts here.");
+      setMsg({ kind: "ok", text: "Webhook set up — the signing secret is saved and Linq will deliver inbound texts here." });
     } catch (e) {
-      setMsg(`Could not set up the webhook: ${(e as Error)?.message || "unknown error"}`);
+      setMsg({ kind: "error", text: `Could not set up the webhook: ${(e as Error)?.message || "unknown error"}` });
     } finally {
       setBusy(null);
     }
@@ -107,12 +107,15 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      setMsg("Couldn't copy — select the URL and copy it by hand.");
+      setMsg({ kind: "error", text: "Couldn't copy — select the URL and copy it by hand." });
     }
   };
 
   const keyReady = !!key.trim() || !!status?.apiKeySet;
   const ready = keyReady && !!status?.secretSet;
+  // A save that changes nothing would still rewrite the env file, so the
+  // button stays off until the switch or the key differs.
+  const dirty = !!status && (on !== status.enabled || key.trim() !== "");
 
   return (
     <CollapsibleSection
@@ -172,12 +175,21 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
             id="btn-textline-save"
             className="primary-btn"
             style={{ width: "auto", padding: "0.55rem 1.1rem", background: "rgba(255,255,255,0.1)", color: "#fff" }}
-            disabled={busy !== null}
+            disabled={busy !== null || !dirty}
             onClick={save}
           >
             {busy === "save" ? "Saving…" : "Save"}
           </button>
         </div>
+        {msg ? (
+          <div
+            id="textline-msg"
+            role={msg.kind === "error" ? "alert" : "status"}
+            style={{ fontSize: "0.875rem", color: msg.kind === "error" ? "#ff6b6b" : "var(--color-accent)" }}
+          >
+            {msg.text}
+          </div>
+        ) : null}
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
           <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Webhook URL</span>
           <span id="textline-webhook-state" style={{ fontSize: "0.8rem", fontWeight: 600, color: status?.secretSet ? "#34d399" : "var(--color-muted)" }}>
@@ -219,11 +231,6 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
                   : "Ready, text line off — tick the box and save to switch it on."
           ) : "Loading…"}
         </div>
-        {msg ? (
-          <div id="textline-msg" style={{ fontSize: "0.875rem", color: "var(--color-accent)" }}>
-            {msg}
-          </div>
-        ) : null}
       </div>
     </CollapsibleSection>
   );

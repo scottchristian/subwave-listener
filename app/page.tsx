@@ -2504,7 +2504,9 @@ export default function Home() {
                 </div>
                 <button id="btn-liked-songs" ref={el => { stepRefs.current[8] = el; }} onClick={() => { setUserMenuOpen(false); setShowLikes(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer", position: tourStep === 8 ? "relative" : "static", zIndex: tourStep === 8 ? 1000 : 1 }}>Liked Songs</button>
                 <button id="btn-shows" onClick={() => { setUserMenuOpen(false); setBellError(""); setShowSchedule(true); if (phoneView === null) void loadPhone(); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>Shows</button>
-                <button id="btn-phone" onClick={() => { setUserMenuOpen(false); setShowPhone(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>{phoneView?.linked ? "Manage phone" : "Link your phone"}</button>
+                {(phoneView?.available || phoneView?.linked) && (
+                  <button id="btn-phone" onClick={() => { setUserMenuOpen(false); setShowPhone(true); }} style={{ display: "block", width: "100%", textAlign: "left", padding: "0.6rem 0.75rem", borderRadius: "8px", fontSize: "0.95rem", color: "var(--color-text)", background: "transparent", border: "none", cursor: "pointer" }}>{phoneView?.linked ? "Manage phone" : "Link your phone"}</button>
+                )}
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.75rem", padding: "0.6rem 0.75rem" }}>
                   <span style={{ fontSize: "0.95rem", color: "var(--color-text)" }}>Time format</span>
                   <span role="group" aria-label="Time format" style={{ display: "inline-flex", borderRadius: "8px", overflow: "hidden", border: "1px solid var(--color-border)" }}>
@@ -3240,7 +3242,7 @@ export default function Home() {
             onHost={(pick) => { setShowSchedule(false); setShowHost(pick); }}
             onClose={() => setShowSchedule(false)}
             bellShowIds={phoneView?.showIds ?? []}
-            canRemind={phoneView === null ? undefined : !!phoneView.linked}
+            canRemind={phoneView === null || (!phoneView.available && !phoneView.linked) ? undefined : !!phoneView.linked}
             bellError={bellError}
             onToggleBell={(showId, next) => void toggleShowBell(showId, next)}
             onNeedPhone={() => { setShowSchedule(false); setShowPhone(true); }}

@@ -88,6 +88,10 @@
   genuine payments create entries.
 - **Per-listener DJ skills**, switched off for everyone by default. You choose
   who gets them; until you do, the feature is not visible to them at all.
+- **An optional text line**, giving listeners a real iMessage/SMS number for
+  requests and show reminders, set up from the dashboard. Leave it off and the
+  phone entry and reminder bells simply never appear. See
+  [Text line](docs/settings.md#text-line).
 
 ---
 
@@ -272,6 +276,21 @@ takes about five minutes. No billing, no redirect URL to configure.
 **If you leave it out.** Links become searches instead of direct links. Nothing
 breaks.
 
+### Linq text line — **optional**
+
+**What it is.** Linq provides a real iMessage/SMS number for your station.
+
+**Why it is here.** Listeners can link their phone, text requests and shout-outs,
+and get a reminder before a show they follow. You set it up from the dashboard:
+sign up with Linq's CLI on your own computer, paste the API key into
+Services → Text Line, and press **Set up webhook**.
+
+**What you need.** A Linq account and API key. The free Shared Line is
+inbound-first: a listener has to text the station before it can text them.
+
+**If you leave it out.** The phone entry and reminder bells do not appear.
+Nothing else changes. `docs/settings.md#text-line` has the steps.
+
 ### Node.js — **required**
 
 **What it is.** The programming language runtime this application is written in.
@@ -297,6 +316,7 @@ which is what the reference deployment runs. Later versions should be fine.
 | Postgres | only if you outgrow SQLite | Optional |
 | Buy Me A Coffee | the tip button | Optional |
 | Spotify credentials | direct track links | Optional |
+| A Linq API key | an iMessage/SMS line for requests and reminders | Optional |
 | A network overlay (e.g. Tailscale) | only if your machines cannot otherwise reach each other | Optional |
 
 You also need somewhere to run it. A small VPS is the usual answer and is what

@@ -913,6 +913,11 @@ function StationStep({ status, setMessage }: { status: Status; setMessage: (m: {
           Two things worth doing next: approve your first listeners from the admin
           dashboard, and check the audio actually plays.
         </p>
+        <p className="muted">
+          Everything else is optional and can wait: tips, push notifications and a
+          text line live under Services in the admin dashboard. Add them later, or
+          skip them entirely — leaving one out only hides that feature.
+        </p>
         <Actions>
           <a className="btn primary" href="/">
             Open your station

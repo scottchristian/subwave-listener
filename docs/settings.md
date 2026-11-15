@@ -412,11 +412,11 @@ a server-to-server token, so nothing ever opens in a browser.
 **What it does.** Gives your listeners a real iMessage/SMS number. They link
 their phone from the Account menu (proven with a six-digit code), text requests
 and shout-outs to the station, and switch on reminders for individual shows.
-Inbound texts land in the admin inbox, and reminders carry a link straight back
-to the station.
+The listener sees the conversation in the Account menu, and reminders carry a
+link straight back to the station.
 
-**Do you need it?** No. Without it the Account menu has no phone entry, the show
-schedule has no reminder bells, and the inbox stays empty.
+**Do you need it?** No. Without it the Account menu has no phone entry and the
+show schedule has no reminder bells. Nothing else changes.
 
 **You sign up on your own computer, not on the server.** The Linq CLI creates
 the account and the number; nothing in this application does that. On a machine
@@ -443,7 +443,8 @@ address must be HTTPS, and the panel shows it with a Copy button.
 
 If you would rather wire it up yourself, create the same subscription in the
 [Linq dashboard](https://dashboard.linqapp.com) or with the CLI, then put the
-resulting `whsec_…` secret in `.env.local` as `LINQ_WEBHOOK_SECRET`.
+resulting `whsec_…` secret in `.env.local` as `LINQ_WEBHOOK_SECRET` and
+restart the station (the file is read at boot).
 
 **Then switch it on:**
 
