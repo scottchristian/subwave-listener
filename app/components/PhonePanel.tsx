@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { STATION } from "@/lib/station";
+import { formatPhoneInput } from "@/lib/phone";
 
 export type PhoneView = {
   available: boolean;
@@ -117,8 +118,7 @@ export default function PhonePanel({
   const getCode = async () => {
     const fresh = await post("/api/phone/start", { phone: number });
     if (!fresh) return;
-    setSentTo(number.trim());
-    setCode("");
+    setSentTo(number.trim());    setCode("");
     await refresh();
     setStep("code");
   };
@@ -343,7 +343,7 @@ export default function PhonePanel({
           inputMode="tel"
           autoComplete="tel"
           value={number}
-          onChange={(e) => setNumber(e.target.value)}
+          onChange={(e) => setNumber(formatPhoneInput(e.target.value, view.defaultCountry))}
           placeholder="0408 344 123"
           className="input-field"
           style={{ flex: 1, minWidth: 0, marginBottom: 0 }}
@@ -352,9 +352,9 @@ export default function PhonePanel({
       <button
         id="btn-get-phone-code"
         onClick={getCode}
-        disabled={busy || number.trim().length < 6}
+        disabled={busy || number.replace(/\D/g, "").length < 6}
         className="primary-btn"
-        style={{ width: "100%", marginBottom: "0.6rem", opacity: busy || number.trim().length < 6 ? 0.6 : 1 }}
+        style={{ width: "100%", marginBottom: "0.6rem", opacity: busy || number.replace(/\D/g, "").length < 6 ? 0.6 : 1 }}
       >
         {busy ? "Sending…" : "Get my code"}
       </button>

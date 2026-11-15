@@ -458,10 +458,12 @@ restart the station (the file is read at boot).
 the configuration file and into the running process, so there is nothing to
 restart.
 
-**The free tier is inbound-first.** On Linq's free Shared Line a number must
-text the station once before the station can text it — including the
-verification code and show reminders. Up to 20 contacts. A paid line removes
-the restriction.
+**The free tier has two limits.** On Linq's free
+[Shared Line](https://linqapp.com) a number must be on the line's contact list
+(up to 20, added with `linq contacts add +61…` in the Linq CLI) before the
+station can message it, and it must text the station once before the station
+can text it — including the verification code and show reminders. A paid
+dedicated line removes both limits.
 
 **What the dashboard will not tell you.** The API key and signing secret are
 never returned by the panel, logged, or included in errors. If the key is

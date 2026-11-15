@@ -89,12 +89,59 @@ export function normalizePhone(raw: string, defaultCountry?: string | null): str
   return s.length >= 8 && s.length <= 15 ? "+" + s : null;
 }
 
+const digitsIn = (s: string) => s.replace(/\D/g, "");
+
+/** Join digits into the given chunk sizes; a partial tail becomes its own chunk. */
+function grouped(digits: string, sizes: number[]): string {
+  const out: string[] = [];
+  let i = 0;
+  for (const size of sizes) {
+    if (i >= digits.length) break;
+    out.push(digits.slice(i, i + size));
+    i += size;
+  }
+  if (i < digits.length) out.push(digits.slice(i));
+  return out.join(" ");
+}
+
+/**
+ * What the listener sees while typing: "0408826585" becomes "0408 826 585".
+ *
+ * Cosmetic only. Spaces are discarded by normalizePhone, so the returned
+ * string is always safe to submit as typed, and every keystroke re-groups
+ * from the digits alone rather than patching spaces into what was there.
+ *
+ * The station's own code is never repeated inside the field — the panel shows
+ * it as a fixed prefix — so a pasted "+61 408 826 585" reads as "408 826 585".
+ * A number from any other country is left exactly as typed: guessing where its
+ * country code ends is how a digit gets moved into the wrong place.
+ */
+export function formatPhoneInput(raw: string, defaultCountry?: string | null): string {
+  const input = String(raw ?? "");
+  if (!input.trim()) return "";
+  const cc = digitsIn(String(defaultCountry || ""));
+  const plus = input.trimStart().startsWith("+");
+  let digits = digitsIn(input);
+  if (!digits) return plus ? "+" : "";
+  if (plus) {
+    if (!cc || !digits.startsWith(cc)) return input;
+    digits = digits.slice(cc.length);
+  }
+  if (cc === "1") {
+    return digits.length > 10 && digits.startsWith("1")
+      ? grouped(digits, [1, 3, 3, 4])
+      : grouped(digits, [3, 3, 4]);
+  }
+  if (cc === "44" && digits.startsWith("0")) return grouped(digits, [5, 6]);
+  if (digits.startsWith("0")) return grouped(digits, [4, 3, 3]);
+  return grouped(digits, [3, 3, 3]);
+}
+
 /**
  * The carrier opt-out keywords. Standard ones must be the WHOLE message and
  * exactly the spelled token; OPT OUT is the exception and tolerates casing,
  * spacing and hyphens. Anything else is an ordinary request.
- */
-const OPT_OUT_EXACT = new Set(["STOP", "UNSUBSCRIBE", "OPTOUT", "CANCEL", "END", "QUIT"]);
+ */const OPT_OUT_EXACT = new Set(["STOP", "UNSUBSCRIBE", "OPTOUT", "CANCEL", "END", "QUIT"]);
 
 export function isOptOut(body: string): boolean {
   const text = String(body || "").trim();

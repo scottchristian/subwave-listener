@@ -83,7 +83,22 @@ export async function startLink(
   const code = sixDigits();
   const send = opts.send || sendText;
   const res = await send(phone, `${code} is your ${STATION.name} code. It expires in 10 minutes.`);
-  if (!res.ok) return fail("send_failed", "We couldn't send the code. Check the number and try again.");
+  if (!res.ok) {
+    // Status only — the provider's body can echo the recipient.
+    console.warn("[textline] code send failed:", res.error);
+    if (/not configured/.test(res.error)) {
+      return fail("send_failed", "The station's text line isn't switched on. Ask the station owner to turn it on.");
+    }
+    // 403/409/2027 are the shared line's policy refusals: a free Linq line
+    // only messages numbers it has allowed, and only after they text first.
+    if (/\((?:403|409|2027)\b/.test(res.error)) {
+      return fail(
+        "send_failed",
+        "The text line can't message that number yet. On Linq's free shared line the station owner has to add your number first — ask them, then try again."
+      );
+    }
+    return fail("send_failed", "We couldn't send the code just now. Wait a minute and try again.");
+  }
 
   await prisma.phoneVerification.upsert({
     where: { userId },

@@ -126,8 +126,11 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
     >
       <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
         <div style={{ fontSize: "0.85rem", color: "var(--color-muted)", lineHeight: 1.5, maxWidth: "600px" }}>
-          Nothing on this page creates a Linq account. Install the Linq CLI on your own
-          computer and run <code>linq signup</code> once — it provisions the number and
+          Linq (<a href="https://linqapp.com" target="_blank" rel="noreferrer" style={{ color: "var(--color-accent)" }}>linqapp.com</a>)
+          provides the number and the messaging API — read about it there before you start.
+          Nothing on this page creates a Linq account. Install the{" "}
+          <a href="https://github.com/linq-team/linq-cli" target="_blank" rel="noreferrer" style={{ color: "var(--color-accent)" }}>Linq CLI</a>{" "}
+          on your own computer and run <code>linq signup</code> once — it provisions the number and
           prints an API key. Paste that key here and press <strong>Set up webhook</strong>:
           the app registers this station&rsquo;s address with Linq for inbound texts and
           stores the signing secret, which Linq only ever shows once. A webhook already
@@ -217,8 +220,10 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
           </button>
         </div>
         <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", lineHeight: 1.5 }}>
-          Linq&rsquo;s free Shared Line is inbound-first: a number has to text the station before
-          the station can text it a code or a reminder. A paid line removes that restriction.
+          Linq&rsquo;s free Shared Line is limited: it only messages numbers on its contact list
+          (up to 20, added in Linq with <code>linq contacts add +61…</code>), and a number has
+          to text the station before the station can text it a code or a reminder. A paid
+          dedicated line removes both limits.
         </div>
         <div id="textline-status" style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>
           {status ? (

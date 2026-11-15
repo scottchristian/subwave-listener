@@ -78,7 +78,7 @@ try {
   );
 
   const { default: prisma } = await import("../lib/prisma.ts");
-  const { normalizePhone, dialCodeForTimezone, isOptOut } = await import("../lib/phone.ts");
+  const { normalizePhone, dialCodeForTimezone, isOptOut, formatPhoneInput } = await import("../lib/phone.ts");
   const { verifyWebhookSignature } = await import("../lib/linq.ts");
   const textline = await import("../lib/textline.ts");
 
@@ -99,26 +99,55 @@ try {
   ok(!isOptOut("stop"), "lower-case stop is a song named stop, not an opt-out");
   ok(!isOptOut("please STOP the music"), "opt-out is the whole message, not a word in one");
 
+  // ----------------------------------------------------------- formatting
+  ok(formatPhoneInput("0408826585", "+61") === "0408 826 585", "a national number is grouped 4-3-3");
+  ok(formatPhoneInput("0408 826 585", "+61") === "0408 826 585", "re-formatting is idempotent");
+  ok(formatPhoneInput("04086", "+61") === "0408 6", "a partial number groups as far as it goes");
+  ok(formatPhoneInput("(04) 0834-4123", "+61") === "0408 344 123", "punctuation is replaced by spaces");
+  ok(formatPhoneInput("408826585", "+61") === "408 826 585", "a mobile typed without the trunk zero groups 3-3-3");
+  ok(formatPhoneInput("+61 408 826 585", "+61") === "408 826 585", "the station's own code is left to the prefix chip");
+  ok(formatPhoneInput("4088265855", "+1") === "408 826 5855", "US numbers group 3-3-4");
+  ok(formatPhoneInput("07911123456", "+44") === "07911 123456", "UK numbers group 5-6");
+  ok(formatPhoneInput("+1 408 826 5855", "+61") === "+1 408 826 5855", "another country's number is never rearranged");
+  ok(formatPhoneInput("", "+61") === "" && formatPhoneInput("+", "+61") === "+", "empty and lone plus survive");
+  ok(normalizePhone(formatPhoneInput("0408826585", "+61"), "+61") === "+61408826585", "the formatted value still normalizes — spaces are ignored");
+
   // ---------------------------------------------------------------- link
   await prisma.user.create({ data: { id: "u1" } });
 
   const sent: { to: string; body: string; opts: any }[] = [];
-  let failNext = false;
+  let failNext: string | null = null;
   const send: any = async (to: string, body: string, opts: any = {}) => {
     if (failNext) {
-      failNext = false;
-      return { ok: false, error: "network" };
+      const error = failNext;
+      failNext = null;
+      return { ok: false, error };
     }
     sent.push({ to, body, opts });
     return { ok: true, id: `m${sent.length}`, chatId: "c1" };
   };
 
-  failNext = true;
+  failNext = "send failed (network)";
   const failedSend = await textline.startLink("u1", "0408 344 123", { defaultCountry: "+61", send });
   ok(failedSend.ok === false && failedSend.code === "send_failed", "a failed send is reported as such");
   ok(
+    !/check the number/i.test(failedSend.ok === false ? failedSend.message : ""),
+    "...without blaming the number, which is not what a network failure means"
+  );
+  ok(
     (await prisma.phoneVerification.findUnique({ where: { userId: "u1" } })) === null,
     "...and leaves no pending code, so no code box is shown"
+  );
+
+  // A shared-line policy refusal is the one failure a listener can act on.
+  await prisma.user.create({ data: { id: "u0" } });
+  failNext = "send failed (403 2027)";
+  const blocked = await textline.startLink("u0", "0408 344 123", { defaultCountry: "+61", send });
+  ok(blocked.ok === false && blocked.code === "send_failed", "a 403 from Linq is a send failure");
+  ok(
+    blocked.ok === false && /add your number/i.test(blocked.message),
+    "...and says the owner has to add the number on a shared line",
+    blocked.ok === false ? blocked.message : blocked
   );
 
   const started = await textline.startLink("u1", "0408 344 123", { defaultCountry: "+61", send });

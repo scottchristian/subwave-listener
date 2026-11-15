@@ -285,8 +285,10 @@ and get a reminder before a show they follow. You set it up from the dashboard:
 sign up with Linq's CLI on your own computer, paste the API key into
 Services → Text Line, and press **Set up webhook**.
 
-**What you need.** A Linq account and API key. The free Shared Line is
-inbound-first: a listener has to text the station before it can text them.
+**What you need.** A Linq account and API key. The free
+[Shared Line](https://linqapp.com) is limited: each listener's number must be on
+the line's contact list (20 max, added in the Linq CLI), and they have to text
+the station before it can text them. A paid dedicated line has neither limit.
 
 **If you leave it out.** The phone entry and reminder bells do not appear.
 Nothing else changes. `docs/settings.md#text-line` has the steps.
