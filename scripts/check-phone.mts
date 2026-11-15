@@ -760,6 +760,20 @@ try {
     "...and an in-flight row is left alone"
   );
 
+  // A follow-up Linq refuses leaves the row failed, not falsely replied.
+  const at13 = at12 + 2 * 60_000;
+  await addText("Play some Divinyls", at13, "booth-13");
+  const flakySend: any = async (to: string, body: string, sendOpts: any = {}) =>
+    body === booth.BOOTH_ACK
+      ? send(to, body, sendOpts)
+      : { ok: false, error: "send failed (429)" };
+  hostReply = { status: 429, body: { message: "Easy there." } };
+  await boothrunner.runBoothTick({ now: at13, send: flakySend, fetchImpl: fakeFetch });
+  ok(
+    (await prisma.textlineRequest.findFirst({ where: { body: "Play some Divinyls" } }))!.status === "failed",
+    "a follow-up Linq refuses is recorded as failed, not replied"
+  );
+
   // Boot: a restart cannot resume what was on its way, but a queued text is
   // still the listener's to send.
   await prisma.textlineRequest.deleteMany();
