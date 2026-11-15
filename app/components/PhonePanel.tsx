@@ -34,6 +34,9 @@ const fmtTime = (iso: string) => {
     : "";
 };
 
+/** Matches RESEND_WAIT_MS in lib/textline.ts; the server refuses any earlier. */
+const RESEND_AFTER_MS = 10_000;
+
 /**
  * Link a phone in the order the free line allows: the number is entered here,
  * then the listener texts the station, then the station texts the bind code
@@ -58,6 +61,9 @@ export default function PhonePanel({
   const [countryPick, setCountryPick] = useState<string | null>(null);
   const [code, setCode] = useState("");
   const [busy, setBusy] = useState(false);
+  const [resending, setResending] = useState(false);
+  const [resendLeft, setResendLeft] = useState(RESEND_AFTER_MS / 1000);
+  const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [confirming, setConfirming] = useState(false);
   const dial = countryPick ?? view?.defaultCountry ?? "";
@@ -105,6 +111,17 @@ export default function PhonePanel({
     return () => clearInterval(timer);
   }, [step, refresh]);
 
+  // The code step only offers a resend once the first send has had time to
+  // arrive; the server refuses anything earlier with the same wait.
+  useEffect(() => {
+    if (step !== "code" || !view?.codeSentAt) return;
+    const sentAt = Date.parse(view.codeSentAt);
+    const tick = () => setResendLeft(Math.max(0, Math.ceil((sentAt + RESEND_AFTER_MS - Date.now()) / 1000)));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [step, view?.codeSentAt]);
+
   const post = async (path: string, body: Record<string, unknown>) => {
     setBusy(true);
     setError("");
@@ -143,6 +160,27 @@ export default function PhonePanel({
     if (!fresh) return;
     await refresh();
     setStep("manage");
+  };
+
+  const resend = async () => {
+    setResending(true);
+    setNotice("");
+    setError("");
+    try {
+      const res = await fetch("/api/phone/resend", { method: "POST" });
+      const data: any = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setError(data?.message || "Couldn't resend the code. Try again.");
+        return;
+      }
+      setCode("");
+      await refresh();
+      setNotice("We sent it again.");
+    } catch {
+      setError("Couldn't reach the station. Check your connection and try again.");
+    } finally {
+      setResending(false);
+    }
   };
 
   const unlink = async () => {
@@ -324,9 +362,25 @@ export default function PhonePanel({
         >
           {busy ? "Checking…" : "Verify"}
         </button>
+        {resendLeft === 0 && (
+          <button
+            id="btn-phone-resend"
+            onClick={resend}
+            disabled={resending}
+            className="primary-btn"
+            style={{ width: "100%", marginBottom: "0.5rem", background: "rgba(255,255,255,0.1)", color: "#fff", opacity: resending ? 0.6 : 1 }}
+          >
+            {resending ? "Sending…" : "Resend code"}
+          </button>
+        )}
+        {notice && (
+          <p role="status" style={{ fontSize: "0.85rem", color: "#34d399", margin: "0 0 0.5rem" }}>
+            {notice}
+          </p>
+        )}
         <button
           id="btn-phone-different-number"
-          onClick={() => { setStep("number"); setError(""); setCode(""); }}
+          onClick={() => { setStep("number"); setError(""); setCode(""); setNotice(""); }}
           style={{ display: "block", width: "100%", padding: "0.5rem", background: "none", border: "none", color: "var(--color-muted)", fontSize: "0.85rem", cursor: "pointer" }}
         >
           Use a different number
@@ -385,7 +439,7 @@ export default function PhonePanel({
         </p>
         <button
           id="btn-phone-different-number"
-          onClick={() => { setStep("number"); setError(""); }}
+          onClick={() => { setStep("number"); setError(""); setNotice(""); }}
           style={{ display: "block", width: "100%", padding: "0.5rem", background: "none", border: "none", color: "var(--color-muted)", fontSize: "0.85rem", cursor: "pointer" }}
         >
           Use a different number

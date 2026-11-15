@@ -5,8 +5,12 @@ export function linkErrorStatus(code: string): number {
   switch (code) {
     case "already_linked":
     case "phone_taken":
+    case "awaiting_text":
       return 409;
+    case "send_failed":
+      return 502;
     case "too_many":
+    case "too_soon":
       return 429;
     case "expired":
       return 410;

@@ -218,6 +218,39 @@ try {
   await textline.handleInbound({ phone: "+61408555123", body: "Hi again", providerId: "bind-fail-2" }, { send });
   ok(sent.length === 2, "...so the next text sends the code");
 
+  // Resend: the panel's button after ten seconds, and the server's own gate.
+  await prisma.user.create({ data: { id: "u5" } });
+  await textline.beginLink("u5", "0408 777 123", { defaultCountry: "+61" });
+  await textline.handleInbound({ phone: "+61408777123", body: "Hi", providerId: "resend-1" }, { send });
+  const firstCode = String(sent[sent.length - 1].body.match(/\b(\d{6})\b/)?.[1] || "");
+  const beforeResend = sent.length;
+  const tooSoon = await textline.resendLinkCode("u5", { send });
+  ok(tooSoon.ok === false && tooSoon.code === "too_soon", "a resend inside ten seconds is refused");
+  ok(sent.length === beforeResend, "...and sends nothing");
+  const resent = await textline.resendLinkCode("u5", { send, now: Date.now() + textline.RESEND_WAIT_MS });
+  ok(resent.ok === true && sent.length === beforeResend + 1, "after ten seconds a new code is sent");
+  const secondCode = String(sent[sent.length - 1].body.match(/\b(\d{6})\b/)?.[1] || "");
+  const stale = await textline.verifyLink("u5", firstCode, { send });
+  ok(stale.ok === false, "the previous code stops working once a new one is sent");
+
+  failNext = "send failed (503)";
+  const failedResend = await textline.resendLinkCode("u5", { send, now: Date.now() + textline.RESEND_WAIT_MS * 2 });
+  ok(failedResend.ok === false && failedResend.code === "send_failed", "a failed resend is reported");
+  ok((await textline.phoneStatus("u5")).codeSentAt !== null, "...and the previous code stays live");
+  const verifiedResend = await textline.verifyLink("u5", secondCode, { send });
+  ok(verifiedResend.ok === true, "the code from the successful resend links the phone");
+  await textline.unlinkPhone("u5");
+
+  await prisma.user.create({ data: { id: "u6" } });
+  await textline.beginLink("u6", "0408 666 123", { defaultCountry: "+61" });
+  const armedCount = sent.length;
+  const noCodeYet = await textline.resendLinkCode("u6", { send });
+  ok(noCodeYet.ok === false && noCodeYet.code === "awaiting_text", "a resend before any code is sent asks for the text instead");
+  ok(sent.length === armedCount, "...without sending");
+  const expiredResend = await textline.resendLinkCode("u6", { send, now: Date.now() + textline.AWAIT_TEXT_MS + 1000 });
+  ok(expiredResend.ok === false && expiredResend.code === "expired", "an expired link cannot resend");
+  ok((await prisma.phoneVerification.findUnique({ where: { userId: "u6" } })) === null, "...and its pending row is gone");
+
   // A listener who picks another country keeps that country's code: the
   // station's timezone is only the default, not the rule.
   await prisma.user.create({ data: { id: "u3" } });

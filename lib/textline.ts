@@ -30,6 +30,12 @@ export const REMINDER_LEAD_MIN = 15;
  * number typed once is not still armed tomorrow.
  */
 export const AWAIT_TEXT_MS = 30 * 60 * 1000;
+/**
+ * The shortest gap between two code sends for one phone. The panel hides its
+ * resend button for this long and the server refuses earlier, so an impatient
+ * tap cannot bill the station for a burst of texts.
+ */
+export const RESEND_WAIT_MS = 10 * 1000;
 /** Inbound records are pruned here; they answer "did the text reach us?". */
 const INBOUND_KEEP_MS = 24 * 60 * 60 * 1000;
 
@@ -118,6 +124,48 @@ export async function beginLink(
     create: { userId, phone, codeHash: "", expiresAt: new Date(now + AWAIT_TEXT_MS) },
     update: { phone, codeHash: "", attempts: 0, createdAt: new Date(now), expiresAt: new Date(now + AWAIT_TEXT_MS) },
   });
+  return { ok: true };
+}
+
+/**
+ * Send the live bind code again. Only valid once a code has gone out: that
+ * send is what opened the chat, so from then on the line can reply without
+ * waiting for another text. A failed resend restores the previous code, which
+ * may still be on its way or already on the phone.
+ */
+export async function resendLinkCode(userId: string, opts: { send?: Send; now?: number } = {}): Promise<LinkResult> {
+  const now = opts.now ?? Date.now();
+  const pending = await prisma.phoneVerification.findUnique({ where: { userId } });
+  if (!pending) return fail("no_code", "There's no code waiting. Enter your number and text us to get one.");
+  if (pending.expiresAt.getTime() < now) {
+    await prisma.phoneVerification.deleteMany({ where: { userId } });
+    return fail("expired", "That code has expired. Enter your number again and text us for a new one.");
+  }
+  if (!pending.codeHash) {
+    return fail("awaiting_text", "We haven't texted you yet. Send the station a text from that number and the code comes back.");
+  }
+  if (now - pending.createdAt.getTime() < RESEND_WAIT_MS) {
+    return fail("too_soon", "Give it a few seconds, then try again.");
+  }
+
+  const code = sixDigits();
+  const claim = await prisma.phoneVerification.updateMany({
+    where: { userId, codeHash: pending.codeHash },
+    data: { codeHash: hashCode(code), attempts: 0, createdAt: new Date(now), expiresAt: new Date(now + LINK_CODE_TTL_MS) },
+  });
+  if (claim.count !== 1) return fail("no_code", "There's no code waiting. Enter your number and text us to get one.");
+
+  const res = await (opts.send || sendText)(pending.phone, `${code} is your ${STATION.name} bind code. It expires in 10 minutes.`);
+  if (!res.ok) {
+    await prisma.phoneVerification
+      .updateMany({
+        where: { userId, codeHash: hashCode(code) },
+        data: { codeHash: pending.codeHash, expiresAt: pending.expiresAt },
+      })
+      .catch(() => {});
+    console.warn("[textline] bind code resend failed:", res.error, res.traceId ? `trace ${res.traceId}` : "");
+    return fail("send_failed", "The station couldn't send a new code. Try again in a moment.");
+  }
   return { ok: true };
 }
 
