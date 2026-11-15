@@ -64,6 +64,9 @@
   list if they would rather not be identified.
 - **Song requests**, with an optional name, sent to whoever is running the
   station.
+- **Text the station**, if the owner has set up a text line. A listener links
+  their phone by texting the station, then can text requests and shout-outs and
+  switch on a reminder before a show they follow.
 - **Installable.** It can be added to a phone or computer's home screen and then
   behaves like a normal app, including lock-screen controls showing the current
   track.
@@ -89,8 +92,11 @@
 - **Per-listener DJ skills**, switched off for everyone by default. You choose
   who gets them; until you do, the feature is not visible to them at all.
 - **An optional text line**, giving listeners a real iMessage/SMS number for
-  requests and show reminders, set up from the dashboard. Leave it off and the
-  phone entry and reminder bells simply never appear. See
+  requests and show reminders, set up from the dashboard. While the station is
+  live, a listener's text reaches the booth, which replies with what it will
+  play and roughly when — or the listener is told the booth is busy after a
+  timeout you set (60 seconds by default). Leave the line off and the phone
+  entry and reminder bells simply never appear. See
   [Text line](docs/settings.md#text-line).
 
 ---
@@ -278,23 +284,53 @@ breaks.
 
 ### Linq text line — **optional**
 
-**What it is.** Linq provides a real iMessage/SMS number for your station.
+**What it is.** [Linq](https://linqapp.com) provides a real iMessage/SMS number
+for your station, and the API this application uses to send and receive texts.
 
-**Why it is here.** Listeners can link their phone, text requests and shout-outs,
-and get a reminder before a show they follow. You set it up from the dashboard:
-sign up with Linq's CLI on your own computer, paste the API key into
-Services → Text Line, and press **Set up webhook**.
+**Why it is here.** It turns the station into something a listener can text.
+Once a listener has linked their phone, they can:
 
-**What you need.** A Linq account and API key. The free
-[Shared Line](https://linqapp.com) works inbound-first: each listener's number
-has to be on the line's contact list (20 max, `linq contacts add +61…` in the
-Linq CLI) and has to text the station once before the station can text it.
-Adding a number only lets it text in — it does not unlock outbound. When a code
-send is refused, the listener sees the station's own number and can text it
-first. A paid dedicated line sends first contact directly, with no list.
+- **Text requests and shout-outs.** While somebody is listening, the text goes
+  to the booth. The listener gets an immediate "got it" reply, then the booth's
+  own answer — what will play, and roughly when — appended with a time when the
+  booth did not give one itself. If the booth has not answered within the
+  timeout, the listener is told it is flat out and will get to the request when
+  it can. A text from a number that has not verified, or one that arrives while
+  nobody is listening, gets one honest reply (verify in the app / no one is
+  listening right now) rather than silence.
+- **Switch on reminders** for individual shows. The reminder arrives 15 minutes
+  before the show starts and links back to the station.
+- **Text STOP** to opt out. It is honoured silently and never retried.
 
-**If you leave it out.** The phone entry and reminder bells do not appear.
-Nothing else changes. `docs/settings.md#text-line` has the steps.
+**What you need.** A Linq account and API key. You create both yourself with
+Linq's CLI on your own computer — nothing on the server signs up for you:
+
+```bash
+npm install -g @linqapp/cli@latest
+linq signup --email you@example.com          # emails a six-digit code
+linq signup --email you@example.com --code 123456 --name "Your Name"
+linq tokens show                             # prints the API key
+```
+
+Then paste the key into **Services → Text Line** and press **Set up webhook**.
+The panel registers `https://your-station-address/api/linq/webhook` with Linq
+for inbound texts, stores the signing secret Linq shows once, and never shows
+either credential back. Tick *Turn on the text line* and save to finish.
+
+**How long the booth has to answer** is a setting in the same panel — *Booth
+reply timeout*, 60 seconds by default, adjustable from 10 to 600. It applies to
+new texts, not ones already waiting.
+
+**The free tier has two limits.** On Linq's free
+[Shared Line](https://linqapp.com) a listener's number has to be on the line's
+contact list (up to 20, added with `linq contacts add +61…` in the Linq CLI) and
+has to text the station once before the station can text it. Adding a number
+only lets it text in; it does not unlock outbound. That is why linking a phone
+is text-first: the listener enters their number, texts the station, and the bind
+code arrives as the reply. A paid dedicated line has neither limit.
+
+**If you leave it out.** The phone entry and reminder bells do not appear, and
+nothing else changes. `docs/settings.md#text-line` has the full setup.
 
 ### Node.js — **required**
 

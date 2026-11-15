@@ -410,10 +410,12 @@ a server-to-server token, so nothing ever opens in a browser.
 ## Text line
 
 **What it does.** Gives your listeners a real iMessage/SMS number. They link
-their phone from the Account menu (proven with a six-digit code), text requests
-and shout-outs to the station, and switch on reminders for individual shows.
-The listener sees the conversation in the Account menu, and reminders carry a
-link straight back to the station.
+their phone from the Account menu, text requests and shout-outs to the station,
+and switch on reminders for individual shows. The listener sees the conversation
+in the Account menu, and reminders carry a link straight back to the station.
+While somebody is listening, a texted request is forwarded to the booth: the
+listener gets an immediate acknowledgement, then the booth's answer with a rough
+time, or a note that the booth is flat out once the timeout below passes.
 
 **Do you need it?** No. Without it the Account menu has no phone entry and the
 show schedule has no reminder bells. Nothing else changes.
@@ -461,12 +463,24 @@ restart.
 **The free tier has two limits.** On Linq's free
 [Shared Line](https://linqapp.com) a number has to be on the line's contact list
 (up to 20, added with `linq contacts add +61…` in the Linq CLI) and has to text
-the station once before the station can text it — including the verification
-code and show reminders. Adding a number only lets it text in; it does not
-unlock outbound. So the first code send to a new number is refused, and the
-listener is shown the station's own number to text first. The panel cannot add
+the station once before the station can text it — including the bind code and
+show reminders. Adding a number only lets it text in; it does not unlock
+outbound. Linking a phone is text-first for exactly this reason: the listener
+enters their number, texts the station, and the code arrives as the reply, so
+the station only ever answers a number that just texted it. The panel cannot add
 contacts for you: there is no Partner API for the list, so use the CLI. A paid
 dedicated line has neither limit.
+
+**Booth replies.** A text from a verified listener while the station is live is
+queued and forwarded to Sub/Wave. The listener is acknowledged at once, then
+gets the booth's answer plus "You should hear it in the next N minutes" when the
+queue forecast allows it. If the booth does not answer within *Booth reply
+timeout* — 60 seconds by default, adjustable from 10 to 600 — the listener is
+told the booth is flat out. One text per minute per number. A number that has
+not verified is told to verify in the app, and a text that arrives while nobody
+is listening is told the station is offline; both are answered at most once an
+hour. A *STOP* is honoured with silence. Saving the timeout applies to new
+texts, not ones already waiting.
 
 **What the dashboard will not tell you.** The API key and signing secret are
 never returned by the panel, logged, or included in errors. If the key is
