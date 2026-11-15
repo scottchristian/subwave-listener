@@ -51,6 +51,15 @@ export async function register() {
   }
 
   try {
+    // A texted request is acknowledged in seconds and answered up to a minute
+    // later, so the booth conversation cannot live inside the webhook.
+    const { startBoothWorker } = await import("./lib/boothrunner");
+    await startBoothWorker();
+  } catch (err) {
+    console.warn("[boot] booth worker not started:", message(err));
+  }
+
+  try {
     // One tick a minute: automatic updates inside the operator's window, and
     // nothing else. Reads settings fresh each tick so a change applies without
     // a restart; fails closed on anything unreadable.

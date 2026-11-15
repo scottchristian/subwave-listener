@@ -19,6 +19,8 @@ import { isOptOut, normalizePhone } from "./phone";
 import { readLinqConfig, sendText, type SendResult } from "./linq";
 import { listenerCount } from "./update-run";
 import { fetchStationSchedule, type ScheduleShow, type StationSchedule } from "./station-schedule";
+import { enqueueBoothRequest } from "./boothrunner";
+import { BOOTH_HOLD_MS, BOOTH_HOLD_TIGHT, UNAUTHORISED_REPLY } from "./booth";
 
 export const LINK_CODE_TTL_MS = 10 * 60 * 1000;
 export const MAX_CODE_ATTEMPTS = 5;
@@ -44,8 +46,13 @@ const INBOUND_KEEP_MS = 24 * 60 * 60 * 1000;
  * One an hour per contact: a burst of texts while the room is empty is still
  * one SMS bill, not five.
  */
-export const OFFLINE_REPLY = `The station isn't online at the moment. Come back later and send your message again.`;
+export const OFFLINE_REPLY = `No one's listening at the moment — the station is offline. Try again later when someone's tuned in.`;
 export const OFFLINE_REPLY_MS = 60 * 60 * 1000;
+/**
+ * A number the station does not know is told how to link, at most once an hour.
+ * Without the cap the line could be used to make the station text on demand.
+ */
+export const UNAUTHORISED_REPLY_MS = 60 * 60 * 1000;
 
 export type Send = (to: string, body: string, opts?: { overrideOptout?: boolean; idempotencyKey?: string }) => Promise<SendResult>;
 
@@ -319,9 +326,50 @@ export type InboundEvent = {
 };
 
 /**
+ * One reply an hour to a number the station does not know. Claimed on the
+ * inbound row before sending, so two deliveries of one text cannot both reply;
+ * a failed send hands the claim back for the next text to retry.
+ */
+async function replyToStranger(
+  inboundRow: { id: string } | null,
+  phone: string,
+  text: string,
+  now: Date,
+  opts: { send?: Send }
+): Promise<boolean> {
+  if (!inboundRow) return false;
+  const recent = await prisma.textlineInbound.findFirst({
+    where: {
+      phone,
+      repliedAt: { gte: new Date(now.getTime() - UNAUTHORISED_REPLY_MS) },
+    },
+    select: { id: true },
+  });
+  if (recent) return false;
+
+  const claim = await prisma.textlineInbound.updateMany({
+    where: { id: inboundRow.id, repliedAt: null },
+    data: { repliedAt: now },
+  });
+  if (claim.count !== 1) return false;
+
+  const res = await (opts.send || sendText)(phone, text);
+  if (!res.ok) {
+    await prisma.textlineInbound
+      .update({ where: { id: inboundRow.id }, data: { repliedAt: null } })
+      .catch(() => {});
+    console.warn("[textline] unauthorised-number reply failed:", res.error);
+    return false;
+  }
+  return true;
+}
+
+/**
  * An inbound text. A number entered in the app but not yet linked gets its
- * bind code back; any other unknown number is ignored. STOP from a linked
- * number records the opt-out, clears every bell, and sends one confirmation.
+ * bind code back; any other unknown number is told how to link (once an hour).
+ * STOP from a linked number records the opt-out, clears every bell, and sends
+ * one confirmation. A verified number's text goes to the booth while the
+ * station is live, and gets the offline note when nobody is tuned in.
  */
 export async function handleInbound(
   evt: InboundEvent,
@@ -337,27 +385,54 @@ export async function handleInbound(
   // Proof that a text reached the line, one row per delivery — this is what
   // answers "did their text ever arrive?". providerId is unique, so an
   // at-least-once redelivery adds nothing; old rows are pruned here because
-  // this is their only writer.
+  // this is their only writer. `repliedAt` is the once-an-hour guard for the
+  // unknown-number reply, which has no contact row to hang a message on.
   await prisma.textlineInbound
     .deleteMany({ where: { receivedAt: { lt: new Date(now.getTime() - INBOUND_KEEP_MS) } } })
     .catch(() => {});
-  await prisma.textlineInbound
+  const inboundRow = await prisma.textlineInbound
     .create({ data: { phone, providerId: evt.providerId ?? null } })
     .catch(() => null);
 
-  const contact = await prisma.phoneContact.findUnique({ where: { phone }, select: { id: true, optedOutAt: true } });
+  const contact = await prisma.phoneContact.findUnique({
+    where: { phone },
+    select: {
+      id: true,
+      userId: true,
+      verifiedAt: true,
+      optedOutAt: true,
+      user: { select: { nickname: true } },
+    },
+  });
   if (!contact) {
+    // A text asking us to stop from a number that never linked is already
+    // honoured by silence — it has nothing to unsubscribe from, and answering
+    // would be a text it asked us not to send.
+    if (isOptOut(body)) return { handled: true };
+
     // A number entered in the app is waiting for its bind code, and this text
     // is what releases it: the station cannot open the conversation itself.
     // Claim the row before sending so two deliveries of one text cannot text
     // two different codes.
-    const waiting = isOptOut(body)
-      ? null
-      : await prisma.phoneVerification.findFirst({
-          where: { phone, codeHash: "", expiresAt: { gt: now } },
-          select: { userId: true },
-        });
-    if (!waiting) return { handled: false };
+    const waiting = await prisma.phoneVerification.findFirst({
+      where: { phone, codeHash: "", expiresAt: { gt: now } },
+      select: { userId: true },
+    });
+    if (!waiting) {
+      // The code is already out and the app is waiting for it: a nudge from the
+      // listener releases no second code, and "not authorised" would be wrong
+      // for a number mid-link.
+      const midLink = await prisma.phoneVerification.findFirst({
+        where: { phone, codeHash: { not: "" }, expiresAt: { gt: now } },
+        select: { id: true },
+      });
+      if (midLink) return { handled: true };
+      // Someone found the number without linking it. Silence left them
+      // guessing; the hourly cap keeps the line from becoming a text-on-demand
+      // oracle.
+      await replyToStranger(inboundRow, phone, UNAUTHORISED_REPLY, now, opts);
+      return { handled: true };
+    }
 
     const code = sixDigits();
     const claim = await prisma.phoneVerification.updateMany({
@@ -416,27 +491,63 @@ export async function handleInbound(
 
   await log("in", body, evt.providerId ?? null);
 
+  // An opted-out contact gets nothing: no request, no offline note, no ack.
+  if (contact.optedOutAt) return { handled: true };
+
+  // Only a verified number reaches the booth. A contact row exists the moment
+  // the number is entered, so verifiedAt is the gate, not the row.
+  if (!contact.verifiedAt) {
+    await replyToStranger(inboundRow, phone, UNAUTHORISED_REPLY, now, opts);
+    return { handled: true };
+  }
+
   // Nobody on air: the request would go unheard, so say so. Only a known zero
   // triggers this — an unreadable count must not tell anyone the station is
-  // down. Opted-out contacts get nothing, exactly like every other send.
-  if (!contact.optedOutAt) {
-    const listeners = await (opts.listeners || (() => listenerCount(5000)))();
-    if (listeners === 0) {
-      const recent = await prisma.textMessage.findFirst({
-        where: {
-          contactId: contact.id,
-          direction: "out",
-          body: OFFLINE_REPLY,
-          createdAt: { gte: new Date(now.getTime() - OFFLINE_REPLY_MS) },
-        },
-        select: { id: true },
-      });
-      if (!recent) {
-        const res = await (opts.send || sendText)(phone, OFFLINE_REPLY);
-        if (res.ok) await log("out", OFFLINE_REPLY, res.id || null);
-        else console.warn("[textline] offline reply failed:", res.error);
-      }
+  // down.
+  const listeners = await (opts.listeners || (() => listenerCount(5000)))();
+  if (listeners === 0) {
+    const recent = await prisma.textMessage.findFirst({
+      where: {
+        contactId: contact.id,
+        direction: "out",
+        body: OFFLINE_REPLY,
+        createdAt: { gte: new Date(now.getTime() - OFFLINE_REPLY_MS) },
+      },
+      select: { id: true },
+    });
+    if (!recent) {
+      const res = await (opts.send || sendText)(phone, OFFLINE_REPLY);
+      if (res.ok) await log("out", OFFLINE_REPLY, res.id || null);
+      else console.warn("[textline] offline reply failed:", res.error);
     }
+    return { handled: true };
+  }
+
+  // On air: hand it to the booth. The worker sends the instant ack and the
+  // follow-up, so this handler stays fast enough for the webhook's retry clock.
+  const recentRequest = await prisma.textlineRequest.findFirst({
+    where: {
+      contactId: contact.id,
+      createdAt: { gte: new Date(now.getTime() - BOOTH_HOLD_MS) },
+    },
+    select: { id: true },
+  });
+  if (recentRequest) {
+    const res = await (opts.send || sendText)(phone, BOOTH_HOLD_TIGHT);
+    if (res.ok) await log("out", BOOTH_HOLD_TIGHT, res.id || null);
+    else console.warn("[textline] hold-tight reply failed:", res.error);
+    return { handled: true };
+  }
+
+  try {
+    await enqueueBoothRequest({
+      contactId: contact.id,
+      phone,
+      name: contact.user?.nickname || "Anonymous Listener",
+      body,
+    });
+  } catch (err) {
+    console.warn("[textline] could not queue the request for the booth:", err);
   }
   return { handled: true };
 }

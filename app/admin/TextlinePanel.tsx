@@ -32,8 +32,12 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
   const [on, setOn] = useState(false);
   const [key, setKey] = useState("");
   const [msg, setMsg] = useState<{ kind: "ok" | "error"; text: string } | null>(null);
-  const [busy, setBusy] = useState<"save" | "setup" | null>(null);
+  const [busy, setBusy] = useState<"save" | "setup" | "timeout" | null>(null);
   const [copied, setCopied] = useState(false);
+  // The booth reply window, in seconds. 60 is the worker's own default, so an
+  // unreadable or absent setting still shows the truth.
+  const [timeout, setTimeoutSec] = useState("60");
+  const [savedTimeout, setSavedTimeout] = useState("60");
 
   useEffect(() => {
     let cancelled = false;
@@ -47,6 +51,17 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
       .catch(() => {
         // a station mid-restart answers nothing — the next open gets it
       });
+    fetch("/api/admin/settings", { cache: "no-store" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((rows) => {
+        if (cancelled || !Array.isArray(rows)) return;
+        const saved = rows.find((s: any) => s.key === "boothReplyTimeoutSec")?.value;
+        if (saved) {
+          setTimeoutSec(String(saved));
+          setSavedTimeout(String(saved));
+        }
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -111,6 +126,31 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
       setTimeout(() => setCopied(false), 2000);
     } catch {
       setMsg({ kind: "error", text: "Couldn't copy — select the URL and copy it by hand." });
+    }
+  };
+
+  const saveTimeout = async () => {
+    const sec = Number(timeout);
+    if (!Number.isInteger(sec) || sec < 10 || sec > 600) {
+      setMsg({ kind: "error", text: "Use a whole number of seconds from 10 to 600." });
+      return;
+    }
+    setBusy("timeout");
+    setMsg(null);
+    try {
+      const res = await fetch("/api/admin/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ key: "boothReplyTimeoutSec", value: String(sec) }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "could not save");
+      setSavedTimeout(String(sec));
+      setMsg({ kind: "ok", text: "Saved." });
+    } catch (e) {
+      setMsg({ kind: "error", text: `Could not save: ${(e as Error)?.message || "unknown error"}` });
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -186,6 +226,37 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
           >
             {busy === "save" ? "Saving…" : "Save"}
           </button>
+        </div>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: "0.75rem", flexWrap: "wrap" }}>
+          <label style={{ fontSize: "0.8rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
+            Booth reply timeout
+            <span style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
+              <input
+                id="input-textline-booth-timeout"
+                type="number"
+                min={10}
+                max={600}
+                step={1}
+                value={timeout}
+                onChange={(e) => setTimeoutSec(e.target.value)}
+                style={{ width: "90px", padding: "0.5rem", borderRadius: "8px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text)", fontFamily: "inherit" }}
+              />
+              <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>seconds</span>
+            </span>
+          </label>
+          <button
+            id="btn-textline-save-timeout"
+            className="primary-btn"
+            style={{ width: "auto", padding: "0.55rem 1.1rem", background: "rgba(255,255,255,0.1)", color: "#fff" }}
+            disabled={busy !== null || timeout === savedTimeout}
+            onClick={saveTimeout}
+          >
+            {busy === "timeout" ? "Saving…" : "Save timeout"}
+          </button>
+        </div>
+        <div style={{ fontSize: "0.8rem", color: "var(--color-muted)", lineHeight: 1.5, maxWidth: "600px" }}>
+          How long to wait for Sub/Wave to answer a texted request before texting back that the booth is busy.
+          Default 60 seconds. Applies to new texts, not ones already waiting.
         </div>
         {msg ? (
           <div

@@ -509,6 +509,7 @@ model PhoneContact {
   messages   TextMessage[]
   showAlerts ShowAlert[]
   reminders  ShowReminder[]
+  boothRequests TextlineRequest[]
 }
 
 /// An in-flight verification code. Replaced on every "Get my code"; deleted on
@@ -529,14 +530,49 @@ model PhoneVerification {
 /// Record that a phone texted the station — the answer to "did their text
 /// reach us?" when a bind code or a request goes missing. Pruned to a day by
 /// the inbound handler, so it never becomes a shadow transcript.
+/// `repliedAt` is the once-an-hour guard for the reply to an unauthorised
+/// number, which has no contact row to hang a message on.
 model TextlineInbound {
-  id         String   @id @default(cuid())
+  id         String    @id @default(cuid())
   phone      String
-  providerId String?  @unique
-  receivedAt DateTime @default(now())
+  providerId String?   @unique
+  receivedAt DateTime  @default(now())
+  repliedAt  DateTime?
 
   @@index([phone, receivedAt])
   @@index([receivedAt])
+}
+
+/// A text on its way to the booth. One row per forwarded text, from the moment
+/// the worker claims it until the follow-up is sent. The host's request ledger
+/// is in memory and dies with its restart, so this row — not the host — is the
+/// record of what the listener was told.
+model TextlineRequest {
+  id            String    @id @default(cuid())
+  contactId     String
+  phone         String
+  /// Who Sub/Wave should announce; a snapshot, so a later nickname change does
+  /// not alter a request already in the queue.
+  name          String
+  body          String
+  /// The host's request id once accepted; null when it never was.
+  hostId        String?   @unique
+  /// queued | sending | accepted | replied | failed
+  status        String    @default("queued")
+  /// Seconds until it airs, and the amount the host already wrote into its ack.
+  waitSec       Int?
+  waitNoticeSec Int?
+  /// Why the follow-up was what it was (host refusal, timeout, send error).
+  error         String?
+  createdAt     DateTime  @default(now())
+  startedAt     DateTime?
+  deadlineAt    DateTime?
+  repliedAt     DateTime?
+
+  contact PhoneContact @relation(fields: [contactId], references: [id], onDelete: Cascade)
+
+  @@index([status, createdAt])
+  @@index([contactId, createdAt])
 }
 
 /// One bubble, inbound or outbound. `providerId` is Linq's message id and is

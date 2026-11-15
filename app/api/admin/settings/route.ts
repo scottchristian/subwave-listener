@@ -2,6 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import prisma from "@/lib/prisma";
 import { getServerSession } from "next-auth/next";
 import { authOptions } from "../../auth/[...nextauth]/route";
+import {
+  BOOTH_TIMEOUT_KEY,
+  BOOTH_TIMEOUT_MAX_SEC,
+  BOOTH_TIMEOUT_MIN_SEC,
+} from "@/lib/booth";
 
 
 
@@ -25,6 +30,19 @@ export async function POST(req: NextRequest) {
   
   if (!key || typeof value !== "string") {
     return NextResponse.json({ error: "Invalid data" }, { status: 400 });
+  }
+
+  // Bounded here, not only in the field: the worker waits this long for the
+  // booth, and a zero or a typo would either skip the follow-up entirely or
+  // leave a listener waiting.
+  if (key === BOOTH_TIMEOUT_KEY) {
+    const sec = Number(value);
+    if (!Number.isInteger(sec) || sec < BOOTH_TIMEOUT_MIN_SEC || sec > BOOTH_TIMEOUT_MAX_SEC) {
+      return NextResponse.json(
+        { error: `Timeout must be a whole number of seconds from ${BOOTH_TIMEOUT_MIN_SEC} to ${BOOTH_TIMEOUT_MAX_SEC}.` },
+        { status: 400 }
+      );
+    }
   }
 
   const setting = await prisma.setting.upsert({

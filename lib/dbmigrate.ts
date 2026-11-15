@@ -110,7 +110,7 @@ export const MODEL_ORDER = [
   "pushSubscription", "presenceHeartbeat", "verificationToken",
   "setting", "songLinkCache", "donation", "skillRun", "device",
   "firmwareRelease", "deviceOtaAttempt",
-  "phoneContact", "phoneVerification", "textMessage", "textlineInbound", "showAlert", "showReminder",
+  "phoneContact", "phoneVerification", "textMessage", "textlineInbound", "textlineRequest", "showAlert", "showReminder",
 ] as const;
 
 export type TableReport = {
