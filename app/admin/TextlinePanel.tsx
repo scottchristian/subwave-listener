@@ -7,14 +7,14 @@ import CollapsibleSection from "./CollapsibleSection";
  * The Linq text line: the station's iMessage/SMS number.
  *
  * SETUP IS LINQ'S, NOT OURS. Signup happens on the operator's own computer with
- * the Linq CLI — nothing here creates an account. This panel takes the two
- * credentials that signup and a webhook subscription produce, and the card
- * says so, because an operator who expects an account form here will look for
- * one and conclude the feature is broken.
+ * the Linq CLI — nothing here creates an account. The panel takes the API key
+ * that signup prints, then creates the webhook subscription itself because Linq
+ * returns the signing secret exactly once: making the operator run another CLI
+ * command and copy `whsec_…` by hand is the step that goes wrong.
  *
- * The values are credentials, so they are write-only: the API reports whether
- * each is set, never the value, and a non-blank field means "replace". A blank
- * save keeps what is stored — pasting a new key is how a bad one is replaced.
+ * The API key is a credential, so it is write-only: the API reports whether it
+ * is set, never the value, and a non-blank field means "replace". A blank save
+ * keeps what is stored — pasting a new key is how a bad one is replaced.
  */
 
 type Status = {
@@ -28,9 +28,8 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
   const [status, setStatus] = useState<Status | null>(null);
   const [on, setOn] = useState(false);
   const [key, setKey] = useState("");
-  const [secret, setSecret] = useState("");
   const [msg, setMsg] = useState("");
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState<"save" | "setup" | null>(null);
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -51,7 +50,7 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
   }, []);
 
   const save = async () => {
-    setBusy(true);
+    setBusy("save");
     setMsg("");
     const prev = status;
     setStatus((s) => (s ? { ...s, enabled: on } : s));
@@ -62,20 +61,42 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
         body: JSON.stringify({
           enabled: on,
           ...(key.trim() ? { apiKey: key.trim() } : {}),
-          ...(secret.trim() ? { webhookSecret: secret.trim() } : {}),
         }),
       });
       const d = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(d.error || "could not save");
       setStatus(d);
       setKey("");
-      setSecret("");
       setMsg("Saved.");
     } catch (e) {
       setStatus(prev);
       setMsg(`Could not save: ${(e as Error)?.message || "unknown error"}`);
     } finally {
-      setBusy(false);
+      setBusy(null);
+    }
+  };
+
+  const setupWebhook = async () => {
+    setBusy("setup");
+    setMsg("");
+    try {
+      const res = await fetch("/api/admin/textline/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "setup",
+          ...(key.trim() ? { apiKey: key.trim() } : {}),
+        }),
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || "could not set up the webhook");
+      setStatus(d);
+      setKey("");
+      setMsg("Webhook set up — the signing secret is saved and Linq will deliver inbound texts here.");
+    } catch (e) {
+      setMsg(`Could not set up the webhook: ${(e as Error)?.message || "unknown error"}`);
+    } finally {
+      setBusy(null);
     }
   };
 
@@ -91,30 +112,31 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
   };
 
   const keyReady = !!key.trim() || !!status?.apiKeySet;
-  const secretReady = !!secret.trim() || !!status?.secretSet;
+  const ready = keyReady && !!status?.secretSet;
 
   return (
     <CollapsibleSection
       id="section-textline-settings"
       title={<>Text Line</>}
-      summary={<>The station&rsquo;s iMessage/SMS number for listener requests and show reminders, via Linq. Sign up at linqapp.com on your own computer, then paste the two keys here.</>}
+      summary={<>The station&rsquo;s iMessage/SMS number for listener requests and show reminders, via Linq. Sign up on your own computer, paste the API key, and the panel connects the webhook.</>}
       hidden={hidden}
     >
       <div style={{ marginTop: "1rem", display: "flex", flexDirection: "column", gap: "1rem" }}>
-        <div style={{ fontSize: "0.85rem", color: "var(--color-muted)", lineHeight: 1.5, maxWidth: "560px" }}>
+        <div style={{ fontSize: "0.85rem", color: "var(--color-muted)", lineHeight: 1.5, maxWidth: "600px" }}>
           Nothing on this page creates a Linq account. Install the Linq CLI on your own
-          computer, run <code>linq signup</code> once, and it provisions the number and mints
-          an API key. Then add a webhook in Linq for <code>message.received</code> pointing at
-          the URL below. Paste the API key and the webhook&rsquo;s signing secret here — or
-          put <code>LINQ_ENABLED</code>, <code>LINQ_API_KEY</code> and{" "}
-          <code>LINQ_WEBHOOK_SECRET</code> in the server&rsquo;s .env.local yourself.
+          computer and run <code>linq signup</code> once — it provisions the number and
+          prints an API key. Paste that key here and press <strong>Set up webhook</strong>:
+          the app registers this station&rsquo;s address with Linq for inbound texts and
+          stores the signing secret, which Linq only ever shows once. A webhook already
+          pointing at this address is replaced so a fresh secret can be stored. The
+          address must be HTTPS.
         </div>
         <label className="check" style={{ fontSize: "0.9rem", fontWeight: 600 }}>
           <input
             id="input-textline-enabled"
             type="checkbox"
             checked={on}
-            disabled={!keyReady || !secretReady}
+            disabled={!ready}
             onChange={(e) => setOn(e.target.checked)}
           />
           Turn on the text line
@@ -137,35 +159,32 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
               ) : null}
             </span>
           </label>
-          <label style={{ fontSize: "0.8rem", color: "var(--color-muted)", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
-            Webhook signing secret
-            <span style={{ display: "flex", alignItems: "center", gap: "0.4rem" }}>
-              <input
-                id="input-textline-secret"
-                type="password"
-                value={secret}
-                onChange={(e) => setSecret(e.target.value)}
-                placeholder={status?.secretSet ? "set — enter a new one to replace" : "whsec_…"}
-                autoComplete="new-password"
-                style={{ width: "280px", padding: "0.5rem", borderRadius: "8px", border: "1px solid var(--color-border)", background: "transparent", color: "var(--color-text)", fontFamily: "inherit" }}
-              />
-              {status?.secretSet ? (
-                <span style={{ color: "#34d399", fontSize: "0.8rem", fontWeight: 600, whiteSpace: "nowrap" }}>✓ saved</span>
-              ) : null}
-            </span>
-          </label>
+          <button
+            id="btn-textline-setup-webhook"
+            className="primary-btn"
+            style={{ width: "auto", padding: "0.55rem 1.1rem" }}
+            disabled={busy !== null || !keyReady || !status?.webhookUrl}
+            onClick={setupWebhook}
+          >
+            {busy === "setup" ? "Setting up…" : "Set up webhook"}
+          </button>
           <button
             id="btn-textline-save"
             className="primary-btn"
-            style={{ width: "auto", padding: "0.55rem 1.1rem" }}
-            disabled={busy}
+            style={{ width: "auto", padding: "0.55rem 1.1rem", background: "rgba(255,255,255,0.1)", color: "#fff" }}
+            disabled={busy !== null}
             onClick={save}
           >
-            {busy ? "Saving…" : "Save"}
+            {busy === "save" ? "Saving…" : "Save"}
           </button>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
           <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Webhook URL</span>
+          <span id="textline-webhook-state" style={{ fontSize: "0.8rem", fontWeight: 600, color: status?.secretSet ? "#34d399" : "var(--color-muted)" }}>
+            {status?.secretSet ? "✓ connected" : "not set up"}
+          </span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
           <input
             id="input-textline-webhook-url"
             type="text"
@@ -193,9 +212,11 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
           {status ? (
             status.enabled
               ? <>On — listeners can link a phone, text requests, and get show reminders.</>
-              : status.apiKeySet && status.secretSet
-                ? "Keys saved, text line off — tick the box and save to switch it on."
-                : "Not configured — paste the API key and signing secret to begin."
+              : !status.apiKeySet
+                ? "Not configured — paste your Linq API key to begin."
+                : !status.secretSet
+                  ? "API key saved — press Set up webhook to connect Linq to this station."
+                  : "Ready, text line off — tick the box and save to switch it on."
           ) : "Loading…"}
         </div>
         {msg ? (

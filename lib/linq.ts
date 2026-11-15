@@ -16,6 +16,7 @@ import crypto from "node:crypto";
 
 const DEFAULT_API_BASE = "https://api.linqapp.com/api/partner/v3";
 const SEND_TIMEOUT_MS = 8000;
+const ADMIN_TIMEOUT_MS = 10_000;
 const MAX_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
 export type LinqConfig = {
@@ -134,4 +135,113 @@ export function verifyWebhookSignature(
     if (got.length === expected.length && crypto.timingSafeEqual(got, expected)) return true;
   }
   return false;
+}
+
+// ------------------------------------------------------- webhook subscriptions
+//
+// The admin panel creates the subscription instead of asking the operator to
+// run `linq webhooks create`: Linq returns the signing secret exactly once, and
+// a secret copied by hand is the step people get wrong. These calls are
+// admin-only and rare — one per setup — so each is a single timed attempt.
+
+/** The only event the station handles: an inbound text. */
+export const WEBHOOK_EVENT = "message.received";
+
+export type WebhookSubscription = {
+  id: string;
+  targetUrl: string;
+  events: string[];
+  active: boolean;
+};
+
+export type ApiFailure = { ok: false; error: string; status?: number };
+
+type ApiAttempt = { ok: true; data: any } | ApiFailure;
+
+async function apiRequest(
+  path: string,
+  init: { method: string; body?: unknown },
+  fetchImpl?: typeof fetch
+): Promise<ApiAttempt> {
+  const cfg = readLinqConfig();
+  if (!cfg.apiKey) return { ok: false, error: "no API key saved" };
+  try {
+    const res = await (fetchImpl || fetch)(`${cfg.apiBase}${path}`, {
+      method: init.method,
+      headers: {
+        Authorization: `Bearer ${cfg.apiKey}`,
+        ...(init.body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: init.body === undefined ? undefined : JSON.stringify(init.body),
+      signal: AbortSignal.timeout(ADMIN_TIMEOUT_MS),
+    });
+    const text = await res.text().catch(() => "");
+    let parsed: any = null;
+    try {
+      parsed = JSON.parse(text);
+    } catch {}
+    if (!res.ok) {
+      // Status and Linq's error code only — never the response body.
+      const code = String(parsed?.error?.code ?? parsed?.code ?? "");
+      return {
+        ok: false,
+        error: `Linq request failed (${res.status}${code ? ` ${code}` : ""})`,
+        status: res.status,
+      };
+    }
+    return { ok: true, data: parsed ?? {} };
+  } catch (err: any) {
+    const name = err?.name === "TimeoutError" ? "timeout" : "network";
+    return { ok: false, error: `Linq request failed (${name})` };
+  }
+}
+
+export async function listWebhookSubscriptions(
+  opts: { fetchImpl?: typeof fetch } = {}
+): Promise<{ ok: true; subscriptions: WebhookSubscription[] } | ApiFailure> {
+  const res = await apiRequest("/webhook-subscriptions", { method: "GET" }, opts.fetchImpl);
+  if (!res.ok) return res;
+  const rows = Array.isArray(res.data?.subscriptions) ? res.data.subscriptions : [];
+  return {
+    ok: true,
+    subscriptions: rows.map((s: any) => ({
+      id: String(s?.id ?? ""),
+      targetUrl: String(s?.target_url ?? ""),
+      events: Array.isArray(s?.subscribed_events) ? s.subscribed_events.map(String) : [],
+      active: s?.is_active !== false,
+    })),
+  };
+}
+
+/**
+ * Register one HTTPS target for inbound texts. The returned signing secret
+ * cannot be fetched again, so the caller must persist it before moving on.
+ */
+export async function createWebhookSubscription(
+  targetUrl: string,
+  opts: { fetchImpl?: typeof fetch } = {}
+): Promise<{ ok: true; id: string; signingSecret: string } | ApiFailure> {
+  const res = await apiRequest(
+    "/webhook-subscriptions",
+    { method: "POST", body: { target_url: targetUrl, subscribed_events: [WEBHOOK_EVENT] } },
+    opts.fetchImpl
+  );
+  if (!res.ok) return res;
+  const signingSecret = String(res.data?.signing_secret ?? "").trim();
+  if (!signingSecret) return { ok: false, error: "Linq did not return a signing secret" };
+  return { ok: true, id: String(res.data?.id ?? ""), signingSecret };
+}
+
+/** A subscription already gone is the outcome the caller wanted. */
+export async function deleteWebhookSubscription(
+  id: string,
+  opts: { fetchImpl?: typeof fetch } = {}
+): Promise<{ ok: true } | ApiFailure> {
+  const res = await apiRequest(
+    `/webhook-subscriptions/${encodeURIComponent(id)}`,
+    { method: "DELETE" },
+    opts.fetchImpl
+  );
+  if (!res.ok) return res.status === 404 ? { ok: true } : res;
+  return { ok: true };
 }

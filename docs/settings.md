@@ -429,23 +429,26 @@ linq signup --email you@example.com --code 123456 --name "Your Name"
 linq tokens show                             # prints the API key
 ```
 
-Then, still on your own computer (or in the
-[Linq dashboard](https://dashboard.linqapp.com)), add a webhook subscription
-for `message.received` pointing at:
+Then paste the API key into Services → Text Line and press **Set up webhook**.
+The app registers this station's address with Linq for `message.received`:
 
 ```
 https://your-station-address/api/linq/webhook
 ```
 
-The Services → Text Line panel shows this URL with a Copy button, so you can
-paste it from there. Creating the subscription gives you its signing secret,
-which starts `whsec_`.
+and stores the signing secret Linq returns. Linq shows that secret exactly
+once, so this is also the repair path: pressing the button replaces any
+subscription already pointing at this address and stores a fresh secret. The
+address must be HTTPS, and the panel shows it with a Copy button.
 
-**Then copy the two values over in whichever way suits you:**
+If you would rather wire it up yourself, create the same subscription in the
+[Linq dashboard](https://dashboard.linqapp.com) or with the CLI, then put the
+resulting `whsec_…` secret in `.env.local` as `LINQ_WEBHOOK_SECRET`.
 
-- **The dashboard.** Services → Text Line, paste the API key and the signing
-  secret, tick *Turn on the text line*, and save. The panel never shows the
-  values back — it says “✓ saved” instead.
+**Then switch it on:**
+
+- **The dashboard.** Tick *Turn on the text line* and save. The panel never
+  shows credentials back — it says “✓ saved” instead.
 - **The configuration file.** Add `LINQ_ENABLED="1"`, `LINQ_API_KEY="…"` and
   `LINQ_WEBHOOK_SECRET="whsec_…"` to `.env.local` on the server. A dashboard
   save overwrites these the next time it saves.
@@ -460,9 +463,10 @@ verification code and show reminders. Up to 20 contacts. A paid line removes
 the restriction.
 
 **What the dashboard will not tell you.** The API key and signing secret are
-never returned by the panel, logged, or included in errors. If one is lost,
-generate a new key with `linq tokens create` or find the secret in the Linq
-dashboard, and paste it in again.
+never returned by the panel, logged, or included in errors. If the key is
+lost, mint a new one with `linq tokens create` and paste it in. A signing
+secret cannot be recovered — press *Set up webhook* again to replace the
+subscription with one that has a new secret.
 
 ---
 
