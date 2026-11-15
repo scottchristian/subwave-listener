@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { STATION } from "@/lib/station";
-import { formatPhoneInput } from "@/lib/phone";
+import { formatIntlPhone, formatPhoneInput, textLink } from "@/lib/phone";
 import { COUNTRIES, isoForDial, type Country } from "@/lib/countries";
 
 export type PhoneView = {
@@ -15,9 +15,11 @@ export type PhoneView = {
   pendingPhone?: string | null;
   messages: { id: string; direction: string; body: string; createdAt: string }[];
   defaultCountry?: string;
+  /** The station's own line: the number the listener has to text first. */
+  textNumber?: string | null;
 };
 
-type Step = "number" | "code" | "manage";
+type Step = "textfirst" | "number" | "code" | "manage";
 
 const fmtTime = (iso: string) => {
   const d = new Date(iso);
@@ -27,13 +29,6 @@ const fmtTime = (iso: string) => {
 };
 
 /** E.164 in the shape the listener typed it: +61 408 344 123. */
-const fmtPhone = (phone: string, cc?: string) => {
-  const code = cc && phone.startsWith(cc) ? cc : "";
-  const rest = code ? phone.slice(code.length) : "";
-  if (rest.length < 9) return phone;
-  const head = rest.slice(0, rest.length - 6);
-  return [code, head, rest.slice(-6, -3), rest.slice(-3)].filter(Boolean).join(" ");
-};
 
 /**
  * Link a phone, then live with it: the code flow only advances after a send
@@ -51,7 +46,7 @@ export default function PhonePanel({
 }) {
   const [view, setView] = useState<PhoneView | null>(initial);
   const [step, setStep] = useState<Step>(() =>
-    initial?.linked ? "manage" : initial?.codeSentAt ? "code" : "number"
+    initial?.linked ? "manage" : initial?.codeSentAt ? "code" : "textfirst"
   );
   const [number, setNumber] = useState("");
   // Null means "not chosen yet": the station's own country is the default, and
@@ -68,7 +63,7 @@ export default function PhonePanel({
   const apply = useCallback(
     (next: PhoneView) => {
       setView(next);
-      setStep(next.linked ? "manage" : next.codeSentAt ? "code" : "number");
+      setStep(next.linked ? "manage" : next.codeSentAt ? "code" : "textfirst");
       setError("");
       onChanged(next);
     },
@@ -147,7 +142,7 @@ export default function PhonePanel({
     setSentTo("");
     setCode("");
     await refresh();
-    setStep("number");
+    setStep("textfirst");
   };
 
   const shell = (body: React.ReactNode) => (
@@ -203,7 +198,7 @@ export default function PhonePanel({
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "0.75rem", padding: "0.75rem", borderRadius: "10px", background: "rgba(255,255,255,0.05)", marginBottom: "0.75rem" }}>
           <div>
             <div style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Linked number</div>
-            <div id="phone-linked-number" style={{ fontSize: "1.05rem", fontWeight: 700 }}>{fmtPhone(view.phone ?? "", view.defaultCountry)}</div>
+            <div id="phone-linked-number" style={{ fontSize: "1.05rem", fontWeight: 700 }}>{formatIntlPhone(view.phone ?? "")}</div>
           </div>
           <span style={{ color: "#34d399", fontSize: "0.8rem", fontWeight: 600, whiteSpace: "nowrap" }}>✓ linked</span>
         </div>
@@ -293,7 +288,7 @@ export default function PhonePanel({
     return shell(
       <>
         <p style={{ fontSize: "0.95rem", lineHeight: 1.5, margin: "0 0 1rem" }}>
-          Enter the 6-digit code we sent to <strong>{sentTo || fmtPhone(view.pendingPhone ?? "", view.defaultCountry) || "your phone"}</strong>.
+          Enter the 6-digit bind code we sent to <strong>{sentTo || formatIntlPhone(view.pendingPhone ?? "") || "your phone"}</strong>.
         </p>
         {errorLine}
         <label htmlFor="input-phone-code" style={{ display: "block", fontSize: "0.85rem", color: "var(--color-muted)", marginBottom: "0.35rem" }}>
@@ -331,6 +326,58 @@ export default function PhonePanel({
     );
   }
 
+  if (step === "textfirst") {
+    const line = view.textNumber || "";
+    const sms = textLink(line);
+    return shell(
+      <>
+        <p style={{ fontSize: "1.05rem", fontWeight: 600, margin: "0 0 0.5rem" }}>Text us first</p>
+        <p style={{ fontSize: "0.95rem", lineHeight: 1.5, margin: "0 0 1rem" }}>
+          To confirm you&apos;re texting from a real number, we need you to text us first.
+        </p>
+        {sms ? (
+          <a
+            id="link-text-station"
+            href={sms}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "center",
+              gap: "0.5rem",
+              width: "100%",
+              padding: "1rem",
+              borderRadius: "50px",
+              border: "1px solid rgba(78,159,212,0.6)",
+              background: "rgba(78,159,212,0.12)",
+              color: "var(--color-accent)",
+              fontSize: "1.05rem",
+              fontWeight: 700,
+              textDecoration: "none",
+              marginBottom: "0.75rem",
+            }}
+          >
+            Tap here to text {formatIntlPhone(line)}
+          </a>
+        ) : (
+          <p style={{ fontSize: "0.9rem", color: "var(--color-muted)", marginBottom: "0.75rem" }}>
+            The station&apos;s number isn&apos;t available right now. Try again in a minute.
+          </p>
+        )}
+        <button
+          id="btn-text-sent"
+          onClick={() => { setStep("number"); setError(""); }}
+          className="primary-btn"
+          style={{ width: "100%", marginBottom: "0.6rem" }}
+        >
+          I&apos;ve sent the text
+        </button>
+        <p style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginBottom: 0, lineHeight: 1.45 }}>
+          On the free Shared Line the station owner also has to add your number in Linq (up to 20).
+        </p>
+      </>
+    );
+  }
+
   // Countries sharing the station's dial code come first: a listener abroad
   // still gets the station's own country at the top, then everything else.
   const sameDial = dial ? COUNTRIES.filter((c) => c.dial === dial) : [];
@@ -339,8 +386,11 @@ export default function PhonePanel({
 
   return shell(
     <>
-      <p style={{ fontSize: "0.95rem", lineHeight: 1.5, margin: "0 0 1rem" }}>
-        Link your phone to get show reminders by text, and to text the station requests and shout-outs.
+      <p style={{ fontSize: "1.05rem", fontWeight: 600, margin: "0 0 0.5rem" }}>
+        Which number did you text from?
+      </p>
+      <p style={{ fontSize: "0.9rem", color: "var(--color-muted)", lineHeight: 1.5, margin: "0 0 1rem" }}>
+        Enter it so we can confirm it&apos;s you and your account. We&apos;ll text you a bind code back.
       </p>
       {errorLine}
       <label htmlFor="select-phone-country" style={{ display: "block", fontSize: "0.85rem", color: "var(--color-muted)", marginBottom: "0.35rem" }}>
@@ -386,10 +436,17 @@ export default function PhonePanel({
         className="primary-btn"
         style={{ width: "100%", marginBottom: "0.6rem", opacity: busy || number.replace(/\D/g, "").length < 6 ? 0.6 : 1 }}
       >
-        {busy ? "Sending…" : "Get my code"}
+        {busy ? "Sending…" : "Send my bind code"}
+      </button>
+      <button
+        id="btn-text-station-again"
+        onClick={() => { setStep("textfirst"); setError(""); }}
+        style={{ display: "block", width: "100%", padding: "0.5rem", background: "none", border: "none", color: "var(--color-muted)", fontSize: "0.85rem", cursor: "pointer" }}
+      >
+        Text the station again
       </button>
       <p style={{ fontSize: "0.8rem", color: "var(--color-muted)", marginBottom: 0, lineHeight: 1.45 }}>
-        We&apos;ll text a 6-digit code to confirm it&apos;s yours. Message rates may apply.
+        We&apos;ll text a 6-digit bind code to confirm it&apos;s yours. Message rates may apply.
       </p>
     </>
   );

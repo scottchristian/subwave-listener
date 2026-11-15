@@ -5,6 +5,7 @@ import {
   deleteWebhookSubscription,
   listWebhookSubscriptions,
   readLinqConfig,
+  stationTextNumber,
   type ApiFailure,
 } from "@/lib/linq";
 import { updateEnvFile } from "@/lib/envfile";
@@ -25,7 +26,7 @@ function publicBase(): string {
   return String(process.env.NEXTAUTH_URL || "").trim().replace(/\/+$/, "");
 }
 
-function publicStatus() {
+async function publicStatus() {
   const cfg = readLinqConfig();
   const base = publicBase();
   return {
@@ -33,6 +34,9 @@ function publicStatus() {
     apiKeySet: cfg.apiKey !== "",
     secretSet: cfg.webhookSecret !== "",
     webhookUrl: base ? `${base}/api/linq/webhook` : "",
+    // Which line this key owns. A saved key is only really saved if Linq
+    // answers with a number, so the panel shows it as the proof.
+    textNumber: cfg.apiKey ? await stationTextNumber() : null,
   };
 }
 
@@ -123,14 +127,14 @@ async function setupWebhook(body: any) {
     );
   }
 
-  return NextResponse.json(publicStatus());
+  return NextResponse.json(await publicStatus());
 }
 
 export async function GET() {
   if (!(await requireAdmin())) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
-  return NextResponse.json(publicStatus());
+  return NextResponse.json(await publicStatus());
 }
 
 export async function POST(req: Request) {
@@ -196,5 +200,5 @@ export async function POST(req: Request) {
     );
   }
 
-  return NextResponse.json(publicStatus());
+  return NextResponse.json(await publicStatus());
 }

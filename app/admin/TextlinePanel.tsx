@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { formatIntlPhone } from "@/lib/phone";
 import CollapsibleSection from "./CollapsibleSection";
 
 /**
@@ -22,6 +23,8 @@ type Status = {
   apiKeySet: boolean;
   secretSet: boolean;
   webhookUrl: string;
+  /** The line the saved key owns — the proof that Linq accepted it. */
+  textNumber: string | null;
 };
 
 export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
@@ -193,6 +196,23 @@ export default function TextlinePanel({ hidden }: { hidden?: boolean }) {
             {msg.text}
           </div>
         ) : null}
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+          <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Station line</span>
+          <span
+            id="textline-number"
+            style={{
+              fontSize: "0.8rem",
+              fontWeight: 600,
+              color: status?.textNumber ? "#34d399" : "var(--color-muted)",
+            }}
+          >
+            {status?.textNumber
+              ? formatIntlPhone(status.textNumber)
+              : status?.apiKeySet
+                ? "no line could be read with this key"
+                : "save your API key"}
+          </span>
+        </div>
         <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
           <span style={{ fontSize: "0.8rem", color: "var(--color-muted)" }}>Webhook URL</span>
           <span id="textline-webhook-state" style={{ fontSize: "0.8rem", fontWeight: 600, color: status?.secretSet ? "#34d399" : "var(--color-muted)" }}>

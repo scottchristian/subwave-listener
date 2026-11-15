@@ -106,11 +106,11 @@ export async function fetchBranchHead(branch: "main" | "develop"): Promise<Branc
 }
 
 /** How many listeners are on air right now. Unknown counts as a refusal reason. */
-export async function listenerCount(): Promise<number | null> {
+export async function listenerCount(timeoutMs = 15000): Promise<number | null> {
   try {
     const cfg = await getSubwaveConfig();
     if (!cfg.apiUrl) return null;
-    const res = await fetch(`${cfg.apiUrl}/now-playing`, { signal: AbortSignal.timeout(15000) });
+    const res = await fetch(`${cfg.apiUrl}/now-playing`, { signal: AbortSignal.timeout(timeoutMs) });
     if (!res.ok) return null;
     const d = (await res.json()) as any;
     const n = d?.listeners?.current;

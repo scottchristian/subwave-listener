@@ -153,16 +153,21 @@ export function verifyWebhookSignature(
 // a per-send call.
 
 const NUMBER_CACHE_MS = 10 * 60 * 1000;
-let numberCache: { at: number; number: string } | null = null;
+// Keyed by the API key: replacing the key in the admin panel must not keep
+// showing the previous line. Needs only the key, not LINQ_ENABLED, so the
+// panel can prove a freshly saved key by naming the line it owns.
+let numberCache: { at: number; key: string; number: string } | null = null;
 
 /** The station's own line as E.164, or null when it can't be known. */
 export async function stationTextNumber(
   opts: { fetchImpl?: typeof fetch; now?: number } = {}
 ): Promise<string | null> {
   const now = opts.now ?? Date.now();
-  if (numberCache && now - numberCache.at < NUMBER_CACHE_MS) return numberCache.number;
   const cfg = readLinqConfig();
-  if (!cfg.enabled) return null;
+  if (numberCache && numberCache.key === cfg.apiKey && now - numberCache.at < NUMBER_CACHE_MS) {
+    return numberCache.number;
+  }
+  if (!cfg.apiKey) return null;
   try {
     const res = await (opts.fetchImpl || fetch)(`${cfg.apiBase}/available_number`, {
       headers: { Authorization: `Bearer ${cfg.apiKey}` },
@@ -173,7 +178,7 @@ export async function stationTextNumber(
     const digits = String(data?.phone_number ?? "").replace(/[^\d+]/g, "");
     const number = digits.startsWith("+") ? digits : digits ? `+${digits}` : "";
     if (!/^\+\d{8,15}$/.test(number)) return null;
-    numberCache = { at: now, number };
+    numberCache = { at: now, key: cfg.apiKey, number };
     return number;
   } catch {
     return null;

@@ -17,6 +17,7 @@ import prisma from "./prisma";
 import { STATION } from "./station";
 import { isOptOut, normalizePhone } from "./phone";
 import { readLinqConfig, sendText, stationTextNumber, type SendResult } from "./linq";
+import { listenerCount } from "./update-run";
 import { fetchStationSchedule, type ScheduleShow, type StationSchedule } from "./station-schedule";
 
 export const LINK_CODE_TTL_MS = 10 * 60 * 1000;
@@ -24,6 +25,23 @@ export const MAX_CODE_ATTEMPTS = 5;
 export const REMINDER_LEAD_MIN = 15;
 /** One code a minute per account: each send is a real SMS to a real number. */
 export const CODE_RESEND_MS = 60 * 1000;
+/**
+ * How recent the listener's first text must be. The free Shared Line cannot
+ * open a conversation, so the bind code is only sent after a text from that
+ * number proves the chat exists. Long enough to type the number in the app,
+ * short enough that an old text is not proof.
+ */
+export const INBOUND_PROOF_MS = 30 * 60 * 1000;
+/** Proof rows are pruned here; nothing older is ever consulted. */
+const INBOUND_KEEP_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * When the station reports nobody listening, a text gets one reply saying so.
+ * One an hour per contact: a burst of texts while the room is empty is still
+ * one SMS bill, not five.
+ */
+export const OFFLINE_REPLY = `The station isn't online at the moment. Come back later and send your message again.`;
+export const OFFLINE_REPLY_MS = 60 * 60 * 1000;
 
 export type Send = (to: string, body: string, opts?: { overrideOptout?: boolean; idempotencyKey?: string }) => Promise<SendResult>;
 
@@ -80,9 +98,26 @@ export async function startLink(
     return fail("too_soon", "We've just sent a code. Give it a minute, then try again.");
   }
 
+  // The free Shared Line cannot start a conversation: a text from this number
+  // is what proves the chat exists and authorises the bind code. Proof older
+  // than a day is pruned here — this is its only reader, so no timer is needed.
+  await prisma.textlineInbound
+    .deleteMany({ where: { receivedAt: { lt: new Date(now - INBOUND_KEEP_MS) } } })
+    .catch(() => {});
+  const proof = await prisma.textlineInbound.findFirst({
+    where: { phone, receivedAt: { gte: new Date(now - INBOUND_PROOF_MS) } },
+    select: { id: true },
+  });
+  if (!proof) {
+    return fail(
+      "no_inbound",
+      "We haven't received a text from that number yet. Send the text, wait a few seconds, then try again."
+    );
+  }
+
   const code = sixDigits();
   const send = opts.send || sendText;
-  const res = await send(phone, `${code} is your ${STATION.name} code. It expires in 10 minutes.`);
+  const res = await send(phone, `${code} is your ${STATION.name} bind code. It expires in 10 minutes.`);
   if (!res.ok) {
     // Status and trace id only — the provider's body can echo the recipient.
     console.warn("[textline] code send failed:", res.error, res.traceId ? `trace ${res.traceId}` : "");
@@ -95,9 +130,10 @@ export async function startLink(
     if (linqCode === "2024") {
       return fail("send_failed", "That number has asked the station to stop texting. Text the station once to start again, then try this again.");
     }
-    // Line-side refusals (reputation, permissions, international plan): the
-    // listener can only wait, and the owner fixing the line is what helps.
-    if (["2006", "2027", "2032", "4008"].includes(linqCode)) {
+    // Line-side refusals (reputation, permissions, international plan, and
+    // 2015 "no eligible sending line" — the inbound gate above already proved
+    // a chat exists, so this is the fleet): the owner fixing the line helps.
+    if (["2006", "2015", "2027", "2032", "4008"].includes(linqCode)) {
       return fail("send_failed", "The station's text line can't send right now. Try again later, and let the station owner know if it keeps failing.");
     }
     // 2008 is "recipient not allowed". A sandbox account and the free Shared
@@ -111,19 +147,6 @@ export async function startLink(
         line
           ? `The station's line can only text numbers that have texted it first. Text the station at ${line}, then try again — on the free Shared Line the owner also has to add your number, so ask if it still fails.`
           : "The station's line can only text numbers that have texted it first. Text the station once, then try again — on the free Shared Line the owner also has to add your number, so ask if it still fails."
-      );
-    }
-    // 2015 on a send with no `from` means no eligible sending line. On the
-    // free Shared Line that is the inbound-first rule with no chat yet; on a
-    // dedicated line it is a fleet restriction only the owner can clear. The
-    // listener's first move is the same either way, and waiting is not it.
-    if (linqCode === "2015") {
-      const line = await stationTextNumber();
-      return fail(
-        "send_failed",
-        line
-          ? `The station's text line can't start a new conversation right now. Text the station at ${line} first, then try again — if it still fails, the station owner needs to check the line in Linq.`
-          : "The station's text line can't start a new conversation right now. Text the station once first, then try again — if it still fails, the station owner needs to check the line in Linq."
       );
     }
     return fail("send_failed", "We couldn't send the code just now. Wait a minute and try again.");
@@ -282,11 +305,21 @@ export type InboundEvent = {
  * line only answers people who linked in the app. STOP records the opt-out,
  * clears every bell, and sends exactly one confirmation.
  */
-export async function handleInbound(evt: InboundEvent, opts: { send?: Send; now?: number } = {}): Promise<{ handled: boolean }> {
+export async function handleInbound(
+  evt: InboundEvent,
+  opts: { send?: Send; now?: number; listeners?: () => Promise<number | null> } = {}
+): Promise<{ handled: boolean }> {
   if (evt.isGroup) return { handled: false };
   const phone = normalizePhone(evt.phone);
   const body = String(evt.body || "").trim();
   if (!phone || !body) return { handled: false };
+
+  // Proof of a real, reachable number, recorded before we decide whether we
+  // know who sent it — sign-up needs it for numbers with no contact yet.
+  // providerId is unique, so an at-least-once redelivery adds nothing.
+  await prisma.textlineInbound
+    .create({ data: { phone, providerId: evt.providerId ?? null } })
+    .catch(() => null);
 
   const contact = await prisma.phoneContact.findUnique({ where: { phone }, select: { id: true, optedOutAt: true } });
   if (!contact) return { handled: false };
@@ -297,8 +330,10 @@ export async function handleInbound(evt: InboundEvent, opts: { send?: Send; now?
   }
 
   const now = new Date(opts.now ?? Date.now());
+  // Timestamps come from `now`, not the database clock, so the offline-reply
+  // throttle below agrees with the same clock the caller reasons about.
   const log = (direction: string, text: string, providerId: string | null = null) =>
-    prisma.textMessage.create({ data: { contactId: contact.id, direction, body: text, providerId } }).catch(() => null);
+    prisma.textMessage.create({ data: { contactId: contact.id, direction, body: text, providerId, createdAt: now } }).catch(() => null);
 
   // A keyword STOP and Linq marking the chat OPTED_OUT are the same promise.
   // Only the keyword gets our single courtesy reply: Linq records an override
@@ -324,6 +359,29 @@ export async function handleInbound(evt: InboundEvent, opts: { send?: Send; now?
   }
 
   await log("in", body, evt.providerId ?? null);
+
+  // Nobody on air: the request would go unheard, so say so. Only a known zero
+  // triggers this — an unreadable count must not tell anyone the station is
+  // down. Opted-out contacts get nothing, exactly like every other send.
+  if (!contact.optedOutAt) {
+    const listeners = await (opts.listeners || (() => listenerCount(5000)))();
+    if (listeners === 0) {
+      const recent = await prisma.textMessage.findFirst({
+        where: {
+          contactId: contact.id,
+          direction: "out",
+          body: OFFLINE_REPLY,
+          createdAt: { gte: new Date(now.getTime() - OFFLINE_REPLY_MS) },
+        },
+        select: { id: true },
+      });
+      if (!recent) {
+        const res = await (opts.send || sendText)(phone, OFFLINE_REPLY);
+        if (res.ok) await log("out", OFFLINE_REPLY, res.id || null);
+        else console.warn("[textline] offline reply failed:", res.error);
+      }
+    }
+  }
   return { handled: true };
 }
 

@@ -78,7 +78,8 @@ try {
   );
 
   const { default: prisma } = await import("../lib/prisma.ts");
-  const { normalizePhone, dialCodeForTimezone, isOptOut, formatPhoneInput } = await import("../lib/phone.ts");
+  const { normalizePhone, dialCodeForTimezone, isOptOut, formatPhoneInput, formatIntlPhone, textLink } =
+    await import("../lib/phone.ts");
   const { dialForCountry, isKnownDialCode, isoForDial } = await import("../lib/countries.ts");
   const { verifyWebhookSignature, stationTextNumber, sendText } = await import("../lib/linq.ts");
   const textline = await import("../lib/textline.ts");
@@ -127,6 +128,17 @@ try {
   ok(normalizePhone(formatPhoneInput("0408826585", "AU"), "+61") === "+61408826585", "the formatted value still normalizes — spaces are ignored");
   ok(normalizePhone(formatPhoneInput("021555123", "NZ"), "+64") === "+6421555123", "a picked country's number round-trips to E.164");
 
+  ok(formatIntlPhone("+12055030476") === "+1 205 503 0476", "the station line is shown in international shape");
+  ok(
+    textLink("+12055030476") === "sms:+12055030476?&body=Hi",
+    "the text link addresses the station with a prefilled body on iOS and Android"
+  );
+  ok(
+    textLink("+12055030476", "Hi there") === "sms:+12055030476?&body=Hi%20there",
+    "...and encodes spaces for every messaging app"
+  );
+  ok(textLink("") === "" && textLink("123") === "", "no usable number means no link");
+
   // ---------------------------------------------------------------- link
   await prisma.user.create({ data: { id: "u1" } });
 
@@ -141,6 +153,20 @@ try {
     sent.push({ to, body, opts });
     return { ok: true, id: `m${sent.length}`, chatId: "c1" };
   };
+
+  // The bind code is only sent to a number that has just texted the station:
+  // the free Shared Line cannot open a conversation, so the inbound is the
+  // proof that one exists.
+  const noProof = await textline.startLink("u1", "0408 344 123", { defaultCountry: "+61", send });
+  ok(noProof.ok === false && noProof.code === "no_inbound", "a number that has not texted the station is refused");
+  ok(
+    noProof.ok === false && /haven't received a text/i.test(noProof.message),
+    "...and the copy says to send the text first"
+  );
+  ok(sent.length === 0, "...without sending anything");
+
+  await prisma.textlineInbound.create({ data: { phone: "+61408344123" } });
+  await prisma.textlineInbound.create({ data: { phone: "+14088265855" } });
 
   failNext = "send failed (network)";
   const failedSend = await textline.startLink("u1", "0408 344 123", { defaultCountry: "+61", send });
@@ -277,15 +303,17 @@ try {
   ok(dup.handled === true, "a redelivered webhook is a no-op");
   ok((await prisma.textMessage.count({ where: { providerId: "in-2" } })) === 1, "...and cannot duplicate the bubble");
 
+  const beforeRequest = sent.length;
   const request = await textline.handleInbound(
     { phone: "+61408344123", body: "Play some Midnight Oil please", providerId: "in-3" },
-    { send, now }
+    { send, now, listeners: async () => 0 }
   );
   ok(request.handled === true, "an ordinary request is recorded");
   ok(
     (await prisma.textMessage.count({ where: { providerId: "in-3", direction: "in" } })) === 1,
     "...as an inbound bubble"
   );
+  ok(sent.length === beforeRequest, "an opted-out contact gets no offline reply");
 
   const unknown = await textline.handleInbound({ phone: "+61400000000", body: "hello", providerId: "in-4" }, { send, now });
   ok(unknown.handled === false, "an unknown number is ignored");
@@ -319,6 +347,53 @@ try {
   );
   ok((await prisma.showAlert.count({ where: { contactId: contact!.id } })) === 0, "...and clears the bells");
   await textline.setShowAlert("u1", "s1", true);
+
+  // ------------------------------------------------------------ offline line
+  // Nobody on air: a request would go unheard, so reply once with "not online".
+  const beforeOffline = sent.length;
+  const offline = await textline.handleInbound(
+    { phone: "+61408344123", body: "Can you play something by The Cure?", providerId: "in-off-1" },
+    { send, now, listeners: async () => 0 }
+  );
+  ok(offline.handled === true, "a text while the station is not online is handled");
+  ok(
+    sent.length === beforeOffline + 1 && sent[sent.length - 1].body === textline.OFFLINE_REPLY,
+    "...and answers once with the offline reply"
+  );
+  ok(
+    /isn't online/i.test(textline.OFFLINE_REPLY) && /come back later/i.test(textline.OFFLINE_REPLY),
+    "the reply says the station is not online and to come back later"
+  );
+  ok(
+    (await prisma.textMessage.count({ where: { contactId: contact!.id, direction: "out", body: textline.OFFLINE_REPLY } })) === 1,
+    "...recorded in the thread"
+  );
+
+  const beforeBurst = sent.length;
+  await textline.handleInbound(
+    { phone: "+61408344123", body: "hello?", providerId: "in-off-2" },
+    { send, now: now + 5 * 60 * 1000, listeners: async () => 0 }
+  );
+  ok(sent.length === beforeBurst, "a second text within the hour does not text again");
+
+  await textline.handleInbound(
+    { phone: "+61408344123", body: "hello?", providerId: "in-off-3" },
+    { send, now: now + textline.OFFLINE_REPLY_MS + 60_000, listeners: async () => 0 }
+  );
+  ok(sent.length === beforeBurst + 1, "after an hour the offline reply is allowed again");
+
+  const beforeOnAir = sent.length;
+  await textline.handleInbound(
+    { phone: "+61408344123", body: "Play The Cure", providerId: "in-on-1" },
+    { send, now, listeners: async () => 3 }
+  );
+  ok(sent.length === beforeOnAir, "with listeners on air a request gets no offline reply");
+
+  await textline.handleInbound(
+    { phone: "+61408344123", body: "Play The Cure", providerId: "in-on-2" },
+    { send, now, listeners: async () => null }
+  );
+  ok(sent.length === beforeOnAir, "an unreadable listener count never claims the station is down");
 
   // ---------------------------------------------------------------- unlink
   const before = {
@@ -403,15 +478,14 @@ try {
     "an inbound-first refusal names the line to text first"
   );
 
-  // 2015 is "no eligible sending line": waiting does not clear it, so the copy
-  // must not tell the listener to come back later.
+  // 2015 is "no eligible sending line". The inbound gate has already proved a
+  // chat exists, so this is the fleet, not the listener's missing text.
   failNext = "send failed (409 2015)";
   const noLine = await textline.startLink("u5", "0408 344 123", { defaultCountry: "+61", send });
   ok(
-    noLine.ok === false && /\+61400111222/.test(noLine.message) && /new conversation/i.test(noLine.message),
-    "a no-eligible-line refusal names the line to text first"
+    noLine.ok === false && /can't send right now/i.test(noLine.message),
+    "a no-eligible-line refusal after the inbound gate blames the line"
   );
-  ok(noLine.ok === false && !/wait a minute/i.test(noLine.message), "...and does not say to wait");
 
   const deadFetch: any = async () => ({ ok: false, json: async () => ({}) });
   ok(

@@ -526,6 +526,20 @@ model PhoneVerification {
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
+/// Proof that a phone texted the station. The free Shared Line cannot start a
+/// conversation, so linking asks for that text first; the bind code is only
+/// sent after a recent row here matches the number the listener typed. Pruned
+/// to a day by startLink, so it never becomes a shadow transcript.
+model TextlineInbound {
+  id         String   @id @default(cuid())
+  phone      String
+  providerId String?  @unique
+  receivedAt DateTime @default(now())
+
+  @@index([phone, receivedAt])
+  @@index([receivedAt])
+}
+
 /// One bubble, inbound or outbound. `providerId` is Linq's message id and is
 /// unique so an at-least-once webhook redelivery cannot duplicate a row.
 model TextMessage {

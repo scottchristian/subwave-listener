@@ -7,7 +7,7 @@
  * same number, and the second is what Linq accepts.
  */
 
-import { AsYouType, type CountryCode } from "libphonenumber-js/min";
+import { AsYouType, parsePhoneNumberFromString, type CountryCode } from "libphonenumber-js/min";
 
 /** Dial code for a station timezone. Unknown places return "" — never guess. */
 const DIAL_CODES: Record<string, string> = {
@@ -123,6 +123,23 @@ export function formatPhoneInput(raw: string, iso?: string | null): string {
   // server still completes the country code.
   if (formatted === input && /^\d{6,}$/.test(input)) return grouped(input, [3, 3, 3]);
   return formatted;
+}
+
+/** E.164 in the readable international shape: "+1 205 503 0476". */
+export function formatIntlPhone(phone: string): string {
+  const parsed = parsePhoneNumberFromString(String(phone || ""));
+  return parsed ? parsed.formatInternational() : String(phone || "");
+}
+
+/**
+ * A Messages link addressed to the station with the body pre-filled. The
+ * "?&body=" form is the one current iOS and Android both accept; the standard
+ * "?body=" alone is ignored by older iPhones, and "&body=" alone breaks Android.
+ */
+export function textLink(phone: string, body = "Hi"): string {
+  const digits = String(phone || "").replace(/[^\d]/g, "");
+  if (!/^\d{8,15}$/.test(digits)) return "";
+  return `sms:+${digits}?&body=${encodeURIComponent(body)}`;
 }
 
 /**
